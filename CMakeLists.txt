@@ -66,14 +66,20 @@ set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "")
 add_subdirectory("${LL_VENDOR_LLAMA_CPP}" vendor-llama.cpp EXCLUDE_FROM_ALL)
 
 # The vendored build produces, with GGML_BACKEND_DL off and BUILD_SHARED_LIBS on:
-#   libggml-base  (contains ggml-opt.cpp -- the training driver lives here)
-#   libggml-cpu   (the CPU backend, linked PUBLIC into libggml)
-#   libggml       (backend registry)
+#   libggml-base   (contains ggml-opt.cpp -- the training driver lives here)
+#   libggml        (backend registry)
 #   libllama
-set(LL_VENDOR_LIBS ggml-base ggml llama)
-if(TARGET ggml-cpu)
-    list(APPEND LL_VENDOR_LIBS ggml-cpu)
-endif()
+# plus one shared library per enabled *backend*, each linked PUBLIC into libggml.
+#
+# Do not hardcode that backend list. It is platform-dependent in ways that are easy to
+# miss: on macOS, ggml enables the BLAS backend (Accelerate) by default, so an Apple
+# build produces libggml-blas in addition to libggml-cpu -- and a wheel missing it fails
+# at dlopen, not at build time. ggml already publishes the list it actually built, as a
+# cache variable set by ggml_add_backend_library(), so use that. It also means stages 2-4
+# pick up libggml-metal / libggml-cuda / libggml-vulkan with no change here.
+set(LL_VENDOR_LIBS ggml-base ggml llama ${GGML_AVAILABLE_BACKENDS})
+
+message(STATUS "learning-llamas: packaging backends: ${GGML_AVAILABLE_BACKENDS}")
 
 # Strip VERSION/SOVERSION from the vendored libraries. Inside the wheel we want exactly one
 # file per library with a predictable name (libggml.so, not libggml.so.0.9.4 plus two

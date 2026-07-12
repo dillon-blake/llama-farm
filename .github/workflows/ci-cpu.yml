@@ -178,17 +178,27 @@ jobs:
 
       # MODE_GRAD is the acceptance harness for every kernel ticket (ADR-0002). Running it
       # per-PR from day one protects the CPU oracle that stages 2-4 are measured against.
+      #
+      # SOFT_MAX and RMS_NORM are absent, and that is not an oversight. At the pinned
+      # commit, MODE_GRAD *aborts* on any op with an inplace variant: test_rms_norm
+      # (test-backend-ops.cpp:3469) and test_soft_max (:4869) build ggml_*_inplace nodes,
+      # whose result is a view of the source, and ggml_build_backward_expand asserts
+      # "inplace operations are currently not supported" (ggml.c:7093). Upstream never
+      # trips it because its CI runs ctest -L main, which only invokes `test` mode.
+      # S0-10 fixes the harness; this list grows back when it lands.
       - name: test-backend-ops — grad (targeted, MODE_GRAD)
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
-          ./build/vendor-tests/bin/test-backend-ops grad \
-            -o OUT_PROD,CROSS_ENTROPY_LOSS,SOFT_MAX,RMS_NORM
+          ./build/vendor-tests/bin/test-backend-ops grad -o OUT_PROD,CROSS_ENTROPY_LOSS
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           ./build/vendor-tests/bin/test-backend-ops test -b CPU
-          ./build/vendor-tests/bin/test-backend-ops grad
+          # The unfiltered `grad` sweep -- which ADR-0001 requires on every vendor bump --
+          # cannot run until S0-10 lands (see the comment above). Until then, the nightly
+          # runs the ops that do not abort.
+          ./build/vendor-tests/bin/test-backend-ops grad -o OUT_PROD,CROSS_ENTROPY_LOSS
 
   lint:
     name: lint
