@@ -5,8 +5,26 @@ locally, on llama.cpp's ggml backend — CPU, Metal, CUDA, and Vulkan — with t
 training step GPU-resident when a GPU is available. Trained adapters load
 directly in stock llama.cpp, llama-server, and ollama.
 
-**Status: planning complete, implementation starting.** This repository
-currently contains the full engineering plan:
+**Status: stage 0 (groundwork) landing.** The build, the bindings, the adapter
+format, and the test harness exist; the training core is stage 1.
+
+## Getting started
+
+```bash
+git clone --recurse-submodules https://github.com/dillon-blake/llama-farm.git
+cd llama-farm
+python3 -m venv .venv && source .venv/bin/activate
+pip install scikit-build-core cmake ninja pytest numpy
+pip install -e . --no-build-isolation        # builds vendored llama.cpp + the C shim
+pip install -e vendor/llama.cpp/gguf-py
+pytest tests/ -m "not slow"
+```
+
+See [`docs/dev/`](docs/dev/) — the [build guide](docs/dev/building.md), the
+[testing guide](docs/dev/testing.md), and the per-backend
+[VM playbooks](docs/dev/vm-playbooks.md).
+
+## The plan
 
 - [`PLAN.md`](PLAN.md) — the implementation plan overview (stages, milestones,
   effort, risks).
@@ -18,6 +36,12 @@ currently contains the full engineering plan:
   — library architecture blueprint (design decisions, gap analysis, methods).
 - [`docs/KERNEL-ROADMAP.md`](docs/KERNEL-ROADMAP.md) — per-backend kernel plan
   (OUT_PROD, sparse CE, flash-attention backward, MoE/SSM, licensing audit).
+- [`docs/adr/`](docs/adr/) — the decisions that bind every kernel PR:
+  [ADR-0001](docs/adr/ADR-0001-vendor-lineage.md) (vendor lineage, rebase
+  cadence, two-repo flow) and
+  [ADR-0002](docs/adr/ADR-0002-numerics-determinism-parity.md) (F32 gradient
+  accumulation, determinism by default, the parity criterion).
+- [`docs/PROVENANCE.md`](docs/PROVENANCE.md) — what may be copied from where.
 
 Both design documents are grounded in llama.cpp @ `4f37f51` and were
 adversarially fact-checked; ticket citations were re-verified independently.

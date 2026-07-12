@@ -5,7 +5,7 @@ stage: 0
 track: docs
 size: S
 deps: [S0-01]
-status: open
+status: pr-open
 pr: null
 ---
 
