@@ -251,6 +251,61 @@ SYMBOLS = [
     ),
     Symbol(Library.LLAMA, "llama_get_memory", [llama_context_p], ctypes.c_void_p),
     Symbol(Library.LLAMA, "llama_memory_clear", [ctypes.c_void_p, ctypes.c_bool]),
+    # Tokenizer and chat template (S1-06).
+    Symbol(
+        Library.LLAMA,
+        "llama_model_chat_template",
+        [llama_model_p, ctypes.c_char_p],
+        ctypes.c_char_p,
+    ),
+    # Two-call convention: pass n_tokens_max=0 to get the required size back as a NEGATIVE number.
+    Symbol(
+        Library.LLAMA,
+        "llama_tokenize",
+        [
+            llama_vocab_p,
+            ctypes.c_char_p,  # text
+            ctypes.c_int32,  # text_len
+            ctypes.POINTER(llama_token),  # out
+            ctypes.c_int32,  # n_tokens_max
+            ctypes.c_bool,  # add_special
+            ctypes.c_bool,  # parse_special
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.LLAMA,
+        "llama_detokenize",
+        [
+            llama_vocab_p,
+            ctypes.POINTER(llama_token),
+            ctypes.c_int32,
+            ctypes.c_char_p,  # out buffer
+            ctypes.c_int32,
+            ctypes.c_bool,  # remove_special
+            ctypes.c_bool,  # unparse_special
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.LLAMA,
+        "llama_token_to_piece",
+        [
+            llama_vocab_p,
+            llama_token,
+            ctypes.c_char_p,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_bool,
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(Library.LLAMA, "llama_vocab_bos", [llama_vocab_p], llama_token),
+    Symbol(Library.LLAMA, "llama_vocab_eos", [llama_vocab_p], llama_token),
+    Symbol(Library.LLAMA, "llama_vocab_eot", [llama_vocab_p], llama_token),
+    Symbol(Library.LLAMA, "llama_vocab_pad", [llama_vocab_p], llama_token),
+    Symbol(Library.LLAMA, "llama_vocab_get_add_bos", [llama_vocab_p], ctypes.c_bool),
+    Symbol(Library.LLAMA, "llama_vocab_get_add_eos", [llama_vocab_p], ctypes.c_bool),
     # Adapters. llama_set_adapters_lora is the batch attach API present at the pinned commit
     # (llama.h:690); if a vendor bump removes it, the symbol-table test fails loudly, which is
     # the entire point of declaring it here.
