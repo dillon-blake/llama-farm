@@ -5,15 +5,15 @@ stage: 0
 track: kernels
 size: S
 deps: ["S0-02", "S0-07"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/10
 ---
 
-# S0-10 — MODE_GRAD aborts on inplace ops; make the full `grad` sweep runnable
+# S0-10 — MODE_GRAD aborts on inplace ops; make the `grad` sweep runnable
 
-**One-line outcome:** `test-backend-ops grad` (unfiltered) runs to completion at the pinned
-commit, so ADR-0001's "every vendor bump reruns the full MODE_GRAD suite" rule is actually
-satisfiable and the `ci-cpu` nightly can run the real sweep.
+**One-line outcome:** `test-backend-ops grad` no longer hard-aborts on inplace ops, so MODE_GRAD
+can actually be run and its real coverage measured — which turns out to be far thinner than the
+plan assumed, and is now published in `docs/dev/backward-coverage.md`.
 
 ## Why (context)
 
@@ -86,12 +86,12 @@ Two-repo flow (this is a vendored-llama.cpp change; ADR-0001 §5).
    The natural place is `test_case::eval_grad`, alongside the existing skip conditions
    (`test-backend-ops.cpp:~1700-1710`).
 2. Do **not** relax the assert in `ggml.c`. It is correct.
-3. Confirm the full sweep now runs: `test-backend-ops grad` with no `-o` filter completes and
-   reports `Backend CPU: OK`.
-4. Open the fork PR against `learning-llamas-base` titled `[S0-10] …`.
-5. In learning-llamas: bump the `vendor/llama.cpp` gitlink, restore the `ci-cpu` nightly to the
-   **unfiltered** `test-backend-ops grad`, and widen the per-PR grad subset back to include
-   `SOFT_MAX` and `RMS_NORM`.
+3. Open the fork PR against `learning-llamas-base` titled `[S0-10] …`.
+4. **Now that MODE_GRAD runs, measure what it actually covers** — run it op by op, and audit
+   which `test_case` classes call `ggml_set_param` (a case that does not is vacuous). Publish
+   `docs/dev/backward-coverage.md`.
+5. In learning-llamas: bump the `vendor/llama.cpp` gitlink and set the `ci-cpu` grad subset to
+   the ops that are *both* genuinely grad-checked *and* green.
 
 ## Out of scope
 
@@ -99,16 +99,61 @@ Two-repo flow (this is a vendored-llama.cpp change; ADR-0001 §5).
 - S1-00's KV-cache bypass. Same assert, different cause, its own ticket.
 - Any change to the ops themselves.
 
+## What the fix does *not* achieve — and why that is correct
+
+The obvious acceptance criterion — "`test-backend-ops grad` runs unfiltered" — is **not**
+achievable in this ticket, and it took running the fixed harness to find out why.
+
+With the inplace cases skipped, the sweep gets much further and then aborts somewhere else
+entirely:
+
+```
+ggml.c:6897: unsupported glu op for backward pass: REGLU
+```
+
+That is not a harness bug. It is `ggml_compute_backward` correctly reporting that **REGLU has no
+backward rule** — which is precisely the gap **S1-28** exists to close. Several ops are in the
+same position (see the coverage table this ticket produces).
+
+So the honest picture, which the plan did not previously state:
+
+> **`test-backend-ops grad` cannot pass unfiltered at the pinned commit, and will not until the
+> stage-1 backward-rule tickets land.** MODE_GRAD is not a working baseline that stage 1 extends
+> — it is a baseline that stage 1 *creates*.
+
+Two different failure classes were being conflated:
+
+| Class | Cause | Owner |
+|---|---|---|
+| **Harness bug** — asks for the gradient of an op that is *inherently* not differentiable | inplace ops | **this ticket** |
+| **Missing product** — an op has no backward rule yet | REGLU, GEGLU, … | S1-19, S1-28, and the rest of stage 1 |
+
+This ticket fixes the first and *exposes* the second, which is exactly the right outcome: after
+it, every remaining abort is a real, named piece of stage-1 work rather than noise.
+
+**Consequence for ADR-0001.** Its decision 4 ("every vendor bump reruns the full MODE_GRAD
+suite") is aspirational today. Until stage 1 completes, the bump gate runs MODE_GRAD over the
+ops that *have* backward rules — an allowlist that grows, ticket by ticket, until it is the
+whole table and the qualifier can be deleted. This ticket publishes the starting allowlist.
+
 ## Acceptance criteria
 
-- [ ] `test-backend-ops grad` (no `-o` filter) completes on CPU and reports `Backend CPU: OK`.
-- [ ] `test-backend-ops grad -o SOFT_MAX` and `-o RMS_NORM` complete without aborting, and print
-      a visible skip line for each inplace case.
-- [ ] Non-inplace SOFT_MAX / RMS_NORM grad cases still **run** (they are not skipped along with
-      the inplace ones) — verified by the case count.
-- [ ] `ggml.c:7093` is unchanged.
-- [ ] `ci-cpu` nightly runs the unfiltered `grad` sweep; the per-PR subset includes `SOFT_MAX`
-      and `RMS_NORM` again.
+- [ ] `test-backend-ops grad -o SOFT_MAX` and `-o RMS_NORM` complete **without aborting**, and
+      print a visible `not supported [inplace <OP> is not differentiable]` line for each inplace
+      case.
+- [ ] Non-inplace SOFT_MAX / RMS_NORM grad cases still **run** — they are not skipped along with
+      the inplace ones.
+- [ ] `ggml.c:7093` is **unchanged**. The assert is correct; only the harness was wrong to
+      trip it.
+- [ ] The unfiltered `grad` sweep advances past every inplace op, and its next abort is a
+      *missing backward rule* (an op owned by a stage-1 ticket), not an inplace case.
+- [ ] A **backward-coverage table** is published (`docs/dev/backward-coverage.md`): for every
+      ggml op, whether MODE_GRAD currently passes, fails, or aborts for want of a backward rule.
+      This is the empirical version of ROADMAP §2's coverage matrix, and it is what the growing
+      vendor-bump allowlist is derived from.
+- [ ] `ci-cpu`'s grad subset contains only ops that are *both* genuinely grad-checked *and*
+      green. (`SOFT_MAX` does **not** qualify: it now runs, and genuinely **fails** — see S1-34.)
+- [ ] ADR-0002 records, normatively, that a MODE_GRAD case is vacuous without `ggml_set_param`.
 - [ ] The fork PR and the submodule-bump PR both carry the ticket ID.
 
 ## Testing & verification

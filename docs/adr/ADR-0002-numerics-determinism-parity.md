@@ -113,6 +113,36 @@ The vendored `test-backend-ops` harness in mode **`grad`** (MODE_GRAD) is the ac
 for every new or ported kernel, with the **CPU implementation as the oracle**. GPU ports never
 redefine semantics; they match CPU within tolerance.
 
+### A MODE_GRAD case is vacuous unless the test calls `ggml_set_param`
+
+*(Amended by S0-10, which measured this rather than assuming it.)*
+
+`test_case::eval_grad` checks gradients **only if** the test's `build_graph` marked something as
+a parameter. If nothing is a parameter, it prints `not supported [<OP>]`, checks nothing, and the
+run still ends in `Backend CPU: OK`.
+
+At the pinned commit, **52 of the 100 `test_case` classes never call `ggml_set_param`** — and the
+list includes `test_out_prod`, `test_flash_attn_ext`, `test_mul_mat_id`, `test_ssm_scan`,
+`test_ssm_conv`, `test_glu`, and `test_clamp`. That is, very nearly, the exact set of ops this
+project exists to implement. `test-backend-ops grad -o OUT_PROD` reports `Backend CPU: OK` while
+checking **zero** gradients.
+
+> **Normative:** a kernel ticket does not satisfy its MODE_GRAD acceptance criterion by adding a
+> test case. It must ensure the `test_case` **calls `ggml_set_param` on the input whose gradient
+> it means to check**, and it must state in the PR how many cases were actually grad-checked.
+> An acceptance criterion that passes without checking a gradient is worse than none, because it
+> looks like evidence.
+
+Also: `test-backend-ops` prints `N/M tests passed` where **M is the global case count of the
+entire binary, not of the `-o` filter** — `grad -o ADD`, `grad -o OUT_PROD`, and
+`grad -o CROSS_ENTROPY_LOSS` all print the same denominator. Do not quote that number as evidence.
+The signal is the `Backend CPU: OK` / `FAIL` verdict and the per-case lines.
+
+The measured state of every op is in
+[`docs/dev/backward-coverage.md`](../dev/backward-coverage.md).
+
+### The two tolerance layers
+
 The two layers are different things and are routinely conflated:
 
 **(a) The per-op finite-difference bound.** Within one backend, MODE_GRAD compares the analytic

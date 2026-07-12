@@ -9,7 +9,7 @@ import pytest
 from learning_llamas import _ffi
 from learning_llamas._ffi import ggml_opt, loader, registry
 
-PINNED_LLAMA_CPP_COMMIT = "4f37f519722aa3242eecb7649466b4a4a2d6d6da"
+from .vendor_pin import vendored_commit
 
 
 @pytest.fixture(scope="module")
@@ -71,8 +71,9 @@ def test_load_bearing_symbols_are_declared(name: str) -> None:
 
 
 def test_probe_matches_the_version_lock(libs: loader.Libraries) -> None:
-    assert libs.farm.ll_probe().decode() == PINNED_LLAMA_CPP_COMMIT
-    assert loader.VENDORED_COMMIT == PINNED_LLAMA_CPP_COMMIT
+    """All three parties to the version lock agree: submodule, native build, Python package."""
+    assert libs.farm.ll_probe().decode() == vendored_commit()
+    assert loader.VENDORED_COMMIT == vendored_commit()
 
 
 def test_tampered_commit_lock_raises(libs: loader.Libraries) -> None:
@@ -85,7 +86,7 @@ def test_tampered_commit_lock_raises(libs: loader.Libraries) -> None:
         _ffi.load(expected_commit="0000000000000000000000000000000000000000")
 
     message = str(excinfo.value)
-    assert PINNED_LLAMA_CPP_COMMIT in message
+    assert vendored_commit() in message
     assert "0000000000000000000000000000000000000000" in message
 
 

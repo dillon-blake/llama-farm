@@ -13,9 +13,7 @@ import pytest
 
 import learning_llamas
 
-# The commit vendor/llama.cpp is pinned at (ADR-0001). ll_probe() bakes this in at configure
-# time; if the two disagree, the native build is stale or the submodule moved.
-PINNED_LLAMA_CPP_COMMIT = "4f37f519722aa3242eecb7649466b4a4a2d6d6da"
+from .vendor_pin import vendored_commit
 
 # The documented load order (csrc/README.md). libggml-cpu is absent on purpose: it is linked
 # PUBLIC into libggml and resolved transitively via RPATH.
@@ -68,11 +66,15 @@ def test_all_libraries_ship(shim: ctypes.CDLL) -> None:
         assert (lib_dir / _library_filename(stem)).exists(), f"{stem} missing"
 
 
-def test_ll_probe_matches_pinned_commit(shim: ctypes.CDLL) -> None:
-    """ll_probe() returns the vendored llama.cpp commit baked in at configure time."""
+def test_ll_probe_matches_the_submodule(shim: ctypes.CDLL) -> None:
+    """ll_probe() returns the commit the submodule is actually checked out at.
+
+    A mismatch means the native build is stale relative to the vendored tree — which is the
+    state in which the hand-written ctypes struct mirrors start misreading memory.
+    """
     shim.ll_probe.restype = ctypes.c_char_p
     shim.ll_probe.argtypes = []
-    assert shim.ll_probe().decode() == PINNED_LLAMA_CPP_COMMIT
+    assert shim.ll_probe().decode() == vendored_commit()
 
 
 def test_ll_version_matches_package(shim: ctypes.CDLL) -> None:

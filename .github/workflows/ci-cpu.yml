@@ -179,26 +179,38 @@ jobs:
       # MODE_GRAD is the acceptance harness for every kernel ticket (ADR-0002). Running it
       # per-PR from day one protects the CPU oracle that stages 2-4 are measured against.
       #
-      # SOFT_MAX and RMS_NORM are absent, and that is not an oversight. At the pinned
-      # commit, MODE_GRAD *aborts* on any op with an inplace variant: test_rms_norm
-      # (test-backend-ops.cpp:3469) and test_soft_max (:4869) build ggml_*_inplace nodes,
-      # whose result is a view of the source, and ggml_build_backward_expand asserts
-      # "inplace operations are currently not supported" (ggml.c:7093). Upstream never
-      # trips it because its CI runs ctest -L main, which only invokes `test` mode.
-      # S0-10 fixes the harness; this list grows back when it lands.
+      # The op list is short, and every omission is deliberate. See
+      # docs/dev/backward-coverage.md for the measured state of all 126 ops.
+      #
+      #   OUT_PROD is NOT here even though it is the single most important gradient op,
+      #   because `grad -o OUT_PROD` checks ZERO gradients: test_out_prod never calls
+      #   ggml_set_param, so eval_grad reports "not supported [OUT_PROD]" and still ends in
+      #   "Backend CPU: OK". It is real evidence of nothing. OUT_PROD's gradient path is
+      #   exercised indirectly by MUL_MAT, whose backward is built from ggml_out_prod
+      #   (ggml.c:6594-6630) -- but MUL_MAT takes 3m20s, so it is a nightly job, not a
+      #   per-PR one.
+      #
+      #   SOFT_MAX is NOT here because it genuinely FAILS: every failing case has sinks=1,
+      #   and ggml_soft_max_ext_back takes no sinks argument at all. That is a real
+      #   gradient gap, tracked as S1-34, not a flaky bound.
+      #
+      # What is left is what is both genuinely grad-checked and green.
       - name: test-backend-ops — grad (targeted, MODE_GRAD)
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
-          ./build/vendor-tests/bin/test-backend-ops grad -o OUT_PROD,CROSS_ENTROPY_LOSS
+          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           ./build/vendor-tests/bin/test-backend-ops test -b CPU
-          # The unfiltered `grad` sweep -- which ADR-0001 requires on every vendor bump --
-          # cannot run until S0-10 lands (see the comment above). Until then, the nightly
-          # runs the ops that do not abort.
-          ./build/vendor-tests/bin/test-backend-ops grad -o OUT_PROD,CROSS_ENTROPY_LOSS
+          # The UNFILTERED grad sweep -- which ADR-0001 wants on every vendor bump -- still
+          # cannot complete, and that is now a statement about the product rather than the
+          # harness: it aborts on ops that have no backward rule yet (REGLU, GEGLU, ...,
+          # ggml.c:6897), which is exactly what S1-28 and friends exist to add. So the
+          # nightly runs the allowlist, and every stage-1 kernel ticket appends to it until
+          # the filter can be deleted.
+          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM,MUL_MAT
 
   lint:
     name: lint
