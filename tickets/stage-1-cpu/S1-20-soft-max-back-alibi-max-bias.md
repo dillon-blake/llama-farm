@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S0-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/15
 ---
 
 # S1-20 — K-SMB: SOFT_MAX_BACK max_bias>0 — add the missing test, lift the CPU assert
