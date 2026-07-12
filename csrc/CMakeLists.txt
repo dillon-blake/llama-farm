@@ -40,6 +40,7 @@ configure_file(
 add_library(learningllamas
     farm_api.h
     farm_probe.cpp
+    farm_train.cpp
     farm_internals.cpp)
 
 target_include_directories(learningllamas

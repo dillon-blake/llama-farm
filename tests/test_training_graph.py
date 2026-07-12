@@ -86,7 +86,7 @@ def test_training_graph_builds_a_backward_pass_and_the_loss_falls(
     ``ggml.c:7093: GGML_ASSERT(!node->view_src || ...)`` — the process dies, so the test does not
     fail, it *crashes*. Reaching the assertions at all is most of the proof.
     """
-    model = load_model(tiny_f32, n_ctx=N_CTX, n_ubatch=N_UBATCH, training=True)
+    model = load_model(tiny_f32, n_ctx=N_CTX, n_ubatch=N_UBATCH, full_finetune=True)
 
     # The context's REAL n_ctx, not the one we asked for: llama.cpp pads it.
     n_ctx = libs.llama.llama_n_ctx(model.ctx)

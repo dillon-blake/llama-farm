@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: M
 deps: ["S1-00", "S0-03", "S0-04"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/12
 ---
 
 # S1-01 — Shim: ll_opt_init_lora — ggml_set_param on adapter A/B tensors
