@@ -42,6 +42,34 @@ Build it first (see [`building.md`](building.md)). The **mode is positional**:
 
 (`vendor/llama.cpp/tests/test-backend-ops.cpp:10075-10091`.)
 
+### ⚠️ Before you trust a MODE_GRAD result, read this
+
+Two things about this harness will fool you. Both are measured in
+[`backward-coverage.md`](backward-coverage.md).
+
+**1. A MODE_GRAD case checks nothing unless the test calls `ggml_set_param`.** If nothing in the
+graph is a parameter, `eval_grad` prints `not supported [<OP>]`, checks zero gradients, and the
+run still ends in `Backend CPU: OK`. **52 of the 100 test classes are in that state**, including
+`test_out_prod`, `test_flash_attn_ext`, `test_mul_mat_id`, `test_ssm_scan` and `test_glu` — very
+nearly the exact set of ops this project is about.
+
+> `test-backend-ops grad -o OUT_PROD` reports `Backend CPU: OK` while checking **zero** gradients.
+
+So a kernel ticket does not discharge its acceptance criterion by adding a test case. It must make
+the `test_case` call `ggml_set_param` on the input whose gradient it means to check, and say in
+the PR how many cases were actually grad-checked (ADR-0002).
+
+**2. The `N/M tests passed` number is global, not per-filter.**
+
+```
+$ test-backend-ops grad -o ADD                -> 16817/16817 tests passed
+$ test-backend-ops grad -o OUT_PROD           -> 16817/16817 tests passed
+$ test-backend-ops grad -o CROSS_ENTROPY_LOSS -> 16817/16817 tests passed
+```
+
+Same denominator every time. Never quote it as evidence. **The signal is the `Backend CPU: OK` /
+`FAIL` verdict and the per-case lines.**
+
 ### MODE_GRAD — the one that matters
 
 Every new or ported kernel must pass MODE_GRAD against the CPU oracle. Worked examples:

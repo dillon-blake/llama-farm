@@ -65,11 +65,25 @@ ROADMAP §11 prescribes the middle path this ADR adopts.
 
 ### 1. The pin
 
-`vendor/llama.cpp` is a git submodule pinned at commit
-**`4f37f519722aa3242eecb7649466b4a4a2d6d6da`**, tracking branch **`learning-llamas-base`** on
-the project fork **<https://github.com/dillon-blake/llama.cpp>**. The branch is protected
-against force-push: rewriting it would silently change the meaning of every gitlink in this
-repository's history.
+`vendor/llama.cpp` is a git submodule tracking branch **`learning-llamas-base`** on the project
+fork **<https://github.com/dillon-blake/llama.cpp>**. The branch is protected against
+force-push: rewriting it would silently change the meaning of every gitlink in this repository's
+history.
+
+Two commits matter and they are not the same one:
+
+- **The upstream base: `4f37f519722aa3242eecb7649466b4a4a2d6d6da`.** This is the upstream commit
+  `learning-llamas-base` was branched from, and **every `file:line` anchor cited in the tickets
+  and docs is valid at this commit.**
+- **The pin: whatever `learning-llamas-base` currently points at.** It *advances* past the
+  upstream base as fork commits land (S0-10 was the first). Those commits only add, so the
+  anchors above stay valid.
+
+Nothing hardcodes the pin. The native build bakes it in from `git rev-parse HEAD` at configure
+time, CMake generates `_ffi/_version_lock.py` from the same value, and the tests read it back out
+of the submodule (`tests/vendor_pin.py`) — so all three parties to the version lock are checked
+against the one thing that is unambiguously true, and a bump requires **no edits to test
+literals**.
 
 The pinned commit, the vendored `gguf-py`, and the S0-04 ctypes struct mirrors form **one
 atomic version**. They are bumped together or not at all.

@@ -5,6 +5,7 @@
 | [`building.md`](building.md) | Prerequisites, the editable install, per-backend CMake flags, building the vendored test binaries |
 | [`testing.md`](testing.md) | The pytest suite and its markers; `test-backend-ops` including MODE_GRAD; where the tolerances come from |
 | [`vm-playbooks.md`](vm-playbooks.md) | Copy-pasteable, idempotent provisioning for each backend's VM, plus self-hosted GitHub Actions runners |
+| [`backward-coverage.md`](backward-coverage.md) | **Measured** MODE_GRAD coverage per op — which gradients are actually checked today, which abort, and which are wrong |
 
 Two architecture decisions bind every kernel PR. Read them before writing one:
 
