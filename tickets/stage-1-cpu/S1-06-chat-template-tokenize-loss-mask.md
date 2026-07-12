@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S0-04"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/18
 ---
 
 # S1-06 — Data layer: chat templating, tokenization, loss-mask round-trip

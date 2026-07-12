@@ -56,6 +56,18 @@ REFERENCE_VOCAB_GGUF = (
 
 VARIANTS = ("f32", "q8_0", "q4_k")
 
+# ChatML. Deliberately written so that the assistant-turn opener ends in a newline: that puts the
+# prompt/completion boundary on a character a BPE tokenizer will not merge across, which is what
+# makes the loss mask well-defined (see learning_llamas.data.mask).
+CHAT_TEMPLATE = (
+    "{% for message in messages %}"
+    "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n' }}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}"
+    "{{ '<|im_start|>assistant\n' }}"
+    "{% endif %}"
+)
+
 _QUANT_TYPE = {
     "q8_0": gguf.GGMLQuantizationType.Q8_0,
     "q4_k": gguf.GGMLQuantizationType.Q4_K,
@@ -235,6 +247,11 @@ def _write(path: pathlib.Path, hp: TinyLlamaHParams, variant: str, seed: int) ->
     writer.add_rope_freq_base(hp.rope_freq_base)
     writer.add_vocab_size(hp.n_vocab)
     writer.add_file_type(_FILE_TYPE[variant])
+
+    # A ChatML template, embedded exactly as a real model carries it. The data layer extracts it
+    # from the GGUF rather than from a config we invent, because a model trained with one turn
+    # format and fine-tuned with another learns the mismatch and nothing says so.
+    writer.add_chat_template(CHAT_TEMPLATE)
 
     writer.add_tokenizer_model("llama")
     writer.add_tokenizer_pre("default")
