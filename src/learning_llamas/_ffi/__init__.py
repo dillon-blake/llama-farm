@@ -39,6 +39,7 @@ from .llama import (
     llama_batch,
     llama_context_params,
     llama_model_params,
+    llama_opt_param_filter,
     llama_opt_params,
     llama_token,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "llama_batch",
     "llama_context_params",
     "llama_model_params",
+    "llama_opt_param_filter",
     "llama_opt_params",
     "llama_token",
     "load",

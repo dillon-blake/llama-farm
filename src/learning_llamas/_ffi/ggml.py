@@ -16,6 +16,12 @@ import ctypes
 from .registry import Library, Symbol
 
 SYMBOLS = [
+    # Raw pointer to a tensor's data. Used instead of mirroring `struct ggml_tensor` — that
+    # struct is large, churns, and getting one field's offset wrong reads arbitrary memory.
+    # Asking ggml for the pointer costs one call and cannot drift.
+    Symbol(Library.GGML_BASE, "ggml_get_data", [ctypes.c_void_p], ctypes.c_void_p),
+    Symbol(Library.GGML_BASE, "ggml_nelements", [ctypes.c_void_p], ctypes.c_int64),
+    Symbol(Library.GGML_BASE, "ggml_nbytes", [ctypes.c_void_p], ctypes.c_size_t),
     # Bytes needed for one row of `ne` elements of the given type. Quantized rows are not
     # ne * type_size: they are (ne / block_size) blocks, each with its own scale.
     Symbol(Library.GGML_BASE, "ggml_row_size", [ctypes.c_int, ctypes.c_int64], ctypes.c_size_t),

@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S0-02", "S0-03"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/11
 ---
 
 # S1-00 — Training attention path: bypass the KV cache so gradients reach K/V
