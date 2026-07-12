@@ -5,8 +5,8 @@ stage: 0
 track: infra
 size: M
 deps: ["S0-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/3
 ---
 
 # S0-03 — CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton liblearningllamas
