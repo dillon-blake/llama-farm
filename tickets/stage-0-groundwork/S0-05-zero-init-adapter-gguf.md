@@ -5,8 +5,8 @@ stage: 0
 track: python
 size: M
 deps: ["S0-01"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/5
 ---
 
 # S0-05 — adapter.py: zero-init LoRA adapter GGUF via gguf-py (create/read/enumerate)
