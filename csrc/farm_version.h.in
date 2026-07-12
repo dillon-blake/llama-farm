@@ -1,0 +1,13 @@
+// Generated from csrc/farm_version.h.in at configure time. Do not edit.
+//
+// LL_LLAMA_CPP_COMMIT is read straight from the submodule with `git rev-parse HEAD`, so a
+// build against an unexpected vendor checkout is detectable at runtime rather than at the
+// point where a mismatched struct layout corrupts memory.
+
+#ifndef LEARNING_LLAMAS_FARM_VERSION_H
+#define LEARNING_LLAMAS_FARM_VERSION_H
+
+#define LL_VERSION "@LL_VERSION@"
+#define LL_LLAMA_CPP_COMMIT "@LL_LLAMA_CPP_COMMIT@"
+
+#endif // LEARNING_LLAMAS_FARM_VERSION_H

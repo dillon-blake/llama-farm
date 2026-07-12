@@ -24,16 +24,20 @@ dev = ["pytest>=7", "ruff>=0.5", "pre-commit>=3", "build>=1"]
 Homepage = "https://github.com/dillon-blake/llama-farm"
 
 # ---------------------------------------------------------------------------
-# scikit-build-core: CMake drives the native build; the Python package ships
-# from src/. At S0-01 the CMakeLists is a placeholder with no targets, so a
-# wheel is pure-Python; S0-03 replaces it with the vendored llama.cpp + shim
-# build and starts installing native libraries into learning_llamas/lib/.
+# scikit-build-core: CMake drives the native build (vendored llama.cpp CPU +
+# the liblearningllamas shim); the Python package ships from src/.
+#
+# Only the `learningllamas` install component is packaged. llama.cpp's own
+# install rules -- headers, CMake config, pkgconfig -- use the default
+# component and are therefore excluded, which keeps the wheel to exactly the
+# five shared libraries the loader opens.
 # ---------------------------------------------------------------------------
 [tool.scikit-build]
 minimum-version = "0.10"
 cmake.version = ">=3.21"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/learning_llamas"]
+install.components = ["learningllamas"]
 
 [tool.scikit-build.metadata.version]
 # Single source of truth for the version: src/learning_llamas/__init__.py.

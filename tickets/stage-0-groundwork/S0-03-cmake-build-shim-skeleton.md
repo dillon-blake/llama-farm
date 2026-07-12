@@ -5,7 +5,7 @@ stage: 0
 track: infra
 size: M
 deps: ["S0-02"]
-status: open
+status: pr-open
 pr: null
 ---
 
