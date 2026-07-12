@@ -84,22 +84,24 @@ def test_lora_trains_a_memory_mapped_quantized_base(
     params = _default_opt_params()
     _ffi.check(_init_lora(libs, model, params), "ll_opt_init_lora")
 
-    n_ctx = libs.llama.llama_n_ctx(model.ctx)
-    dataset, ndata = _make_dataset(libs, _corpus(n_ctx * 8), n_ctx)
+    n = 32
+    tokens = [7, 11, 13, 17] * (n // 4)
+    targets = tokens[1:] + [tokens[0]]
+    weights = [1.0] * n
 
-    result = libs.ggml_base.ggml_opt_result_init()
-    try:
-        losses = []
-        for _ in range(3):
-            libs.ggml_base.ggml_opt_result_reset(result)
-            # If anything here wrote a base weight, the process would already be dead.
-            libs.llama.llama_opt_epoch(model.ctx, dataset, result, None, ndata, None, None)
-            loss = ctypes.c_double()
-            libs.ggml_base.ggml_opt_result_loss(result, ctypes.byref(loss), None)
-            losses.append(loss.value)
-    finally:
-        libs.ggml_base.ggml_opt_result_free(result)
-        libs.ggml_base.ggml_opt_dataset_free(dataset)
+    tok = (ctypes.c_int32 * n)(*tokens)
+    tgt = (ctypes.c_int32 * n)(*targets)
+    wts = (ctypes.c_float * n)(*weights)
+
+    losses = []
+    for _ in range(6):
+        loss = ctypes.c_float()
+        # If anything in here wrote a base weight, the process would already be dead.
+        _ffi.check(
+            libs.farm.ll_train_step(model.ctx, tok, tgt, wts, n, True, ctypes.byref(loss)),
+            "ll_train_step",
+        )
+        losses.append(loss.value)
 
     assert all(x == x for x in losses), f"loss went NaN: {losses}"  # noqa: PLR0124
     assert losses[-1] < losses[0], f"the adapter did not learn: {losses}"
@@ -203,35 +205,3 @@ def test_opt_free_is_idempotent(adapted, libs: _ffi.Libraries) -> None:
     assert libs.farm.ll_opt_free(model.ctx) == _ffi.LLError.OK
     assert libs.farm.ll_opt_free(model.ctx) == _ffi.LLError.OK
     assert libs.farm.ll_opt_n_params(model.ctx) == _ffi.LLError.NOT_INITIALIZED
-
-
-# --- dataset helpers (shared shape with test_training_graph) -------------------------------
-
-
-def _corpus(n: int) -> list[int]:
-    pattern = [7, 11, 13, 17, 19, 23, 29, 31]
-    return [pattern[i % len(pattern)] for i in range(n)]
-
-
-def _make_dataset(libs: _ffi.Libraries, tokens: list[int], n_ctx: int):
-    stride = n_ctx // 2
-    ndata = (len(tokens) - n_ctx - 1) // stride
-    assert ndata > 0
-
-    dataset = libs.ggml_base.ggml_opt_dataset_init(
-        int(_ffi.GGMLType.I32), int(_ffi.GGMLType.I32), n_ctx, n_ctx, ndata, 1
-    )
-    data_ptr = libs.ggml_base.ggml_get_data(libs.ggml_base.ggml_opt_dataset_data(dataset))
-    label_ptr = libs.ggml_base.ggml_get_data(libs.ggml_base.ggml_opt_dataset_labels(dataset))
-
-    buf_type = ctypes.c_int32 * (ndata * n_ctx)
-    data = buf_type.from_address(data_ptr)
-    labels = buf_type.from_address(label_ptr)
-
-    for idata in range(ndata):
-        start = idata * stride
-        for i in range(n_ctx):
-            data[idata * n_ctx + i] = tokens[start + i]
-            labels[idata * n_ctx + i] = tokens[start + i + 1]
-
-    return dataset, ndata
