@@ -1,0 +1,43 @@
+learning-llamas
+Copyright (c) 2026 Dillon Blake
+
+This product is licensed under the MIT License (see LICENSE).
+
+It includes and builds upon third-party work, as follows.
+
+--------------------------------------------------------------------------------
+llama.cpp / ggml — MIT License
+--------------------------------------------------------------------------------
+
+Upstream:       https://github.com/ggml-org/llama.cpp
+Project fork:   https://github.com/dillon-blake/llama.cpp (branch learning-llamas-base)
+Pinned commit:  4f37f519722aa3242eecb7649466b4a4a2d6d6da
+License:        MIT — full text at vendor/llama.cpp/LICENSE
+Copyright:      (c) 2023-2024 The ggml authors
+
+llama.cpp is vendored as the `vendor/llama.cpp` git submodule and is the
+foundation of this project: learning-llamas compiles a C shim against its private
+`src/` internals, and code is copied and adapted from it into `csrc/` and into
+project-authored ggml kernels.
+
+Every file in this repository containing code copied or adapted from llama.cpp
+carries a provenance header naming the source path, the source commit, and the
+license. See docs/PROVENANCE.md for the policy and the header template.
+
+--------------------------------------------------------------------------------
+unsloth — design and mathematics reference only; NO CODE COPIED
+--------------------------------------------------------------------------------
+
+Upstream:       https://github.com/unslothai/unsloth
+License:        Apache-2.0 at the top level, with AGPLv3 and LGPL-3.0-or-later
+                carve-outs over parts of the tree.
+
+learning-llamas uses unsloth as a *design and mathematics* reference only. No code
+from unsloth is copied into this repository, from any file, under any license.
+Kernel mathematics (for example the chunked-attention backward formulation and
+the sparse cross-entropy gradient derivation) is reimplemented from first
+principles with unsloth's published approach as prior art.
+
+The AGPL/LGPL carve-outs are enumerated verbatim in docs/PROVENANCE.md; a naive
+"grep for AGPL" over the unsloth tree misses several of them, which is why the
+exclusion list is written down rather than rediscovered per pull request.
