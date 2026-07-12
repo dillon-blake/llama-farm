@@ -5,8 +5,8 @@ stage: 0
 track: infra
 size: S
 deps: []
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/1
 ---
 
 # S0-01 — Repo scaffolding, license, packaging skeleton, provenance policy

@@ -1,0 +1,15 @@
+# C/C++ style for csrc/ and for project-authored ggml kernels.
+# LLVM base with 4-space indent, matching llama.cpp's conventions so that code we
+# upstream needs no reformatting.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+PointerAlignment: Middle
+SortIncludes: false
