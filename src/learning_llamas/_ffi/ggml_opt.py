@@ -163,6 +163,24 @@ class OptimizerParams:
 
 
 SYMBOLS = [
+    # Dataset. ggml-opt owns the storage; ggml_get_data() hands back the pointer to fill.
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_opt_dataset_init",
+        [
+            ctypes.c_int,  # type_data
+            ctypes.c_int,  # type_label
+            ctypes.c_int64,  # ne_datapoint
+            ctypes.c_int64,  # ne_label
+            ctypes.c_int64,  # ndata
+            ctypes.c_int64,  # ndata_shard
+        ],
+        ggml_opt_dataset_t,
+    ),
+    Symbol(Library.GGML_BASE, "ggml_opt_dataset_free", [ggml_opt_dataset_t]),
+    Symbol(Library.GGML_BASE, "ggml_opt_dataset_ndata", [ggml_opt_dataset_t], ctypes.c_int64),
+    Symbol(Library.GGML_BASE, "ggml_opt_dataset_data", [ggml_opt_dataset_t], ctypes.c_void_p),
+    Symbol(Library.GGML_BASE, "ggml_opt_dataset_labels", [ggml_opt_dataset_t], ctypes.c_void_p),
     # Lifecycle.
     Symbol(Library.GGML_BASE, "ggml_opt_init", [ggml_opt_params], ggml_opt_context_t),
     Symbol(Library.GGML_BASE, "ggml_opt_free", [ggml_opt_context_t]),

@@ -76,8 +76,13 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
     """Factory for :class:`Model`, closing everything it hands out at teardown."""
     opened: list[Model] = []
 
-    def _load(path: pathlib.Path, n_ctx: int = 512) -> Model:
-        model = Model(libs, path, n_ctx=n_ctx)
+    def _load(
+        path: pathlib.Path,
+        n_ctx: int = 512,
+        n_ubatch: int | None = None,
+        training: bool = False,
+    ) -> Model:
+        model = Model(libs, path, n_ctx=n_ctx, n_ubatch=n_ubatch, training=training)
         opened.append(model)
         return model
 
@@ -93,11 +98,29 @@ class Model:
     Not a public API — just enough to let the tests say what they mean.
     """
 
-    def __init__(self, libs: _ffi.Libraries, path: pathlib.Path, n_ctx: int = 512) -> None:
+    def __init__(
+        self,
+        libs: _ffi.Libraries,
+        path: pathlib.Path,
+        n_ctx: int = 512,
+        n_ubatch: int | None = None,
+        training: bool = False,
+    ) -> None:
         self._libs = libs
 
         model_params = libs.llama.llama_model_default_params()
         model_params.n_gpu_layers = 0  # CPU is the oracle
+
+        if training:
+            # mmap maps the weights READ-ONLY, and the AdamW step writes updated weights back
+            # in place — so training a mmap'd model segfaults inside
+            # ggml_compute_forward_opt_step_adamw. It is not a graceful failure: the process
+            # dies with SIGSEGV after the forward and backward passes have already succeeded,
+            # which makes it look like a kernel bug rather than a loading flag.
+            # llama.cpp's own finetune example disables mmap for exactly this reason
+            # (examples/training/finetune.cpp:28-32).
+            model_params.use_mmap = False
+
         self.model = libs.llama.llama_model_load_from_file(str(path).encode(), model_params)
         if not self.model:
             raise RuntimeError(f"failed to load {path}")
@@ -105,7 +128,7 @@ class Model:
         ctx_params = libs.llama.llama_context_default_params()
         ctx_params.n_ctx = n_ctx
         ctx_params.n_batch = n_ctx
-        ctx_params.n_ubatch = n_ctx
+        ctx_params.n_ubatch = n_ubatch if n_ubatch is not None else n_ctx
         ctx_params.n_threads = 2
         ctx_params.n_threads_batch = 2
         self.ctx = libs.llama.llama_init_from_model(self.model, ctx_params)
