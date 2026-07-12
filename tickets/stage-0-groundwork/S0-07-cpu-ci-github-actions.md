@@ -5,8 +5,8 @@ stage: 0
 track: infra
 size: M
 deps: [S0-06]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/9
 ---
 
 # S0-07 — CPU CI: GitHub Actions build + test on Linux x86 and macOS arm (CPU-only)
