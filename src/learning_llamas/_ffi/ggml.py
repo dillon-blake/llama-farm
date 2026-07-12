@@ -27,6 +27,9 @@ SYMBOLS = [
     Symbol(Library.GGML_BASE, "ggml_row_size", [ctypes.c_int, ctypes.c_int64], ctypes.c_size_t),
     Symbol(Library.GGML_BASE, "ggml_blck_size", [ctypes.c_int], ctypes.c_int64),
     Symbol(Library.GGML_BASE, "ggml_type_name", [ctypes.c_int], ctypes.c_char_p),
+    # Some quant types cannot be produced without an importance matrix -- the IQ family. There is
+    # nothing sensible to fall back on for them, so a merged export refuses rather than guessing.
+    Symbol(Library.GGML_BASE, "ggml_quantize_requires_imatrix", [ctypes.c_int], ctypes.c_bool),
     Symbol(
         Library.GGML_BASE,
         "ggml_quantize_chunk",

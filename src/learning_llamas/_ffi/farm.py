@@ -202,6 +202,33 @@ SYMBOLS = [
         ctypes.c_int64,
     ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-08: read the trained adapter tensors back out, so they can be saved.
+    Symbol(Library.FARM, "ll_adapter_n_tensors", [ctypes.c_void_p], ctypes.c_int32),
+    Symbol(
+        Library.FARM,
+        "ll_adapter_tensor_info",
+        [
+            ctypes.c_void_p,  # llama_adapter_lora *
+            ctypes.c_int32,  # index
+            ctypes.c_char_p,  # name_out
+            ctypes.c_int32,  # name_capacity
+            ctypes.POINTER(ctypes.c_int64),  # ne_a[4]
+            ctypes.POINTER(ctypes.c_int64),  # ne_b[4]
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_adapter_get",
+        [
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
     # S1-02: one training step with a per-token weighted (maskable) cross-entropy loss.
     Symbol(
         Library.FARM,

@@ -205,6 +205,42 @@ LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens,
                              int32_t n_tokens, bool train, float * loss_out);
 
 // ---------------------------------------------------------------------------
+// Adapter enumeration (S1-08) -- read the trained tensors back out
+// ---------------------------------------------------------------------------
+//
+// Training writes the adapter's A/B tensors in place. To SAVE the result something has to read them
+// back, and llama.cpp offers no way to: `ab_map` lives in a private header, so the tensors are
+// unreachable from outside the vendored tree.
+//
+// Tensors are addressed by INDEX, and the index is the position in the adapter's base-tensor names
+// sorted lexicographically -- not ab_map's iteration order, which is an unordered_map's and is not
+// promised to be stable between builds.
+//
+// Unlike the ll_debug_* accessors below, these need no training context: an adapter handle is
+// enough, so saving does not require the model to still be in training mode.
+
+// How many base tensors the adapter adapts (i.e. how many A/B pairs), or LL_ERR_INVALID_ARG.
+LL_API int32_t ll_adapter_n_tensors(struct llama_adapter_lora * adapter);
+
+// The index-th pair: its base tensor's name, and the ggml `ne` of its A and B.
+//
+// Args:
+//   name_out:      receives the base tensor name, NUL-terminated.
+//   name_capacity: its size. LL_ERR_INVALID_ARG if the name does not fit.
+//   ne_a, ne_b:    receive GGML_MAX_DIMS (4) elements each.
+LL_API int32_t ll_adapter_tensor_info(struct llama_adapter_lora * adapter, int32_t index,
+                                      char * name_out, int32_t name_capacity,
+                                      int64_t * ne_a, int64_t * ne_b);
+
+// Copy the index-th pair's A (is_b=false) or B (is_b=true) out. Returns the element count, or
+// a negative LL_ERR_* code.
+//
+// Pass out=NULL with n_max=0 to ask only how many elements there are, then call again with a buffer
+// -- the same two-call convention as llama_tokenize.
+LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index, bool is_b,
+                              float * out, int64_t n_max);
+
+// ---------------------------------------------------------------------------
 // Debug accessors (S1-03)
 // ---------------------------------------------------------------------------
 //
