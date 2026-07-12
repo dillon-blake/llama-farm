@@ -42,6 +42,8 @@ from .llama import (
     llama_model_params,
     llama_opt_param_filter,
     llama_opt_params,
+    llama_pos,
+    llama_seq_id,
     llama_token,
 )
 from .loader import SYMBOLS, Libraries, library_dir, library_filename, load
@@ -71,6 +73,8 @@ __all__ = [
     "library_dir",
     "library_filename",
     "llama_batch",
+    "llama_pos",
+    "llama_seq_id",
     "llama_context_params",
     "llama_model_params",
     "llama_opt_param_filter",
