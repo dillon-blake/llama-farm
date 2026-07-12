@@ -5,8 +5,8 @@ stage: 0
 track: docs
 size: S
 deps: [S0-01]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/7
 ---
 
 # S0-09 — ADR: numerics policy + determinism default (gate G-B) + parity criterion
