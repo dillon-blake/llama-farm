@@ -1,6 +1,6 @@
 ---
 id: S1-01
-title: "Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors"
+title: "Shim: ll_opt_init_lora — ggml_set_param on adapter A/B tensors"
 stage: 1
 track: shim
 size: M
@@ -9,7 +9,7 @@ status: open
 pr: null
 ---
 
-# S1-01 — Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors
+# S1-01 — Shim: ll_opt_init_lora — ggml_set_param on adapter A/B tensors
 
 **One-line outcome:** a C ABI call that, given a context with attached LoRA adapters, flags every
 `ab_map` A/B tensor as a ggml param (adapter-only filter, nothing else ever offered) so gradients
@@ -47,12 +47,12 @@ itself is a private member (`vendor/llama.cpp/src/llama-context.h:285`), which s
 ## What to do
 
 1. In `csrc/farm_train.cpp` (new file), implement
-   `lf_opt_init_lora(struct llama_context * ctx, struct llama_adapter_lora ** adapters, size_t n_adapters, const struct lf_opt_params * params)`
+   `ll_opt_init_lora(struct llama_context * ctx, struct llama_adapter_lora ** adapters, size_t n_adapters, const struct ll_opt_params * params)`
    declared in `csrc/farm_api.h`. The caller passes the same adapter handles it attached via
    `llama_set_adapters_lora` — required because `llama_context::loras` is private
    (`vendor/llama.cpp/src/llama-context.h:285`); `llama_adapter_lora` itself is a plain struct in a
    private header the shim compiles against (S0-03 proved this).
-2. Create the shim-side training state (`lf_train_state`, owned by the shim, keyed to the context):
+2. Create the shim-side training state (`ll_train_state`, owned by the shim, keyed to the context):
    mirror the ggml_opt setup of `llama_context::opt_init`
    (`vendor/llama.cpp/src/llama-context.cpp:3216-3232` — `opt_period = n_batch/n_ubatch`, optimizer
    type, per-step optimizer-params callback) but with `GGML_OPT_LOSS_TYPE_SUM` instead of the
@@ -65,10 +65,10 @@ itself is a private member (`vendor/llama.cpp/src/llama-context.h:285`), which s
    code otherwise instead of tripping the `ggml_set_param` assert. Reject any request to flag a
    non-adapter tensor by construction: the ABI offers no way to name arbitrary tensors.
 4. Enforce the D2 ordering with a state flag: error if `n_adapters == 0` or adapters were not
-   attached to `ctx`; error on a second `lf_opt_init_lora` call; set a `params_frozen` flag that
-   S1-02's first graph build checks (flagging after the first `lf_train_step` must fail with a
+   attached to `ctx`; error on a second `ll_opt_init_lora` call; set a `params_frozen` flag that
+   S1-02's first graph build checks (flagging after the first `ll_train_step` must fail with a
    clear message). Return the number of tensors flagged (`2 × Σ ab_map.size()`) on success,
-   negative `LF_ERR_*` codes on failure.
+   negative `LL_ERR_*` codes on failure.
 5. Document in the `farm_api.h` doc comment the perf note from BLUEPRINT D2: adapter tensors that
    fell back to CPU buffer types because the base tensor uses an extra/repacked buft
    (`vendor/llama.cpp/src/llama-adapter.cpp:337-350`) incur cross-backend gradient traffic once GPU
@@ -91,7 +91,7 @@ itself is a private member (`vendor/llama.cpp/src/llama-context.h:285`), which s
 ## Acceptance criteria
 
 - [ ] `pytest tests/test_opt_init_lora.py` passes on a CPU-only build: for each fixture variant
-      (F32, Q8_0, Q4_K), `lf_opt_init_lora` returns exactly `2 × n_targets` with `use_mmap=true`.
+      (F32, Q8_0, Q4_K), `ll_opt_init_lora` returns exactly `2 × n_targets` with `use_mmap=true`.
 - [ ] Ordering errors are exercised: before-attach and double-call both return distinct negative
       error codes (no aborts), and the assertion path for non-F32 A/B returns an error code.
 - [ ] A test asserts no base-model tensor is flagged: the returned count matches the adapter-only
@@ -111,11 +111,11 @@ run the success-path test with `LLAMA_LOG` debug enabled and paste the adapter-a
 ## PR notes
 
 - Branch: `ticket/S1-01-opt-init-lora-adapter-params`.
-- One llama-farm PR; shim + Python bindings + tests only. No vendored llama.cpp changes expected —
+- One learning-llamas PR; shim + Python bindings + tests only. No vendored llama.cpp changes expected —
   if a private-member accessor turns out to be unavoidable, that change goes through the S0-02
   two-repo flow (fork PR + submodule bump), not inline here.
 - Upstreaming disposition: **fork-local** for now; BLUEPRINT §10 notes a
   `llama_opt_init_lora`-shaped API is a plausible future upstream contribution, but that is not
   this ticket.
-- Soft coordination: S1-02 consumes `lf_train_state` and the `params_frozen` flag; keep the struct
+- Soft coordination: S1-02 consumes `ll_train_state` and the `params_frozen` flag; keep the struct
   in a shim-internal header so S1-02 can extend it without ABI churn.

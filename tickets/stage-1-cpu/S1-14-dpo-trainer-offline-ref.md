@@ -11,7 +11,7 @@ pr: null
 
 # S1-14 — DPO trainer
 
-**One-line outcome:** `llama_farm.train.dpo` runs pairwise DPO with offline-precomputed
+**One-line outcome:** `learning_llamas.train.dpo` runs pairwise DPO with offline-precomputed
 reference logprobs (same weights, adapter disabled), a softplus-composite loss, and
 converges on a tiny synthetic preference dataset on CPU.
 
@@ -48,7 +48,7 @@ mandatory (BLUEPRINT D1), so pairs are padded to a fixed layout by the collator.
 
 ## What to do
 
-1. `src/llama_farm/train/dpo.py`: `train_dpo(model, adapter, pref_dataset, config)` with
+1. `src/learning_llamas/train/dpo.py`: `train_dpo(model, adapter, pref_dataset, config)` with
    `config.beta`; consumes the S1-06 data layer for templating/tokenization/masks and
    drives the S1-05 `train/loop.py` step loop.
 2. Offline ref-logprob precompute (`precompute_ref_logprobs(model, pref_dataset)`):
@@ -114,7 +114,7 @@ mandatory (BLUEPRINT D1), so pairs are padded to a fixed layout by the collator.
 ## PR notes
 
 - Branch: `ticket/S1-14-dpo-trainer-offline-ref`.
-- Single llama-farm PR (Python + the small `csrc/` epilogue registration); no vendored
+- Single learning-llamas PR (Python + the small `csrc/` epilogue registration); no vendored
   llama.cpp changes, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (product training code).
 - Soft coordination: if S1-19's SIGMOID composite has landed, add a cross-check test

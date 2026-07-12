@@ -63,8 +63,8 @@ All changes land in the vendored llama.cpp fork via the S0-02 two-repo flow.
    per-head slope variation, F16/F32 masks — the `:8882` loop matrix) now execute and pass
    on CUDA against finite differences, and the forward `test_soft_max_back` `max_bias`
    cases (`:8925`) pass against the CPU baseline S1-20 enabled.
-6. **Submodule bump PR** in llama-farm per S0-02. The S1-11 preflight widens automatically
-   via its graph walk; no llama-farm code change.
+6. **Submodule bump PR** in learning-llamas per S0-02. The S1-11 preflight widens automatically
+   via its graph walk; no learning-llamas code change.
 
 ## Out of scope
 
@@ -88,21 +88,21 @@ All changes land in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - [ ] The fork diff touches only `ggml/src/ggml-cuda/softmax.cu` and the `supports_op` case
       in `ggml/src/ggml-cuda/ggml-cuda.cu` — no kernel-body, CPU, or Vulkan changes
       (grep-verifiable).
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` — MODE_GRAD (`grad -b CUDA0`) for the
 gradient checks and eval mode (`test -b CUDA0`) for `SOFT_MAX_BACK` forward parity against
 the CPU baseline from S1-20, tolerances per ADR-0002 (S0-09). Runs on the fork branch CI,
-then in llama-farm's `ci-cuda` GPU lane per-PR (kernel-gated; `SOFT_MAX` is in the targeted
+then in learning-llamas's `ci-cuda` GPU lane per-PR (kernel-gated; `SOFT_MAX` is in the targeted
 set for this diff) and the nightly full sweep (S3-01). No new test code is written — this
 ticket exists to let already-written tests execute on CUDA.
 
 ## PR notes
 
 - Branch: `ticket/S3-04-cuda-soft-max-back-alibi`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both carrying the ticket ID.
 - Upstreaming disposition: **upstream-early**, coordinated with S1-20's upstream PR (ROADMAP
   §11 triage class a) — assert/gate removals with existing tests, no new ABI; if S1-20's

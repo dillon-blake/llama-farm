@@ -1,6 +1,6 @@
-# llama-farm implementation tickets — agent guide
+# learning-llamas implementation tickets — agent guide
 
-This directory is the full implementation backlog for llama-farm: a Python library
+This directory is the full implementation backlog for learning-llamas: a Python library
 that trains LoRA adapters (SFT / DPO / GRPO) on **frozen, quantized GGUF models**
 using llama.cpp's ggml backend, with the training step **GPU-resident when a GPU
 is available** on exactly four backends: **CPU, Metal, CUDA, Vulkan**.
@@ -62,7 +62,7 @@ per-item content of the ROADMAP is unchanged, only the ordering differs.
 
 **Two-repo flow for kernel tickets.** Tickets that modify vendored llama.cpp code
 (track `kernels`) implement in the project's llama.cpp fork (see S0-02): open the
-real PR against the fork's `llama-farm-base` branch, then a trivial PR here that
+real PR against the fork's `learning-llamas-base` branch, then a trivial PR here that
 bumps the `vendor/llama.cpp` submodule and flips the ticket status. The fork PR
 carries the ticket ID in its title too.
 
@@ -127,7 +127,7 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 |---|---|---|---|---|
 | S0-01 | Repo scaffolding, license, packaging skeleton, provenance policy | infra | S | — |
 | S0-02 | Vendor llama.cpp as pinned submodule + fork + patch queue | infra | S | S0-01 |
-| S0-03 | CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton libllamafarm | infra | M | S0-02 |
+| S0-03 | CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton liblearningllamas | infra | M | S0-02 |
 | S0-04 | ctypes binding layer (_ffi): load order, struct mirrors, version lock | python | M | S0-03 |
 | S0-05 | adapter.py: zero-init LoRA adapter GGUF via gguf-py (create/read/enumerate) | python | M | S0-01 |
 | S0-06 | Test harness: pytest + tiny fixture GGUF models + no-op adapter smoke test | python | M | S0-04, S0-05 |
@@ -140,8 +140,8 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | ID | Title | Track | Size | Depends on |
 |---|---|---|---|---|
 | S1-00 | Training attention path: bypass the KV cache so gradients reach K/V (unblocks all backward) | kernels | M | S0-02, S0-03 |
-| S1-01 | Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors | shim | M | S1-00, S0-03, S0-04 |
-| S1-02 | Shim: lf_train_step — forked opt_epoch_iter with pluggable loss + extra inputs | shim | L | S1-01 |
+| S1-01 | Shim: ll_opt_init_lora — ggml_set_param on adapter A/B tensors | shim | M | S1-00, S0-03, S0-04 |
+| S1-02 | Shim: ll_train_step — forked opt_epoch_iter with pluggable loss + extra inputs | shim | L | S1-01 |
 | S1-03 | P0 proof-of-gradient: stopgap composite CE, loss falls, FD check, llama-cli loads adapter | python | M | S1-02, S0-06 |
 | S1-04 | New ggml op: ggml_cross_entropy_loss_sparse — ABI (gate G-A) + CPU oracle fwd/bwd | kernels | M | S0-09 |
 | S1-05 | SFT trainer on sparse CE + masked validation eval | python | M | S1-03, S1-04, S1-06 |
@@ -172,7 +172,7 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | S1-30 | SSM: SSM_CONV_BACK CPU | kernels | S | S1-29 |
 | S1-31 | SSM: SSM_SCAN_BACK CPU (chunk-recompute) + tiny-Mamba e2e | kernels | L | S1-29, S0-09 |
 | S1-32 | CPU throughput audit + published tok/s sizing (P4) | docs | S | S1-12 |
-| S1-33 | Windows/MSVC build of libllamafarm + ci-windows lane (CPU) | infra | M | S0-03, S0-07 |
+| S1-33 | Windows/MSVC build of liblearningllamas + ci-windows lane (CPU) | infra | M | S0-03, S0-07 |
 
 ### Stage 2 — Metal (13 tickets)
 

@@ -104,7 +104,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    on, GPU-resident backward, recording peak allocation vs the naive path at the same
    configs (naive-path OOM is an acceptable recorded outcome at 4k). Publish the numbers
    as a CI artifact; S3-10 later wires the regression bound.
-9. **Submodule bump PR** in llama-farm per S0-02, adding the back op to the ci-cuda
+9. **Submodule bump PR** in learning-llamas per S0-02, adding the back op to the ci-cuda
    targeted op list.
 
 ## Out of scope
@@ -134,14 +134,14 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       are confirmed CPU-fallback (not wrong-answer) via the sched assignment report.
 - [ ] The e2e artifact exists in ci-cuda: peak-memory numbers for FA-on vs naive at 2k
       and 4k ctx on the GPU runner, with FA-on completing at 4k.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
       `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD on CUDA vs the CPU oracle
 (S1-23), per ADR-0002 (S0-09), plus the dedicated parity/determinism binary from step 7.
-Runs on the fork branch CI and, after the submodule bump, in llama-farm's `ci-cuda` GPU
+Runs on the fork branch CI and, after the submodule bump, in learning-llamas's `ci-cuda` GPU
 lane per-PR (kernel-gated, targeted `-o FLASH_ATTN_BACK,FLASH_ATTN_EXT`) and the nightly
 full sweep + e2e job (S3-01). The e2e memory measurement reuses the ci-cuda
 `GGML_SCHED_DEBUG` fallback-report machinery to prove the FA path ran GPU-resident; full
@@ -150,8 +150,8 @@ convergence acceptance (loss-curve gate with FA on, `--device cuda`) is S3-10's 
 ## PR notes
 
 - Branch: `ticket/S3-06-cuda-flash-attention-backward-core`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title) plus a
-  trivial llama-farm submodule-bump PR referencing the same ID.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title) plus a
+  trivial learning-llamas submodule-bump PR referencing the same ID.
 - Size XL — stage commits within one fork PR: (1) pass-1 + pass-3 skeleton at D=64;
   (2) pass 2 + GQA + full mask/ALiBi/softcap/sinks semantics; (3) D=128 + config table +
   supports_op + full test matrix; (4) e2e wiring.

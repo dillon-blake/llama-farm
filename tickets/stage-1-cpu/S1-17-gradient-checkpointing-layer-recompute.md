@@ -73,7 +73,7 @@ perf-neutral path.
    with a shim-owned boundary stash and manual grad accumulation into the param
    tensors). Record the chosen mechanism and why in the PR description; both must keep
    node topology fixed across steps (D1).
-3. **Configuration** in `csrc/farm_api.h` + `_ffi`: `lf_set_grad_checkpointing(ctx,
+3. **Configuration** in `csrc/farm_api.h` + `_ffi`: `ll_set_grad_checkpointing(ctx,
    mode, segment_len)` — `off` (default, byte-identical to today's path) | `on`
    (segment every `segment_len` layers, default 1). Reject mode changes after the first
    opt-graph build with the S1-02-style clear error (topology).
@@ -118,12 +118,12 @@ perf-neutral path.
 - [ ] Peak-memory report exists (docs/dev table + step stats) and shows a strictly
       lower peak for `on` vs `off` on the multi-layer fixture config; the numbers are
       reproduced by CI output.
-- [ ] Checkpointing works through the unchanged S1-02 `lf_train_step` ABI (same epilogue
+- [ ] Checkpointing works through the unchanged S1-02 `ll_train_step` ABI (same epilogue
       registry, named inputs, and shape enforcement — existing S1-02 tests still green
       with checkpointing on).
 - [ ] Mode change after first build and shape drift both raise the documented errors
       (tested).
-- [ ] `_ffi` symbol-table test resolves `lf_set_grad_checkpointing`.
+- [ ] `_ffi` symbol-table test resolves `ll_set_grad_checkpointing`.
 - [ ] `ci-cpu / test` per-PR green; the memory-comparison run is in nightly ci-cpu if it
       exceeds the per-PR budget.
 
@@ -139,7 +139,7 @@ perf-neutral path.
 ## PR notes
 
 - Branch: `ticket/S1-17-gradient-checkpointing-layer-recompute`.
-- Expected single llama-farm PR (shim + `_ffi` + tests + docs table). If a fork-side
+- Expected single learning-llamas PR (shim + `_ffi` + tests + docs table). If a fork-side
   accessor or wider `t_layer_inp` population is needed, it lands first as a fork PR +
   submodule bump per the S0-02 two-repo flow, referenced from this ticket.
 - Upstreaming disposition: **fork-local** (shim graph construction); any `t_layer_inp`

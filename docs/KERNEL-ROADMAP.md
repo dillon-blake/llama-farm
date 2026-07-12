@@ -1,4 +1,4 @@
-# llama-farm — Kernel Roadmap: GPU-Resident LoRA Training on CPU, CUDA, Metal, and Vulkan
+# learning-llamas — Kernel Roadmap: GPU-Resident LoRA Training on CPU, CUDA, Metal, and Vulkan
 
 **Goal:** the complete kernel-change plan that turns ggml into a full training system for this project's target configuration — **frozen quantized GGUF base weights, F32 LoRA A/B as the only trainable parameters** — with the entire training step (forward + backward + AdamW) running **GPU-resident when a GPU is available**, on CUDA, Metal (Apple Silicon), and Vulkan, with CPU as both a first-class platform and the correctness oracle. Includes flash-attention training, MoE and SSM architecture support, and (final section, per project goal) future improvements drawn from permissibly-licensed unsloth components.
 

@@ -1,6 +1,6 @@
-# llama-farm — Implementation Plan
+# learning-llamas — Implementation Plan
 
-**llama-farm** is a Python library for training LoRA adapters (SFT, DPO, GRPO) on
+**learning-llamas** is a Python library for training LoRA adapters (SFT, DPO, GRPO) on
 **frozen, quantized GGUF models** using llama.cpp's ggml backend. Base weights
 stay quantized and mmap'd; only F32 LoRA A/B tensors train; the whole training
 step (forward + backward + AdamW) runs **GPU-resident when a GPU is available**
@@ -11,7 +11,7 @@ This plan turns two adversarially fact-checked design documents into an
 agent-executable backlog:
 
 - `docs/GGUF-LORA-TRAINING-BLUEPRINT.md` — library architecture (4 layers:
-  vendored llama.cpp → C shim `libllamafarm` → ctypes binding → Python library),
+  vendored llama.cpp → C shim `liblearningllamas` → ctypes binding → Python library),
   design decisions D1–D7, gap analysis G1–G15.
 - `docs/KERNEL-ROADMAP.md` — the per-backend kernel plan (OUT_PROD, sparse CE,
   flash-attention backward, MoE and SSM ops), numerics/determinism policy,

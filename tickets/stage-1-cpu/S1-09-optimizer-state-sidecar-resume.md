@@ -55,30 +55,30 @@ native state.
    plus `ggml_opt_get_iter(opt_ctx)` / `ggml_opt_set_iter(opt_ctx, iter)`. Pure
    additions, no behavior change.
 2. Shim (`csrc/farm_checkpoint.cpp`, `csrc/farm_api.h`): name-keyed C ABI over that —
-   `lf_opt_state_count(ctx)`, `lf_opt_state_info(ctx, i, name_buf, role, shape...)`
-   (role ∈ {adamw_m, adamw_v}), `lf_opt_state_get(ctx, name, role, buf, nbytes)` and
-   `lf_opt_state_set(...)` (via `ggml_backend_tensor_get/set`), and
-   `lf_opt_get_iter`/`lf_opt_set_iter`. Enumerate by walking param nodes and mapping
+   `ll_opt_state_count(ctx)`, `ll_opt_state_info(ctx, i, name_buf, role, shape...)`
+   (role ∈ {adamw_m, adamw_v}), `ll_opt_state_get(ctx, name, role, buf, nbytes)` and
+   `ll_opt_state_set(...)` (via `ggml_backend_tensor_get/set`), and
+   `ll_opt_get_iter`/`ll_opt_set_iter`. Enumerate by walking param nodes and mapping
    node → name once per graph build; reject calls before the first opt-graph build with
    a clear error (state does not exist yet, `ggml-opt.cpp:458`). Restore validates
    name/shape/dtype and errors on any missing or extra param.
 3. Sidecar format, written from Python via the S0-05 gguf-py writer
-   (`src/llama_farm/checkpoint.py`): tensors `<param_name>.adamw_m` / `<param_name>.adamw_v`
+   (`src/learning_llamas/checkpoint.py`): tensors `<param_name>.adamw_m` / `<param_name>.adamw_v`
    (F32); KV: `farm.checkpoint.version` (start at 1), `general.type =
-   "llama-farm-checkpoint"` (deliberately *not* `"adapter"` so stock loaders refuse it),
+   "learning-llamas-checkpoint"` (deliberately *not* `"adapter"` so stock loaders refuse it),
    optimizer type, `iter`, opt_period, LR-schedule name + state, numpy RNG state, data
    cursor (epoch, sample index, collator seed), and the paired adapter file's hash.
    Document prominently: **resume-only, not interchange** (D3).
 4. Checkpoint operation: allowed only at accumulation-window boundaries (assert
    `opt_i == 0` equivalent via the shim's step bookkeeping from S1-02) — write adapter
    GGUF (S1-08 save path if merged, else the S0-05 writer fed by S1-08's
-   `lf_adapter_get`; soft coordination with S1-08, not a frontmatter dep — inline the
+   `ll_adapter_get`; soft coordination with S1-08, not a frontmatter dep — inline the
    small tensor-pull if S1-08 has not merged) + sidecar atomically
    (write-temp-then-rename both).
 5. Resume: fresh process → load base + adapter → S1-01/S1-02 init → first opt-graph
-   build → `lf_opt_state_set` every m/v by name → `lf_opt_set_iter` → Python restores
+   build → `ll_opt_state_set` every m/v by name → `ll_opt_set_iter` → Python restores
    LR/RNG/data cursor from KV and seeks the collator.
-6. `src/llama_farm/train/loop.py` wiring: `save_every_n_steps`, `resume_from=path`,
+6. `src/learning_llamas/train/loop.py` wiring: `save_every_n_steps`, `resume_from=path`,
    filling the S1-05 hook points; refuse resume when the sidecar's adapter hash does not
    match the loaded adapter.
 7. Tests `tests/test_resume.py` (CPU): train N steps → checkpoint → continue M steps
@@ -100,14 +100,14 @@ native state.
 ## Acceptance criteria
 
 - [ ] Fork PR adds `ggml_opt_step_momenta` + iter get/set with a vendored unit test or
-      test-backend-ops-adjacent smoke; llama-farm PR bumps the submodule.
+      test-backend-ops-adjacent smoke; learning-llamas PR bumps the submodule.
 - [ ] `pytest tests/test_resume.py` passes on the Linux CPU VM: resumed run matches the
       uninterrupted run **bitwise** (losses + A/B + m/v) for M ≥ 3 post-checkpoint steps.
 - [ ] Sidecar refuses to load as an adapter in stock llama.cpp (wrong `general.type`),
-      and llama-farm refuses version/hash mismatches (tested).
+      and learning-llamas refuses version/hash mismatches (tested).
 - [ ] Checkpoint outside an accumulation boundary raises the documented error (tested
       with opt_period > 1).
-- [ ] `_ffi` symbol-table test resolves the new `lf_opt_state_*` and fork-side symbols.
+- [ ] `_ffi` symbol-table test resolves the new `ll_opt_state_*` and fork-side symbols.
 - [ ] `ci-cpu / test` green per-PR with the new tests.
 
 ## Testing & verification
@@ -122,7 +122,7 @@ native state.
 
 - Branch: `ticket/S1-09-optimizer-state-sidecar-resume`.
 - **Two-repo flow** (per S0-02): the accessor patch PRs against the fork's
-  `llama-farm-base` with `[S1-09]` in the title; a llama-farm PR bumps the
+  `learning-llamas-base` with `[S1-09]` in the title; a learning-llamas PR bumps the
   `vendor/llama.cpp` submodule and carries the shim/Python/test changes.
 - Upstreaming disposition: accessors **upstream-later** (small, generally useful — offer
   once the resume test proves them); sidecar format and shim ABI **fork-local**.

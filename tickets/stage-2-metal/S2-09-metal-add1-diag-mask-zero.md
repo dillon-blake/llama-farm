@@ -46,7 +46,7 @@ whole family is plausibly absent. Scope stays honest per the manifest: no specul
    `vendor/llama.cpp/ggml/src/ggml-backend.cpp:1740-1741`). Cover the configurations where the
    ops could plausibly appear: loss types SUM and MEAN, and grad accumulation on
    (`opt_period > 1`) and off.
-2. **Record the evidence** in `docs/graphs/metal-m10-op-inventory.md` (llama-farm repo): the
+2. **Record the evidence** in `docs/graphs/metal-m10-op-inventory.md` (learning-llamas repo): the
    dump configs, the per-op counts for `ADD1`/`DIAG_MASK_INF`/`DIAG_MASK_ZERO`, and the
    conclusion.
 3. **If neither op appears in any configuration:** add a comment at the supports_op default in
@@ -64,7 +64,7 @@ whole family is plausibly absent. Scope stays honest per the manifest: no specul
    per the S1-20 finding), so implement the forward sibling in that branch too. No `ADD1`
    test case exists today — add eval + MODE_GRAD cases (its backward is existing ops:
    `ggml.c:6468-6475`).
-5. **Submodule bump PR** in llama-farm per S0-02 if (and only if) the fork changed.
+5. **Submodule bump PR** in learning-llamas per S0-02 if (and only if) the fork changed.
 
 ## Out of scope
 
@@ -86,7 +86,7 @@ whole family is plausibly absent. Scope stays honest per the manifest: no specul
       cases pass on Metal within the ADR-0002 per-op tolerance, with Metal-vs-CPU parity
       ≤ 0.05 @ fp16 where a grad path exists.
 - [ ] The evidence doc states which branch was taken and why (one paragraph).
-- [ ] llama-farm PR green in `ci-metal / build` (and `ci-metal / grad` if kernels landed).
+- [ ] learning-llamas PR green in `ci-metal / build` (and `ci-metal / grad` if kernels landed).
 
 ## Testing & verification
 
@@ -101,7 +101,7 @@ graph dumps themselves run on the S0-08 Apple-Silicon machine or the S2-01 hoste
 
 - Branch: `ticket/S2-09-metal-add1-diag-mask-zero`.
 - Two-repo flow per S0-02 only if the fork changes (branch (b), or the branch-(a) comment);
-  the evidence doc is a llama-farm-side change either way.
+  the evidence doc is a learning-llamas-side change either way.
 - Upstreaming disposition: **upstream-early** for any kernels (ROADMAP §11 triage class a,
   pure additions behind supports_op); the evidence doc and comment are **fork-local**.
 - Provenance per S0-01 on any copied kernel patterns (`ggml-metal.metal`, MIT, `4f37f51`).

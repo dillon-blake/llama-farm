@@ -51,7 +51,7 @@ chunk-size autotuning included — must therefore be a clean-room re-derivation 
 
 ## What to do
 
-1. **Module `src/llama_farm/logprobs.py`** with two layers: a low-level
+1. **Module `src/learning_llamas/logprobs.py`** with two layers: a low-level
    `chunked_token_logprobs(hidden, lm_head, labels, *, chunk_rows, softcap=0.0,
    logit_scale=1.0) → f32[n_tokens]`, and a high-level
    `sequence_logprobs(ctx, tokens, seq boundaries, masks) → per-token/per-sequence sums`
@@ -131,7 +131,7 @@ synthetic run at two chunk sizes into the PR description.
 ## PR notes
 
 - Branch: `ticket/S1-13-chunked-lmhead-logprob-pattern`.
-- Single llama-farm PR (Python + `_ffi` additions + tests); no vendored llama.cpp changes,
+- Single learning-llamas PR (Python + `_ffi` additions + tests); no vendored llama.cpp changes,
   so no two-repo flow.
 - Upstreaming disposition: **fork-local** (host-side product code).
 - Provenance per S0-01: module docstring states the math source (unsloth

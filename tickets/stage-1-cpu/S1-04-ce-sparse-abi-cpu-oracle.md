@@ -51,12 +51,12 @@ CE forward `ggml_compute_forward_cross_entropy_loss_f32`
 ## What to do
 
 All code changes land in the vendored llama.cpp fork (new op enums must live in ggml's op table),
-via the S0-02 two-repo flow; the ADR lands in llama-farm.
+via the S0-02 two-repo flow; the ADR lands in learning-llamas.
 
 1. **Settle gate G-A first.** Prototype backward-aliasing of the logits buffer against
    `ggml_gallocr`; decide lse stash (extra `n_tokens` F32 output, e.g. a packed or secondary
    output) vs recompute (2× vocab reads in backward). Write
-   `docs/adr/ADR-0003-ce-sparse-abi.md` (llama-farm repo, format per ADR-0001/0002): the two
+   `docs/adr/ADR-0003-ce-sparse-abi.md` (learning-llamas repo, format per ADR-0001/0002): the two
    decisions, the prototype evidence, and the binding on all backend ports (S2-07/S3-03/S4-04
    implement exactly this ABI). Get it reviewed before kernel code is written.
 2. **Op ABI in the fork:** add `GGML_OP_CROSS_ENTROPY_LOSS_SPARSE` and
@@ -90,14 +90,14 @@ via the S0-02 two-repo flow; the ADR lands in llama-farm.
    assertion (masked-row grads are bitwise zero) — MODE_GRAD tolerance alone cannot prove it.
 7. **supports_op:** CPU returns true; all other backends return false until their port tickets
    land (the sched will fall back to CPU meanwhile, ROADMAP §11 scheduler note).
-8. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02, so `ci-cpu` builds and
+8. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02, so `ci-cpu` builds and
    runs against the new fork commit.
 
 ## Out of scope
 
 - GPU ports of the op — S3-03 (CUDA), S2-07 (Metal), S4-04 (Vulkan); all blocked on this oracle
   and ADR-0003.
-- Wiring `ce_sparse` into the llama-farm loss-epilogue registry and the SFT trainer — S1-05.
+- Wiring `ce_sparse` into the learning-llamas loss-epilogue registry and the SFT trainer — S1-05.
 - The chunked lm_head / selective-logprob host pattern — S1-13 (uses this op, does not change it).
 - Metal/Vulkan ports of the **dense** CE op — skipped permanently once sparse is canonical
   (ROADMAP §3).
@@ -117,13 +117,13 @@ via the S0-02 two-repo flow; the ADR lands in llama-farm.
       loss matches the dense `ggml_cross_entropy_loss` value within F32 round-off tolerance.
 - [ ] Both new enum values sit immediately before `GGML_OP_COUNT`; no existing op enum value
       changed (grep-verifiable in the fork diff).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu`, which runs the vendored
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu`, which runs the vendored
       `test-backend-ops` grad cases for the new op (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` in MODE_GRAD plus forward-eval mode, run on
-the fork branch CI and, after the submodule bump, in llama-farm's `ci-cpu` lane per-PR (S1-12
+the fork branch CI and, after the submodule bump, in learning-llamas's `ci-cpu` lane per-PR (S1-12
 later adds the pytest wrapper that runs these cases for all project-added ops; do not wait for
 it). CPU is the oracle: every later GPU port ticket (S2-07/S3-03/S4-04) validates against this
 implementation under the ADR-0002 cross-backend parity criterion (max-abs gradient error ≤ 0.05 at
@@ -133,8 +133,8 @@ suite.
 ## PR notes
 
 - Branch: `ticket/S1-04-ce-sparse-abi-cpu-oracle`.
-- Two-repo flow per S0-02: (1) implementation PR against the fork's `llama-farm-base` branch with
-  the ticket ID in the title; (2) trivial llama-farm PR bumping the `vendor/llama.cpp` gitlink and
+- Two-repo flow per S0-02: (1) implementation PR against the fork's `learning-llamas-base` branch with
+  the ticket ID in the title; (2) trivial learning-llamas PR bumping the `vendor/llama.cpp` gitlink and
   adding ADR-0003, referencing the same ticket ID. (Stage-0 vendor infrastructure is assumed in
   place; the frontmatter dep is S0-09 for ADR-0002 tolerances.)
 - Upstreaming disposition: **upstream-later** — new op enums are fork-local at tail position

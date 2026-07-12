@@ -81,7 +81,7 @@ the S1-12 convergence gate re-runs nightly on `ci-cpu` to catch loss-curve drift
 ## PR notes
 
 - Branch: `ticket/B-04-saved-lse-ce-rmsnorm-invvar`.
-- Two-repo flow per S0-02: fork PR + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-later** — extends fork-local ABIs (sparse-CE outputs,
   RMS_NORM extra dst); rides the sparse-CE RFC once proven (ROADMAP §11 triage b).
 - Provenance per S0-01: headers name `unsloth/kernels/cross_entropy_loss.py` and

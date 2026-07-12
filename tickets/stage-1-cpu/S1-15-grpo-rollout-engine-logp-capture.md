@@ -51,7 +51,7 @@ counters from day one.
 
 ## What to do
 
-1. `src/llama_farm/train/rollout.py`: `RolloutEngine(model, adapter, sampler_config,
+1. `src/learning_llamas/train/rollout.py`: `RolloutEngine(model, adapter, sampler_config,
    n_rollouts_per_prompt, max_new_tokens, seed)` producing `RolloutBatch{prompt_tokens,
    completion_tokens, completion_mask, logp_old, rewards, advantages, group_index}`
    (numpy arrays, ragged lengths carried explicitly for the S1-16 collator to pad).
@@ -122,7 +122,7 @@ counters from day one.
 ## PR notes
 
 - Branch: `ticket/S1-15-grpo-rollout-engine-logp-capture`.
-- Single llama-farm PR (pure Python over existing `_ffi` bindings; extend `_ffi` with
+- Single learning-llamas PR (pure Python over existing `_ffi` bindings; extend `_ffi` with
   any missing sampler/memory symbols per the S0-04 pattern). No vendored llama.cpp
   changes, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (product training code).

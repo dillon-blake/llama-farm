@@ -51,7 +51,7 @@ detectable by ordinary backend-vs-CPU comparison instead of silently skipped.
 
 ## What to do
 
-Fork changes ride the S0-02 two-repo flow; the audit evidence lands in llama-farm.
+Fork changes ride the S0-02 two-repo flow; the audit evidence lands in learning-llamas.
 
 1. **Dump real training backward graphs first** (S2-09 pattern): the tiny dense-LoRA config
    from S1-12, backward expanded, loss types SUM/MEAN, grad accumulation on/off. Produce a
@@ -89,10 +89,10 @@ Fork changes ride the S0-02 two-repo flow; the audit evidence lands in llama-far
    ignored. If they fail, gate honestly (add the `max_bias == 0` condition at
    `:17580-17582`) and open a follow-up for the shader fix. Either way the parameter stops
    being *silently* unvalidated.
-6. **Record the audit** in `docs/graphs/vulkan-v5-backward-audit.md` (llama-farm): dump
+6. **Record the audit** in `docs/graphs/vulkan-v5-backward-audit.md` (learning-llamas): dump
    configs, per-op findings, decisions taken, and anything ticketed instead of fixed. Fix
    what is small in this PR; ticket what is not.
-7. **Submodule bump PR** in llama-farm per S0-02 if (and only if) the fork changed.
+7. **Submodule bump PR** in learning-llamas per S0-02 if (and only if) the fork changed.
 
 ## Out of scope
 
@@ -121,7 +121,7 @@ Fork changes ride the S0-02 two-repo flow; the audit evidence lands in llama-far
       mrope/vision or their explicit rejection).
 - [ ] Every contiguity mismatch found is fixed, documented as impossible, or ticketed —
       cross-referenced in the audit doc.
-- [ ] llama-farm PR green in `ci-vulkan / lavapipe` (and the native `gpu` lane if fork
+- [ ] learning-llamas PR green in `ci-vulkan / lavapipe` (and the native `gpu` lane if fork
       kernels changed); `ci-cpu` green.
 
 ## Testing & verification
@@ -138,7 +138,7 @@ training layout — is what S4-09's fallback-forbidden milestone then relies on.
 
 - Branch: `ticket/S4-05-vulkan-diag-mask-backward-audit`.
 - Two-repo flow per S0-02 for any fork changes (shader, gates, comments); the audit doc is
-  llama-farm-side either way.
+  learning-llamas-side either way.
 - Upstreaming disposition: **upstream-early** for kernels/gate fixes (ROADMAP §11 triage
   class a — pure additions and correctness gates; mention the unvalidated-`max_bias`
   finding upstream as S1-20's PR did); the audit doc is **fork-local**.

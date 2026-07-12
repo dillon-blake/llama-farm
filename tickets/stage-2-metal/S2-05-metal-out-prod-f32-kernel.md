@@ -87,7 +87,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    operands, so MODE_GRAD builds backward graphs whose `OUT_PROD` nodes now pass the per-node
    `supports_op` re-check (`:1779`) and execute on Metal. Capture before/after output for the
    PR.
-8. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+8. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -111,7 +111,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       same `OUT_PROD` case produce identical results (determinism per ADR-0002).
 - [ ] The fork PR description contains the Q8 microbench table (transposed `simdgroup_load` vs
       pre-transposed staging) and names the variant kept.
-- [ ] llama-farm submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
+- [ ] learning-llamas submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
       one nightly (or `workflow_dispatch`) full-sweep run green.
 
 ## Testing & verification
@@ -127,7 +127,7 @@ A/B gradient out-prods on Metal, with quantized ones still on CPU until S2-06.
 ## PR notes
 
 - Branch: `ticket/S2-05-metal-out-prod-f32-kernel`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — pure addition
   behind `supports_op`; upstream already generates the test cases).

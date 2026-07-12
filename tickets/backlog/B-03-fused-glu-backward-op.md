@@ -76,7 +76,7 @@ on the stage VMs, committed to `benches/`.
 ## PR notes
 
 - Branch: `ticket/B-03-fused-glu-backward-op`.
-- Two-repo flow per S0-02: fork PR + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-later** — extends the fork-local `GLU_BACK` enum; rides the
   S1-28 RFC once the fused form is proven (ROADMAP §11 triage b).
 - Provenance per S0-01: kernel header names `unsloth/kernels/swiglu.py` (Apache-2.0, header

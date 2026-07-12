@@ -83,7 +83,7 @@ hardware — honest gaps recorded, not glossed.
    report-required, fallback-tolerated.
 6. **Perf snapshot `docs/perf/vulkan.md`** (mirror `docs/perf/metal.md` / `cuda.md`):
    tok/s for the gate config on native Vulkan vs CPU on the same host, peak memory,
-   full provenance (GPU, driver version, Vulkan SDK, llama-farm + vendor commits), the
+   full provenance (GPU, driver version, Vulkan SDK, learning-llamas + vendor commits), the
    fallback report alongside, and an explicit **lavapipe-vs-native note** stating that
    lavapipe numbers are correctness evidence only and never perf claims. One snapshot,
    not a benchmark suite.
@@ -156,7 +156,7 @@ backend milestones (S2-10, S3-10, this).
 ## PR notes
 
 - Branch: `ticket/S4-09-vulkan-milestone-gpu-resident-training`.
-- Single llama-farm PR (workflow flip + allowlist extension + docs + perf snapshot +
+- Single learning-llamas PR (workflow flip + allowlist extension + docs + perf snapshot +
   parity report); no vendored llama.cpp changes expected, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (project CI, docs, milestone evidence).
 - Soft coordination: reuses S2-10's allowlist format and parser assertion mode and

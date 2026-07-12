@@ -95,7 +95,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    bitwise-identical `dx‖ddt‖dB‖dC`.
 7. **e2e:** run S1-31's `tests/test_ssm_training.py` tiny-Mamba SFT with
    `--device cuda`; the S3-01 fallback report must show the SSM backward ops on GPU.
-8. **Submodule bump PR** in llama-farm per S0-02, appending both ops to the ci-cuda
+8. **Submodule bump PR** in learning-llamas per S0-02, appending both ops to the ci-cuda
    targeted-op defaults.
 
 ## Out of scope
@@ -125,7 +125,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       shape the forward rejects is rejected by the backward (unit-asserted).
 - [ ] `tests/test_ssm_training.py --device cuda` passes; its fallback report shows
       `SSM_CONV_BACK`/`SSM_SCAN_BACK` executing on CUDA.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
       `ci-cpu`.
 
 ## Testing & verification
@@ -133,16 +133,16 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD on the CUDA backend vs the
 S1-30/S1-31 CPU oracles under the ADR-0002 tolerances (S0-09), plus the fork-side
 determinism check. Runs on the fork branch CI and, after the submodule bump, in
-llama-farm's `ci-cuda` GPU lane per-PR (kernel-gated targeted op list) and the nightly
+learning-llamas's `ci-cuda` GPU lane per-PR (kernel-gated targeted op list) and the nightly
 full sweep (S3-01). The tiny-Mamba e2e joins the nightly `ci-cuda` e2e job; S3-10 later
 folds the SSM ops into the fallback-forbidden set.
 
 ## PR notes
 
 - Branch: `ticket/S3-09-cuda-ssm-backward-ports`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base`
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base`
   branch with the ticket ID in the title (may be split fork-side into conv-back and
-  scan-back commits for review), plus a trivial llama-farm submodule-bump PR
+  scan-back commits for review), plus a trivial learning-llamas submodule-bump PR
   referencing the same ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — the `SSM_*_BACK` op
   enums ride the op-family RFC with S1-29/30/31 once the CPU oracle and one GPU backend

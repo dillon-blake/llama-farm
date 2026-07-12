@@ -63,7 +63,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    (`vendor/llama.cpp/ggml/src/ggml.c:6361`).
 2. **Guard rails inside the case:** `GGML_ASSERT` with a clear message that the forward
    node has `emit_lse` set (backward is impossible without the stored LSE; training
-   graph builders must request it — the naive path remains the llama-farm default until
+   graph builders must request it — the naive path remains the learning-llamas default until
    a later milestone flips FA on). Assert mask/sinks were not requested as grad
    targets, pattern of the SOFT_MAX mask assert
    (`vendor/llama.cpp/ggml/src/ggml.c:6772`).
@@ -85,7 +85,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    as not-supported** (the grad harness checks supports_op per graph tensor,
    `vendor/llama.cpp/tests/test-backend-ops.cpp:1723`) — never abort. S1-23
    flips them to executing; note this in the test comments with the ticket ID.
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02, so `ci-cpu`
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02, so `ci-cpu`
    builds and runs the vendored tests.
 
 ## Out of scope
@@ -94,7 +94,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
   execution of the back op stays unsupported until then).
 - GPU FA backward and forward-LSE ports (FA4-FA7) — stage 2-4 tickets.
 - The kernel-free chunked-attention fallback — S1-24.
-- Enabling FA in llama-farm training graphs by default, and preflight reporting —
+- Enabling FA in learning-llamas training graphs by default, and preflight reporting —
   owned by the later FA-integration milestone; naive attention remains the default.
 - Sink gradients — sinks are frozen in LoRA training (ROADMAP §8 FA5 scope note).
 
@@ -111,7 +111,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       messages (grep-verifiable in the fork diff).
 - [ ] The `ignore_src` case for `GGML_OP_FLASH_ATTN_EXT` covers src[3] and src[4]
       (grep-verifiable).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR lane), which runs the
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR lane), which runs the
       vendored test-backend-ops grad mode and the new build test.
 
 ## Testing & verification
@@ -119,15 +119,15 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 Fork-side: the new `tests/test-fa-backward-build.cpp` graph-construction test plus
 `test-backend-ops` MODE_GRAD (cases added here, skipping until S1-23; full
 finite-difference parity vs the CPU oracle within ADR-0002 tolerances is S1-23's
-acceptance, running per-PR in `ci-cpu` from then on). llama-farm side: after the
+acceptance, running per-PR in `ci-cpu` from then on). learning-llamas side: after the
 submodule bump, `ci-cpu / test` (S0-07) runs both per-PR; nightly `ci-cpu` re-runs the
 full suite.
 
 ## PR notes
 
 - Branch: `ticket/S1-22-flash-attn-ext-autograd-wiring`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` with the ticket ID in the
-  title, then a trivial llama-farm submodule-bump PR referencing the same ID.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` with the ticket ID in the
+  title, then a trivial learning-llamas submodule-bump PR referencing the same ID.
 - Upstreaming disposition: **upstream-later** — this wiring is part of the FA-training
   op family (FA1 ABI + FA2 + FA3), fork-local first and proposed upstream as one RFC
   once the CPU oracle plus one GPU backend prove the design (ROADMAP §11 triage b;

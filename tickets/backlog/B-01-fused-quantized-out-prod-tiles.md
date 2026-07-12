@@ -75,6 +75,6 @@ coopmat/MoltenVK tiers. Benchmarks in `benches/` on the stage VMs.
 ## PR notes
 
 - Branch: `ticket/B-01-fused-quantized-out-prod-tiles`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-later** — pure perf kernels; propose upstream once
   benchmarks prove wins across ≥2 GPU generations (ROADMAP §11 triage b).

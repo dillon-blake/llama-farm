@@ -80,7 +80,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    (forward parity vs CPU) and `grad` (MODE_GRAD) on lavapipe per-PR; native
    coopmat + scalar nightly per S4-01.
 6. **Append `OUT_PROD`** to ci-vulkan's targeted default op list (S4-01 soft coordination).
-7. **Submodule bump PR** in llama-farm per S0-02.
+7. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -105,14 +105,14 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       accumulation (grep-verifiable in the fork diff).
 - [ ] supports_op accepts only F32 src0/src1/dst for `GGML_OP_OUT_PROD` (probed via
       `test-backend-ops support -b Vulkan0`).
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` (targeted `-o
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` (targeted `-o
       OUT_PROD` visible in logs) and `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` — `test` and `grad` modes on the Vulkan
 backend vs the CPU oracle, per ADR-0002 (S0-09). Runs on the fork branch CI and, after the
-submodule bump, in llama-farm's `ci-vulkan / lavapipe` lane per-PR (targeted `-o OUT_PROD`)
+submodule bump, in learning-llamas's `ci-vulkan / lavapipe` lane per-PR (targeted `-o OUT_PROD`)
 and in the native-GPU nightly sweep (S4-01), which also covers the coopmat-vs-scalar driver
 split. End-to-end effect (LoRA A/B grads GPU-resident) is observed in the S4-01 nightly
 fallback report and finally enforced by S4-09.
@@ -120,8 +120,8 @@ fallback report and finally enforced by S4-09.
 ## PR notes
 
 - Branch: `ticket/S4-02-vulkan-out-prod-f32-shader`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
-  with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR referencing
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
+  with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR referencing
   the same ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — a pure addition
   behind supports_op; the `test_out_prod` cases already exist upstream, no new ABI).

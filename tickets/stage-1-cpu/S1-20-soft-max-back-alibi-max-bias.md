@@ -72,9 +72,9 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    gate — is owned by **S4-05** (ROADMAP §7 V5). Do not touch CUDA/Vulkan code here; until
    their tickets land, `ggml_backend_sched` falls back to CPU for ALiBi backward nodes, which
    is correct-but-slow by design (ROADMAP §11 scheduler note).
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02. The S1-11
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02. The S1-11
    trainability preflight picks up the widened op support automatically via its graph walk;
-   no llama-farm code change is required.
+   no learning-llamas code change is required.
 
 ## Out of scope
 
@@ -95,13 +95,13 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       (no longer skipped).
 - [ ] The fork diff touches no CUDA or Vulkan source (grep-verifiable), and contains the
       breadcrumb comments pointing at S3-04/S4-05.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` — MODE_GRAD for the gradient checks (CPU
 oracle, ADR-0002 tolerances from S0-09) and eval mode for `test_soft_max_back` forward parity.
-Runs on the fork branch CI, then in llama-farm's `ci-cpu` lane per-PR after the submodule
+Runs on the fork branch CI, then in learning-llamas's `ci-cpu` lane per-PR after the submodule
 bump; nightly `ci-cpu` re-runs the full suite. When stage-3/4 tickets lift their gates, these
 same cases become the cross-backend parity tests against this CPU baseline (max-abs gradient
 error ≤ 0.05 @ fp16 per ADR-0002).
@@ -109,7 +109,7 @@ error ≤ 0.05 @ fp16 per ADR-0002).
 ## PR notes
 
 - Branch: `ticket/S1-20-soft-max-back-alibi-max-bias`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a) — the enabled test
   plus assert/gate removal benefit mainline directly and carry no new ABI. Mention the Vulkan

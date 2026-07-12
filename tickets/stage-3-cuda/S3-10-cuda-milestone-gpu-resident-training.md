@@ -78,13 +78,13 @@ cadence hurts (ROADMAP §12 risk 11).
    for the gate config on CUDA vs CPU on the same host, the Metal figures from S2-10
    cross-referenced (different host — say so), peak memory at 512/2k/4k ctx (FA on,
    plus the FA8 comparison at 4k), full provenance (GPU model, driver, CUDA toolkit,
-   llama-farm + vendor commits), and the fallback report alongside. One snapshot, not a
+   learning-llamas + vendor commits), and the fallback report alongside. One snapshot, not a
    benchmark suite.
 7. **Upstream-early audit:** verify each of S1-18, S1-19, S1-20, S3-02, S3-04 has a
    mainline llama.cpp PR filed per ROADMAP §11 triage (a); file any missing ones
    (cherry-picks from the fork; acceptance is *filed*, not merged — upstream review
    timelines are not ours). Record a table of ticket → upstream PR link in the
-   llama-farm PR description and in `docs/dev/` next to the S0-02 fork notes.
+   learning-llamas PR description and in `docs/dev/` next to the S0-02 fork notes.
 8. **Update the platform table** in `docs/GGUF-LORA-TRAINING-BLUEPRINT.md` §8: the
    Linux CUDA row moves from "backward through quantized weights falls to CPU" to
    fully GPU-resident training including FA/MoE/SSM, with pointers to the remaining
@@ -136,7 +136,7 @@ figures.
 ## PR notes
 
 - Branch: `ticket/S3-10-cuda-milestone-gpu-resident-training`.
-- Single llama-farm PR (workflow flip + allowlist extension + docs + perf snapshot +
+- Single learning-llamas PR (workflow flip + allowlist extension + docs + perf snapshot +
   audit table); no vendored llama.cpp changes expected, so no two-repo flow. The
   upstream-early filings happen in the upstream llama.cpp repo and are linked, not
   vendored.

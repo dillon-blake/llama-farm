@@ -89,8 +89,8 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    `--device metal` with FA backward, compared against the same run on the S1-24 FA8
    chunked fallback: record peak memory and tok/s for both in the run report (extend
    `docs/perf/metal.md` from S2-10 with an FA section). FA remains off by default in
-   llama-farm training graphs — the flip is owned by the later integration ticket.
-7. **Submodule bump PR** in llama-farm per S0-02; the `ci-metal` nightly picks up the new
+   learning-llamas training graphs — the flip is owned by the later integration ticket.
+7. **Submodule bump PR** in learning-llamas per S0-02; the `ci-metal` nightly picks up the new
    grad cases and the FA e2e comparison job (dispatch-triggered; it is expensive).
 
 ## Out of scope
@@ -102,7 +102,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - Vec-path backward, mma/Metal4 `matmul2d` tensor API, atomic-dQ single-pass — K5 perf
   work (the Metal4 API is disabled pre-M5 hardware; target the legacy simdgroup path,
   ROADMAP §6).
-- Enabling FA in llama-farm training graphs by default — later integration ticket.
+- Enabling FA in learning-llamas training graphs by default — later integration ticket.
 
 ## Acceptance criteria
 
@@ -119,7 +119,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - [ ] The FA-vs-FA8 comparison report exists (peak memory + tok/s at ≥2k ctx on Apple
       Silicon) and shows the expected memory win; `docs/perf/metal.md` gains the FA
       section.
-- [ ] llama-farm submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`;
+- [ ] learning-llamas submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`;
       nightly full sweep green.
 
 ## Testing & verification
@@ -134,9 +134,9 @@ its report is the e2e artifact.
 ## PR notes
 
 - Branch: `ticket/S2-13-metal-flash-attention-training`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` staged as (1) forward
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` staged as (1) forward
   emit_lse, (2) backward passes + supports_op, (3) tests + comparison job; plus a trivial
-  llama-farm submodule-bump PR.
+  learning-llamas submodule-bump PR.
 - Upstreaming disposition: **fork-local first, upstream-later** — rides the FA-training
   op-family RFC (FA1 ABI + FA2 + FA3 + backends) once the CPU oracle plus one GPU backend
   prove the design (ROADMAP §11 triage b; the `emit_lse` ABI is the fork-carried piece).

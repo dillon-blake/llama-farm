@@ -11,7 +11,7 @@ pr: null
 
 # S1-05 — SFT trainer on sparse CE + masked validation eval
 
-**One-line outcome:** `llama_farm.train.sft` runs real SFT on `ce_sparse` with prompt
+**One-line outcome:** `learning_llamas.train.sft` runs real SFT on `ce_sparse` with prompt
 masking and host-side normalization by valid-token count, plus a masked validation loss
 on a held-out split computed forward-only.
 
@@ -52,14 +52,14 @@ convergence gate that consumes this trainer is S1-12, not this ticket.
    epilogue registry — `outputs = ggml_cross_entropy_loss_sparse(logits, labels_i32,
    weights_f32)` (S1-04 op), reduced via `GGML_OPT_LOSS_TYPE_SUM`. `labels` and `weights`
    are S1-02 extra named inputs filled per ubatch. Return `n_valid` (count of nonzero
-   weights in the step) in the `lf_train_step` result so Python can normalize.
-2. `src/llama_farm/train/loop.py`: the generic step loop used by SFT now and DPO/GRPO
-   later — iterates collated fixed-shape batches, calls `lf_train_step`, implements
+   weights in the step) in the `ll_train_step` result so Python can normalize.
+2. `src/learning_llamas/train/loop.py`: the generic step loop used by SFT now and DPO/GRPO
+   later — iterates collated fixed-shape batches, calls `ll_train_step`, implements
    gradient accumulation via `opt_period`, applies an LR schedule by mutating the
    Python-owned optimizer-params struct each step (warmup + cosine and constant to start),
    and fires logging callbacks (step, loss/valid-token, LR, tokens/s). Checkpoint hooks
    are stubs wired later by S1-09.
-3. `src/llama_farm/train/sft.py`: `train_sft(model, adapter, dataset, config)` — consumes
+3. `src/learning_llamas/train/sft.py`: `train_sft(model, adapter, dataset, config)` — consumes
    the S1-06 data layer (tokenized samples with loss masks), pads to fixed ubatch shapes
    with weight-0 pad tokens, selects the `sft_ce_sparse` epilogue, and reports loss
    normalized by valid tokens host-side.
@@ -68,7 +68,7 @@ convergence gate that consumes this trainer is S1-12, not this ticket.
    losses match within tolerance on the same tiny batch with a nontrivial mask.
 5. Masked validation: `evaluate(model, adapter, val_split)` runs the same graph
    forward-only (backward toggle off through the shim's train-step entry; expose an
-   `lf_train_step` eval mode if S1-02 did not already) and returns masked loss per valid
+   `ll_train_step` eval mode if S1-02 did not already) and returns masked loss per valid
    token on the held-out split. No optimizer state may change during eval (assert loss
    unchanged when eval runs between two identical train steps).
 6. Unit tests `tests/test_sft.py` on the S0-06 fixture models: loss decreases over N
@@ -109,7 +109,7 @@ convergence gate that consumes this trainer is S1-12, not this ticket.
 ## PR notes
 
 - Branch: `ticket/S1-05-sft-trainer-sparse-ce`.
-- Single llama-farm PR (Python + the small `csrc/` epilogue registration); no vendored
+- Single learning-llamas PR (Python + the small `csrc/` epilogue registration); no vendored
   llama.cpp changes, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (product training code).
 - Soft coordination: S1-07's packing collator plugs into the same `loop.py` batch

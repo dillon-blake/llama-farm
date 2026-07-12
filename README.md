@@ -1,4 +1,4 @@
-# llama-farm
+# learning-llamas
 
 Train LoRA adapters (SFT / DPO / GRPO) on **frozen, quantized GGUF models**,
 locally, on llama.cpp's ggml backend — CPU, Metal, CUDA, and Vulkan — with the

@@ -49,18 +49,18 @@ base vs adapter vs merged outputs (BLUEPRINT Appendix A).
 ## What to do
 
 1. Shim (`csrc/farm_adapter.cpp`, `csrc/farm_api.h`): the G2 enumeration/get C ABI —
-   `lf_adapter_n_tensors(adapter)`, `lf_adapter_tensor_info(adapter, i, ...)` (base
-   name, role a|b, shape, type) walking `ab_map`, and `lf_adapter_get(adapter, i, buf,
+   `ll_adapter_n_tensors(adapter)`, `ll_adapter_tensor_info(adapter, i, ...)` (base
+   name, role a|b, shape, type) walking `ab_map`, and `ll_adapter_get(adapter, i, buf,
    nbytes)` reading tensor data via `ggml_backend_tensor_get` (adapter tensors may live
    on non-CPU bufts). Read-only in this ticket; no set/update API.
-2. `src/llama_farm/_ffi/`: bind the new symbols (extend the S0-04 symbol table + tests).
-3. `src/llama_farm/adapter.py`: `save_adapter(adapter_handle, out_path, alpha, meta...)`
+2. `src/learning_llamas/_ffi/`: bind the new symbols (extend the S0-04 symbol table + tests).
+3. `src/learning_llamas/adapter.py`: `save_adapter(adapter_handle, out_path, alpha, meta...)`
    — pull A/B via the new ABI into numpy and write the adapter GGUF with the S0-05
    writer (same four KVs as `vendor/llama.cpp/convert_lora_to_gguf.py:422-428`, same
    shape conventions incl. the flipped `token_embd` case). Validate `alpha > 0` at the
    API boundary. Round-trip test: save from a live training context, reload with stock
-   `llama_adapter_lora_init`, assert tensor-exact equality against `lf_adapter_get`.
-4. Merged export `src/llama_farm/export.py` + `src/llama_farm/quant.py`: reimplement the
+   `llama_adapter_lora_init`, assert tensor-exact equality against `ll_adapter_get`.
+4. Merged export `src/learning_llamas/export.py` + `src/learning_llamas/quant.py`: reimplement the
    export-lora merge flow over gguf-py (read base + adapter, dequantize base tensor to
    F32 via `gguf.quants.dequantize`, compute `merged = base + scale · (BA)` in numpy —
    the numpy transcription of the graph at `export-lora.cpp:353-366` — with per-file
@@ -78,7 +78,7 @@ base vs adapter vs merged outputs (BLUEPRINT Appendix A).
    prompt set within a documented tolerance (quantization noise is real; compare
    token-level with a small allowed divergence tail, as the upstream script does via
    prefix comparison).
-6. CLI entry points: `python -m llama_farm.export merge ...` and `... save-adapter ...`
+6. CLI entry points: `python -m learning_llamas.export merge ...` and `... save-adapter ...`
    documented in `docs/dev/`.
 
 ## Out of scope
@@ -103,8 +103,8 @@ base vs adapter vs merged outputs (BLUEPRINT Appendix A).
       by reading the output GGUF's tensor types.
 - [ ] The fidelity test (mirroring `test-lora-conversion-inference.sh`) passes on the
       fixture models with the documented tolerance.
-- [ ] The `_ffi` symbol-table test resolves `lf_adapter_n_tensors` /
-      `lf_adapter_tensor_info` / `lf_adapter_get`.
+- [ ] The `_ffi` symbol-table test resolves `ll_adapter_n_tensors` /
+      `ll_adapter_tensor_info` / `ll_adapter_get`.
 - [ ] `ci-cpu / test` green per-PR with the new tests.
 
 ## Testing & verification
@@ -120,7 +120,7 @@ base vs adapter vs merged outputs (BLUEPRINT Appendix A).
 ## PR notes
 
 - Branch: `ticket/S1-08-adapter-save-merged-export`.
-- Single llama-farm PR (shim + Python); no vendored llama.cpp changes, so no two-repo
+- Single learning-llamas PR (shim + Python); no vendored llama.cpp changes, so no two-repo
   flow.
 - Upstreaming disposition: **fork-local** for the shim/Python; the re-quantizing merge
   is a plausible **upstream-later** contribution to `tools/export-lora` once proven —

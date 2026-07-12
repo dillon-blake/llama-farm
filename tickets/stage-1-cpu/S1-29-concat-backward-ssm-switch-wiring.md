@@ -84,13 +84,13 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    (harness convention documented at `:1984`) — add F32 grad-enabled cases covering all
    four dims and the non-contiguous-view variants (`v` = 1, 2, 3).
 6. **Graph-build test for mamba backward emission:** a small test (fork-side C++ test or
-   llama-farm pytest via the bindings) that builds a mamba-style subgraph
+   learning-llamas pytest via the bindings) that builds a mamba-style subgraph
    (concat → ssm_conv → ssm_scan with an F32 param upstream), calls
    `ggml_build_backward_expand`, and asserts the backward graph contains
    `SSM_CONV_BACK`/`SSM_SCAN_BACK` nodes. Build-only: execution is blocked until S1-30 and
    S1-31 land — mark the execution assertion skipped/xfail with a reference to those
    ticket IDs.
-7. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+7. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -113,21 +113,21 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       constructors exist; op name/symbol static asserts pass (build is green).
 - [ ] Grad requests on frozen/cache srcs (`s0`, `A`, conv weight) fail with an explicit
       assert message, not the generic backward abort (grep-verifiable in the fork diff).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR lane).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR lane).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD for `CONCAT` (CPU is the
 finite-difference oracle per S0-09/ADR-0002), plus the new mamba backward-build test, both
-running in llama-farm's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu`
+running in learning-llamas's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu`
 re-runs the full suite. `SSM_*_BACK` MODE_GRAD execution cases are owned by S1-30/S1-31,
 which flip this ticket's blocked assertions on.
 
 ## PR notes
 
 - Branch: `ticket/S1-29-concat-backward-ssm-switch-wiring`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
-  with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR referencing
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
+  with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR referencing
   the same ticket ID.
 - Upstreaming disposition: split — the `CONCAT` VJP is **upstream-early** (pure gap-fill,
   mainline training benefits, tests included); the `SSM_*_BACK` op enums and switch wiring

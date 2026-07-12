@@ -74,12 +74,12 @@ At activation, split into per-family child tickets; this umbrella defines the sh
 ## Testing & verification
 
 Vendored `tests/test-backend-ops` MODE_GRAD: `ci-cpu` per-PR (oracle); target backend lanes
-targeted per-PR and full nightly after ports. The tiny-model e2e joins llama-farm `tests/` on
+targeted per-PR and full nightly after ports. The tiny-model e2e joins learning-llamas `tests/` on
 `ci-cpu`.
 
 ## PR notes
 
 - Branch: `ticket/B-06-linear-attention-family-backward` (child tickets per family at activation).
-- Two-repo flow per S0-02: fork PR(s) + llama-farm submodule bumps.
+- Two-repo flow per S0-02: fork PR(s) + learning-llamas submodule bumps.
 - Upstreaming disposition: **upstream-later** — new op enums, in-fork first; one RFC per op family
   once the CPU oracle plus one GPU backend prove the design (ROADMAP §11 triage b).

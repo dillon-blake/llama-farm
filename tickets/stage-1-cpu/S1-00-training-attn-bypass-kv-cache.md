@@ -168,8 +168,8 @@ if a future vendor bump reintroduces a cache write into the training graph.
 ## PR notes
 
 - Branch: `ticket/S1-00-training-attn-bypass-kv-cache`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch, then a
-  trivial llama-farm PR bumping the `vendor/llama.cpp` gitlink.
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch, then a
+  trivial learning-llamas PR bumping the `vendor/llama.cpp` gitlink.
 - Upstreaming disposition: **upstream-early** — this is a straight bug fix to a broken upstream
   example, and carrying it fork-local indefinitely fights every rebase (ROADMAP §11 triage
   class a).

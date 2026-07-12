@@ -1,4 +1,4 @@
-# llama-farm — Blueprint for a Python LoRA-Training Library on the ggml Backend
+# learning-llamas — Blueprint for a Python LoRA-Training Library on the ggml Backend
 
 **Goal:** a Python library that trains LoRA adapters on top of **frozen, quantized GGUF models**, running locally on llama.cpp's ggml backend, supporting **SFT, DPO, and GRPO**, inheriting new model architectures from llama.cpp with near-zero per-model work, and adopting unsloth-style efficiency techniques where they transfer.
 
@@ -112,7 +112,7 @@ Four layers; native code is deliberately thin and mostly *copied* from llama.cpp
 │  ctypes first (in-repo precedent: test_quants.py); promote the     │
 │  shim edge to nanobind when zero-copy views / GIL-release matter   │
 ├────────────────────────────────────────────────────────────────────┤
-│ Layer 1 — C shim ("libllamafarm")  ← the key new native code       │
+│ Layer 1 — C shim ("liblearningllamas")  ← the key new native code       │
 │  compiled against vendored llama.cpp src/ internals; flat C ABI:   │
 │   • adapter: create_zero / from_file / tensors / set-get / save    │
 │   • opt_init_lora (ggml_set_param on A/B only)                     │
@@ -145,17 +145,17 @@ Four layers; native code is deliberately thin and mostly *copied* from llama.cpp
 ## 4. Proposed repo structure
 
 ```
-llama-farm/
+learning-llamas/
 ├── vendor/llama.cpp/                # git submodule, pinned; small patch queue in patches/
 ├── csrc/                            # Layer 1 shim
 │   ├── farm_adapter.cpp             #   create_zero/from_file/save/enumerate/set-get (copies
 │   │                                #   llama_adapter_lora_init_impl minus the file I/O)
-│   ├── farm_train.cpp               #   forked opt_epoch_iter → lf_train_step(); opt_init_lora;
+│   ├── farm_train.cpp               #   forked opt_epoch_iter → ll_train_step(); opt_init_lora;
 │   │                                #   loss-graph epilogues (sft_ce / dpo / grpo)
 │   ├── farm_preflight.cpp           #   graph walk vs supported-backward op set; backend probes
 │   ├── farm_api.h                   #   flat C ABI (everything Python sees)
 │   └── ggml_ext/ce_sparse.{c,cu}    #   new op: fused sparse-label cross-entropy (fwd+bwd)
-├── src/llama_farm/                  # Layer 3
+├── src/learning_llamas/                  # Layer 3
 │   ├── _ffi/                        #   Layer 2: ctypes mirrors of structs/functions (generated
 │   │                                #   where possible; version-locked to the submodule commit)
 │   ├── adapter.py                   #   LoraAdapter: create/save/load/merge; gguf-py backed
@@ -250,7 +250,7 @@ Unsloth's code is Triton/PyTorch — **ideas transfer, code does not**. Notably,
 
 Not copying: Q-GaLore (full-FT oriented), MoE grouped-GEMM kernels (AGPLv3).
 
-**Licensing & provenance.** Unsloth is Apache-2.0 at the top level, but AGPLv3 markers also appear on specific functions *outside* the MoE kernels — notably GRPO per-token-logp code in `models/rl_replacements.py` (line ~1191). The GRPO chunking/autotune items above must therefore be **clean-room reimplementations of the idea** (interfaces and math re-derived), never translations of that code. Copied llama.cpp code is MIT: retain copyright notices, add per-file provenance headers in `csrc/`, ship a NOTICE file. gguf-py (MIT, vendored/pinned) is a hard dependency. Pick MIT or Apache-2.0 for llama-farm itself so downstream llama.cpp upstreaming stays frictionless.
+**Licensing & provenance.** Unsloth is Apache-2.0 at the top level, but AGPLv3 markers also appear on specific functions *outside* the MoE kernels — notably GRPO per-token-logp code in `models/rl_replacements.py` (line ~1191). The GRPO chunking/autotune items above must therefore be **clean-room reimplementations of the idea** (interfaces and math re-derived), never translations of that code. Copied llama.cpp code is MIT: retain copyright notices, add per-file provenance headers in `csrc/`, ship a NOTICE file. gguf-py (MIT, vendored/pinned) is a hard dependency. Pick MIT or Apache-2.0 for learning-llamas itself so downstream llama.cpp upstreaming stays frictionless.
 
 ---
 

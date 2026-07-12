@@ -71,7 +71,7 @@ ported backends' lanes; full sweeps nightly). Preflight unit tests in `tests/`.
 ## PR notes
 
 - Branch: `ticket/B-08-gelu-norm-layernorm-vjps`.
-- Two-repo flow per S0-02: fork PR + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-early** — small VJPs following existing
   patterns benefit mainline training directly (ROADMAP §11 triage a).
 - Provenance per S0-01: header names `unsloth/kernels/layernorm.py` (Apache-2.0),

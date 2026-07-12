@@ -67,7 +67,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    broadcast-added over an `[n_embd, n_tokens]` activation, grads to the vector) and a
    broadcast-`MUL` case — add cases only if the existing generated matrix lacks them (audit
    first, as S1-20 did for soft_max).
-6. **Submodule bump PR** in llama-farm per S0-02; confirm the S2-01 nightly fallback report
+6. **Submodule bump PR** in learning-llamas per S0-02; confirm the S2-01 nightly fallback report
    drops `REPEAT_BACK` for the tiny dense model.
 
 ## Out of scope
@@ -90,7 +90,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] supports_op advertises exactly what the kernel handles (F32; stride patterns tested).
 - [ ] S2-01 nightly e2e fallback report for the tiny dense model no longer contains
       `REPEAT_BACK`.
-- [ ] llama-farm submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
 
 ## Testing & verification
 
@@ -103,7 +103,7 @@ evidence. This op is on the S2-10 zero-fallback critical list for the dense path
 ## PR notes
 
 - Branch: `ticket/S2-08-metal-repeat-back-kernel`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — pure addition
   behind supports_op; the op and its tests already exist upstream, only the Metal kernel is

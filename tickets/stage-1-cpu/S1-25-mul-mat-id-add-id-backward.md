@@ -88,7 +88,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    (`:4248`, instantiations `:8693-8732`) for both `as`-as-param and `b`-as-param and for
    `b` broadcast on/off; these cases build backward graphs now but execute only once
    S1-26/S1-27 land (skipped via supports_op until then — mark with a comment).
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -111,21 +111,21 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       than aborting, on every backend.
 - [ ] The two new op enums sit at the tail of `enum ggml_op` (rebase-friendly per
       ROADMAP §11c) and all existing test-backend-ops eval cases still pass on CPU.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD (finite differences, CPU
 oracle, ADR-0002 tolerance from S0-09) for ADD_ID, plus the new fork-side
 graph-construction test for the MUL_MAT_ID wiring. Runs on the fork branch CI and in
-llama-farm's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu` re-runs the
+learning-llamas's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu` re-runs the
 full suite. The deferred `test_mul_mat_id` MODE_GRAD execution is verified in S1-26/S1-27,
 which flip CPU `supports_op` on.
 
 ## PR notes
 
 - Branch: `ticket/S1-25-mul-mat-id-add-id-backward`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas
   submodule-bump PR, both referencing the ticket ID.
 - Upstreaming disposition: **fork-local** for now — the new op enums ride the fork's
   enum tail; propose upstream later as one RFC together with the E2/E3 kernels once the

@@ -119,12 +119,12 @@ This ticket *is* a test deliverable. The convergence gate runs in nightly `ci-cp
 the wrapper under the ADR-0002 tolerances (per-op bound on CPU now; the ≤ 0.05 @ fp16
 cross-backend criterion applies when GPU lanes compare against the CPU oracle). Local:
 run the recorder once in a torch venv, then the gate twice to confirm determinism of the
-llama-farm side.
+learning-llamas side.
 
 ## PR notes
 
 - Branch: `ticket/S1-12-convergence-gate-peft-reference`.
-- Single llama-farm PR (tests + tools + committed reference JSON + workflow tweak); no
+- Single learning-llamas PR (tests + tools + committed reference JSON + workflow tweak); no
   vendored llama.cpp changes, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (project test infrastructure).
 - Soft coordination: S2-01/S3-01/S4-01 consume `--device` and the report artifact as

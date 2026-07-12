@@ -95,7 +95,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    identical runs produce bitwise-identical dB/dAs.
 8. **e2e:** run S1-28's tiny-MoE training test with `--device cuda`; the S3-01 fallback
    report must show the MoE backward ops on the GPU.
-9. **Submodule bump PR** in llama-farm per S0-02, appending both ops to the ci-cuda
+9. **Submodule bump PR** in learning-llamas per S0-02, appending both ops to the ci-cuda
    targeted-op defaults.
 
 ## Out of scope
@@ -123,7 +123,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       the recorded decision are in the fork PR description.
 - [ ] Tiny-MoE e2e passes with `--device cuda`; its fallback report shows
       `OUT_PROD_ID`/`OUT_PROD_ID_GRP` executing on CUDA.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
       `ci-cpu`.
 
 ## Testing & verification
@@ -131,15 +131,15 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD on the CUDA backend vs the
 S1-26/S1-27 CPU oracles under the ADR-0002 tolerances (S0-09), plus the fork-side
 determinism check. Runs on the fork branch CI and, after the submodule bump, in
-llama-farm's `ci-cuda` GPU lane per-PR (kernel-gated targeted op list) and the nightly
+learning-llamas's `ci-cuda` GPU lane per-PR (kernel-gated targeted op list) and the nightly
 full sweep (S3-01). The tiny-MoE e2e joins the nightly `ci-cuda` e2e job; the S3-10
 milestone later folds these ops into the fallback-forbidden set.
 
 ## PR notes
 
 - Branch: `ticket/S3-08-cuda-moe-out-prod-ports`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base`
-  branch with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base`
+  branch with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR
   referencing the same ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — new op enums ride the
   E2/E3 op-family RFC once the CPU oracle plus one GPU backend prove the design

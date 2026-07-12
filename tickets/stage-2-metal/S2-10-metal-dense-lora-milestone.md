@@ -94,7 +94,7 @@ milestone claim has numbers attached, not just a green check.
 - [ ] `ci-metal / e2e` is fallback-forbidden: one deliberately induced dense fallback (or a
       synthetic report fixture) turns the job red — exercised once and linked in the PR.
 - [ ] `docs/perf/metal.md` exists with Metal-vs-CPU tok/s on the same host, peak memory, and
-      full provenance (hardware, OS, llama-farm + vendor commits).
+      full provenance (hardware, OS, learning-llamas + vendor commits).
 - [ ] The BLUEPRINT §8 platform table row for macOS Metal is updated in `docs/`.
 - [ ] Follow-up issues exist for all tolerance outliers found (or the PR states none were).
 
@@ -110,7 +110,7 @@ figures.
 ## PR notes
 
 - Branch: `ticket/S2-10-metal-dense-lora-milestone`.
-- Single llama-farm PR (workflow flip + allowlist + docs + perf snapshot); no vendored
+- Single learning-llamas PR (workflow flip + allowlist + docs + perf snapshot); no vendored
   llama.cpp changes expected, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (project CI, docs, milestone evidence).
 - Soft coordination: stage-3/4 milestone tickets copy this structure — keep the allowlist

@@ -39,7 +39,7 @@ Two coverage items ride on the frontmatter deps: softcap graphs (gemma2/3) put a
 (`vendor/llama.cpp/src/llama-graph.cpp:2470-2477`), so the chunked backward needs the
 TANH VJP (S1-19); ALiBi models put `max_bias > 0` on `soft_max_ext`, so the recompute's
 backward needs `SOFT_MAX_BACK` with `max_bias > 0` (S1-20). Both must be documented as
-covered once this lands. This is shim-track graph work in llama-farm — no vendored
+covered once this lands. This is shim-track graph work in learning-llamas — no vendored
 llama.cpp changes — and it must respect the fixed-topology constraint of ggml-opt's
 node-index-keyed optimizer state (BLUEPRINT D1): the chunk factor is fixed for the
 lifetime of a training run.
@@ -74,7 +74,7 @@ lifetime of a training run.
    gradient checkpointing (attention as a recompute segment) — soft coordination, not
    a dependency; the off-mode of each feature must compose with the other.
 4. **Configuration** in `csrc/farm_api.h` + `_ffi`:
-   `lf_set_chunked_attention(ctx, mode, chunk_q)` — `off` (default) | `on` | `auto`.
+   `ll_set_chunked_attention(ctx, mode, chunk_q)` — `off` (default) | `on` | `auto`.
    `auto` picks the chunk factor from n_ctx/n_head and a memory budget via a
    documented heuristic implementing the BLUEPRINT §10 risk-5 back-of-envelope.
    Reject mode/factor changes after the first opt-graph build (S1-02-style error;
@@ -115,11 +115,11 @@ lifetime of a training run.
       chunk factors at n_ctx 512-4096 on the fixture model, reproduced by CI output,
       and chunked peak at n_ctx 4096 is lower than naive by at least 2× for the
       measured config.
-- [ ] Chunking works through the unchanged S1-02 `lf_train_step` ABI; existing S1-02
+- [ ] Chunking works through the unchanged S1-02 `ll_train_step` ABI; existing S1-02
       tests stay green with chunking on.
 - [ ] Mode/factor change after first build raises the documented error (tested);
       `off` mode is byte-identical to today's path.
-- [ ] `_ffi` symbol-table test resolves `lf_set_chunked_attention`.
+- [ ] `_ffi` symbol-table test resolves `ll_set_chunked_attention`.
 - [ ] `ci-cpu / test` per-PR green; the n_ctx-sweep memory run lands in nightly
       `ci-cpu` if it exceeds the per-PR budget.
 
@@ -136,7 +136,7 @@ chunked-vs-naive equivalence above. GPU stages re-verify parity under the ADR-00
 ## PR notes
 
 - Branch: `ticket/S1-24-chunked-attention-backward-fallback`.
-- Single llama-farm PR (shim + `_ffi` + tests + docs table); no fork PR — no vendored
+- Single learning-llamas PR (shim + `_ffi` + tests + docs table); no fork PR — no vendored
   changes. Requires a vendor commit containing S1-19/S1-20 (frontmatter deps).
 - Upstreaming disposition: **fork-local** — shim graph construction, not llama.cpp
   code; nothing to upstream.

@@ -73,7 +73,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 5. **Verify no supports_op changes are needed:** the composites emit only existing ops
    (MUL/SUB/SQR/SCALE/STEP), all present on every backend, so the new VJPs are
    backend-agnostic by construction.
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -95,13 +95,13 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       on every backend the CI matrix covers at this stage.
 - [ ] No new op enums and no backend kernel files in the diff (grep-verifiable): the VJPs are
       graph-level composites only.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` in MODE_GRAD (finite differences vs the
 analytic composite, CPU oracle, ADR-0002 tolerance from S0-09) plus eval mode for the
-`ggml_clamp` dup-tensor regression. Runs on the fork branch CI and in llama-farm's `ci-cpu`
+`ggml_clamp` dup-tensor regression. Runs on the fork branch CI and in learning-llamas's `ci-cpu`
 lane per-PR after the submodule bump; nightly `ci-cpu` re-runs the full suite. Because the
 composites emit only pre-existing ops, GPU backends inherit them with no per-backend work —
 the stage-2/3/4 lanes simply keep running the same MODE_GRAD cases.
@@ -109,7 +109,7 @@ the stage-2/3/4 lanes simply keep running the same MODE_GRAD cases.
 ## PR notes
 
 - Branch: `ticket/S1-19-small-vjps-tanh-sigmoid-clamp`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a) — each case is
   ~10 lines following existing patterns, `ggml_clamp`'s own TODO invites the dst fix, and the

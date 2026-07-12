@@ -14,7 +14,7 @@ pr: null
 **One-line outcome:** a preflight that builds the forward graph once at load, walks its
 nodes against the supported-backward op set, and produces an actionable report (trainable /
 blocked-by-op-X / warn: raw `mul_mat` bypasses LoRA) — plus the auto-generated mirror of
-`LLM_TENSOR_INFOS` into `src/llama_farm/arch.py`.
+`LLM_TENSOR_INFOS` into `src/learning_llamas/arch.py`.
 
 ## Why (context)
 
@@ -61,7 +61,7 @@ projections that bypass `build_lora_mm`: ~75 raw `ggml_mul_mat` call sites in ex
    (`vendor/llama.cpp/ggml/src/ggml.c:6430-6913`), including per-op caveats (unary
    sub-switch coverage; `SOFT_MAX_BACK`'s `max_bias == 0` restriction). Nodes off the grad
    path are never blockers.
-2. **`lf_preflight` entry point:** build the forward graph once at model+adapter load via
+2. **`ll_preflight` entry point:** build the forward graph once at model+adapter load via
    the S1-02 graph-build path (`llama_model::build_graph`,
    `vendor/llama.cpp/src/llama-model.h:673`) without executing a training step, run the
    walker, and return a structured report over the flat C ABI in `csrc/farm_api.h`:
@@ -77,7 +77,7 @@ projections that bypass `build_lora_mm`: ~75 raw `ggml_mul_mat` call sites in ex
    tensor.
 5. **Mirror generator `tools/gen_arch_mirror.py`:** parse `LLM_TENSOR_INFOS`
    (`vendor/llama.cpp/src/llama-arch.cpp:618-857`) from the vendored source text and
-   generate `src/llama_farm/arch.py` (tensor-name → consuming-op classification +
+   generate `src/learning_llamas/arch.py` (tensor-name → consuming-op classification +
    LoRA-targetability, per BLUEPRINT §1.4/D5), with a generated-file header naming the
    vendor commit. Also generate the walker's supported-backward op table (parse the `case
    GGML_OP_*` labels of `ggml_compute_backward`) so both mirrors share one freshness
@@ -85,7 +85,7 @@ projections that bypass `build_lora_mm`: ~75 raw `ggml_mul_mat` call sites in ex
 6. **CI freshness check:** a `ci-cpu` step re-runs the generator and fails on any diff
    against the committed mirrors — the S0-02 vendor-bump checklist gains "re-run
    `gen_arch_mirror.py`".
-7. **Python surface:** `FarmModel.preflight()` in `src/llama_farm/model.py` (BLUEPRINT §4)
+7. **Python surface:** `FarmModel.preflight()` in `src/learning_llamas/model.py` (BLUEPRINT §4)
    returning the report as structured data with a human-readable rendering; trainers call
    it before the first step and raise on `blocked`.
 8. **Two-tier support doc `docs/support-tiers.md`:** tier-1 verified-fast (the fixture- and
@@ -115,7 +115,7 @@ projections that bypass `build_lora_mm`: ~75 raw `ggml_mul_mat` call sites in ex
 - [ ] A bypass-warning test: an adapter containing an A/B pair whose target never appears
       in the built graph yields status `warn` naming that tensor, and preflight still
       returns trainable overall.
-- [ ] `src/llama_farm/arch.py` is generated (header names commit `4f37f51`), and the CI
+- [ ] `src/learning_llamas/arch.py` is generated (header names commit `4f37f51`), and the CI
       freshness step fails when a mirror is stale (verified once by mutating a copy in the
       PR's CI run or a unit test of the diff logic).
 - [ ] `docs/support-tiers.md` exists and defines tier 1 vs tier 2 per D5.
@@ -132,7 +132,7 @@ for the fixture model into the PR description.
 ## PR notes
 
 - Branch: `ticket/S1-11-trainability-preflight-arch-report`.
-- Single llama-farm PR (shim + generator + Python + docs); no vendored llama.cpp changes
+- Single learning-llamas PR (shim + generator + Python + docs); no vendored llama.cpp changes
   expected, so no two-repo flow. The walker reads vendored *source text* at generation
   time only.
 - Upstreaming disposition: **fork-local** (BLUEPRINT §10 notes introspection APIs might be

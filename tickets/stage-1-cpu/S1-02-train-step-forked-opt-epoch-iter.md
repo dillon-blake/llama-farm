@@ -1,6 +1,6 @@
 ---
 id: S1-02
-title: "Shim: lf_train_step — forked opt_epoch_iter with pluggable loss + extra inputs"
+title: "Shim: ll_train_step — forked opt_epoch_iter with pluggable loss + extra inputs"
 stage: 1
 track: shim
 size: L
@@ -9,7 +9,7 @@ status: open
 pr: null
 ---
 
-# S1-02 — Shim: lf_train_step — forked opt_epoch_iter with pluggable loss + extra inputs
+# S1-02 — Shim: ll_train_step — forked opt_epoch_iter with pluggable loss + extra inputs
 
 **One-line outcome:** the core training-step C ABI exists: a fork of
 `llama_context::opt_epoch_iter` that keeps the proven per-ubatch mechanics verbatim, exposes the
@@ -49,7 +49,7 @@ any C-level assert fires.
 ## What to do
 
 1. Copy the body of `opt_epoch_iter` (`vendor/llama.cpp/src/llama-context.cpp:3257-3364`) into
-   `csrc/farm_train.cpp` as the core of `lf_train_step`, with a per-file provenance header (source
+   `csrc/farm_train.cpp` as the core of `ll_train_step`, with a per-file provenance header (source
    path, commit `4f37f51`, MIT) per S0-01 policy. Keep the proven mechanics verbatim: memory clear,
    `llama_batch` construction, ubatch split, `model.build_graph`, `ggml_opt_prepare_alloc`
    (`vendor/llama.cpp/ggml/include/ggml-opt.h:177`), input fill, `ggml_opt_eval`.
@@ -63,12 +63,12 @@ any C-level assert fires.
    accessor), add a minimal fork-side accessor via the S0-02 two-repo flow — record what was needed
    in the PR description.
 3. Loss epilogue registry: a shim-internal table of
-   `lf_loss_build_fn(ggml_context * ctx, ggml_tensor * logits, const lf_named_inputs *, void * ud) → ggml_tensor * outputs`,
+   `ll_loss_build_fn(ggml_context * ctx, ggml_tensor * logits, const ll_named_inputs *, void * ud) → ggml_tensor * outputs`,
    selected per step by a `loss_spec` id/name in the C ABI. The epilogue builds nodes in the
    per-ubatch compute context on top of `res->get_logits()`, is forward-expanded into the graph,
    and its result replaces `res->get_logits()` as the `outputs` argument of
    `ggml_opt_prepare_alloc` (call site pattern: `vendor/llama.cpp/src/llama-context.cpp:3340`),
-   reduced under `GGML_OPT_LOSS_TYPE_SUM` (set up in S1-01's `lf_train_state`).
+   reduced under `GGML_OPT_LOSS_TYPE_SUM` (set up in S1-01's `ll_train_state`).
 4. Register the stopgap composite CE (`sft_ce_stopgap`) as the first entry, per BLUEPRINT §6.1:
    softmax → one-hot mul → sum_rows → log, in select-then-log order to avoid `0·(−inf)` NaNs; all
    constituent VJPs exist in `ggml_compute_backward` (MUL `vendor/llama.cpp/ggml/src/ggml.c:6501`,
@@ -82,12 +82,12 @@ any C-level assert fires.
    where the stock loop fills its labels. Named inputs are constants: never flagged as params.
 6. Fixed-topology enforcement: on the first step, record a shape signature (n_ubatch, per-ubatch
    token count, each named input's type + ne). Every later call validates against it and returns a
-   clear `LF_ERR_SHAPE_DRIFT`-style error naming the offending tensor — before ggml-opt's
+   clear `LL_ERR_SHAPE_DRIFT`-style error naming the offending tensor — before ggml-opt's
    node-index state (`vendor/llama.cpp/ggml/src/ggml-opt.cpp:458-486`) or the varying-batch assert
    (`vendor/llama.cpp/ggml/src/ggml-opt.cpp:851`) can misbind or abort. Also set S1-01's
    `params_frozen` flag on first build.
 7. Flat C ABI in `csrc/farm_api.h`:
-   `lf_train_step(ctx, const int32_t * tokens, size_t n_tokens, const lf_named_input * inputs, size_t n_inputs, const char * loss_spec, bool train, lf_step_result * out)`
+   `ll_train_step(ctx, const int32_t * tokens, size_t n_tokens, const ll_named_input * inputs, size_t n_inputs, const char * loss_spec, bool train, ll_step_result * out)`
    returning `{loss, n_valid}` — `loss` is the raw SUM-reduced scalar; `n_valid` counts nonzero
    entries of the mask/weights input host-side (0 if none registered). Host-side normalization by
    `n_valid` is the Python caller's job. `train=false` runs forward-only
@@ -105,7 +105,7 @@ any C-level assert fires.
 
 ## Acceptance criteria
 
-- [ ] `pytest tests/test_train_step.py` passes on CPU: one `lf_train_step` with `sft_ce_stopgap` on
+- [ ] `pytest tests/test_train_step.py` passes on CPU: one `ll_train_step` with `sft_ce_stopgap` on
       the Q8_0 fixture (rank-4 zero-init adapter) returns a finite `loss > 0` and
       `n_valid` equal to the nonzero-mask count.
 - [ ] Parameter-update proof: two consecutive steps on the same fixed batch return different loss
@@ -115,7 +115,7 @@ any C-level assert fires.
       numpy sum of the buffer Python supplied.
 - [ ] Shape-drift test: changing the token count or a named input's shape on step 2 returns the
       documented error code (no abort, no assert).
-- [ ] Calling `lf_opt_init_lora` after a step returns the `params_frozen` error (S1-01 contract).
+- [ ] Calling `ll_opt_init_lora` after a step returns the `params_frozen` error (S1-01 contract).
 - [ ] The copied loop carries the S0-01 provenance header; `ci-cpu` is green per-PR.
 
 ## Testing & verification
@@ -129,10 +129,10 @@ graph-size and loss log into the PR description for the fixture model.
 ## PR notes
 
 - Branch: `ticket/S1-02-train-step-forked-opt-epoch-iter`.
-- Expected to be a single llama-farm PR (shim + bindings + tests). If step 2's fallback accessor is
+- Expected to be a single learning-llamas PR (shim + bindings + tests). If step 2's fallback accessor is
   needed, that lands first as a fork PR + submodule bump per the S0-02 two-repo flow, and this PR
   depends on the bump.
-- Upstreaming disposition: **fork-local** (the forked loop is llama-farm's product surface;
+- Upstreaming disposition: **fork-local** (the forked loop is learning-llamas's product surface;
   BLUEPRINT §10 keeps possible upstreaming of a parameterized `opt_epoch` out of v1 scope).
 - Size L: keep the diff reviewable — mechanics copy + registry in one commit, named inputs and
   enforcement in follow-up commits within the same PR.

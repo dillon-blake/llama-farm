@@ -70,7 +70,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    that the FFN backward's `SILU_BACK` and `MUL` nodes are assigned to the Metal backend
    (other still-missing ops may legitimately fall back at this point). Attach the dump to the
    PR or CI artifact.
-8. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+8. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -92,7 +92,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] A sched assignment dump from a tiny dense-model training step with `--device metal`
       shows `SILU_BACK` and the adjacent `MUL` backward node executing on Metal (artifact
       attached).
-- [ ] llama-farm submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
+- [ ] learning-llamas submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
       one nightly (or `workflow_dispatch`) full-sweep run green.
 
 ## Testing & verification
@@ -106,7 +106,7 @@ and the nightly full Metal sweep + e2e (S2-01).
 ## PR notes
 
 - Branch: `ticket/S2-04-metal-silu-back-kernel`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — pure addition
   behind `supports_op` with existing upstream tests).

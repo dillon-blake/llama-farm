@@ -11,7 +11,7 @@ pr: null
 
 # S1-06 — Data layer: chat templating, tokenization, loss-mask round-trip
 
-**One-line outcome:** `src/llama_farm/data/` renders chats through the GGUF-embedded
+**One-line outcome:** `src/learning_llamas/data/` renders chats through the GGUF-embedded
 template with jinja2, tokenizes via the llama.cpp C API, and computes loss-mask boundaries
 at tokenization time — proven by a round-trip test that masks align with actual template
 tokens.
@@ -48,25 +48,25 @@ errors rather than silently emitting unknown-token garbage.
 
 ## What to do
 
-1. Extend `src/llama_farm/_ffi/llama.py` (S0-04 symbol table) with the tokenizer/template
+1. Extend `src/learning_llamas/_ffi/llama.py` (S0-04 symbol table) with the tokenizer/template
    surface: `llama_model_chat_template`, `llama_tokenize`, `llama_token_to_piece`,
    `llama_detokenize`, `llama_model_get_vocab`, `llama_vocab_n_tokens`, the special-token
    getters (`llama_vocab_bos/eos/eot/pad`, `llama.h:1084-1089`) and
    `llama_vocab_get_add_bos`/`add_eos` (`llama.h:1092-1093`).
-2. `src/llama_farm/data/template.py`: extract the embedded template (name arg `NULL` for
+2. `src/learning_llamas/data/template.py`: extract the embedded template (name arg `NULL` for
    the default; error clearly if the GGUF has none, suggesting an explicit
    `--chat-template` override which the API also accepts as a string); render with
    jinja2 in a sandboxed environment mirroring the common HF conventions (`messages`,
    `add_generation_prompt`, `bos_token`/`eos_token` context vars). Note in the docstring
    that llama.cpp renders with its own minja engine — jinja2 output equivalence for the
    supported model set is exactly what the round-trip test checks.
-3. `src/llama_farm/data/tokenize.py`: `tokenize(text, add_special, parse_special)`
+3. `src/learning_llamas/data/tokenize.py`: `tokenize(text, add_special, parse_special)`
    wrapping `llama_tokenize` with the two-call length-negotiation convention (negative
    return = required size) and `detokenize(tokens)`. Templated text is tokenized with
    `parse_special=True` (templates embed special-token text) and `add_special=False`
    (the template supplies BOS/EOS; assert against `llama_vocab_get_add_bos` and document
    the interaction).
-4. Loss-mask computation in `src/llama_farm/data/mask.py`: for a chat sample, render the
+4. Loss-mask computation in `src/learning_llamas/data/mask.py`: for a chat sample, render the
    incremental prefixes (per message, and within the final assistant message the
    pre-completion prefix), tokenize each, verify the token-prefix property, and emit
    `(tokens, weights)` with weight 0 on prompt/template tokens and weight 1 on completion
@@ -117,7 +117,7 @@ errors rather than silently emitting unknown-token garbage.
 ## PR notes
 
 - Branch: `ticket/S1-06-chat-template-tokenize-loss-mask`.
-- Single llama-farm PR; no vendored llama.cpp changes.
+- Single learning-llamas PR; no vendored llama.cpp changes.
 - Upstreaming disposition: **fork-local** (product code; the template/tokenizer APIs are
   already upstream's).
 - Soft coordination: S1-05 consumes `(tokens, weights)`; S1-07 consumes the same plus

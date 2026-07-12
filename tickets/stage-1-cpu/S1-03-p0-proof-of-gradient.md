@@ -24,7 +24,7 @@ nothing yet proves that gradients flowing through a **quantized** base — dequa
 on the backward path — are numerically right end-to-end. BLUEPRINT §10 (risk 2) flags exactly
 this: backward through quantized weights is engine-supported but lightly exercised, so validate
 early with a finite-difference test. Passing this ticket closes the Stage-0→1 gate: it is the
-first demonstration that llama-farm's core promise (train LoRA on a frozen quantized GGUF) holds.
+first demonstration that learning-llamas's core promise (train LoRA on a frozen quantized GGUF) holds.
 
 The loss is the bring-up stopgap from BLUEPRINT §6.1, registered in S1-02's epilogue registry:
 softmax → one-hot mul → sum_rows → log, with select-then-log ordering so masked/near-zero
@@ -44,19 +44,19 @@ proof, run with `use_mmap=true` throughout.
 ## What to do
 
 1. Minimal debug accessors in the shim (explicitly superseded by S1-08's real enumeration API;
-   mark them `lf_debug_*` and exclude them from API-stability promises):
-   `lf_debug_get_tensor` / `lf_debug_set_tensor` addressing adapter A/B by `ab_map` name, and
-   `lf_debug_grad_acc` wrapping `ggml_opt_grad_acc`
+   mark them `ll_debug_*` and exclude them from API-stability promises):
+   `ll_debug_get_tensor` / `ll_debug_set_tensor` addressing adapter A/B by `ab_map` name, and
+   `ll_debug_grad_acc` wrapping `ggml_opt_grad_acc`
    (`vendor/llama.cpp/ggml/include/ggml-opt.h:156`) for a named param tensor. Bind via `_ffi`.
-2. Python driver `tests/test_p0_gradient.py` (plus a reusable helper under `src/llama_farm/` only
+2. Python driver `tests/test_p0_gradient.py` (plus a reusable helper under `src/learning_llamas/` only
    if trivially shared): load the Q4_K fixture (S0-06) with `use_mmap=true`, create and attach a
-   rank-4 zero-init adapter (S0-05 writer), `lf_opt_init_lora`, then run N=32 `lf_train_step`
+   rank-4 zero-init adapter (S0-05 writer), `ll_opt_init_lora`, then run N=32 `ll_train_step`
    calls with `sft_ce_stopgap` on one fixed tiny batch (fixed seed, constant shapes per D1).
 3. Loss-decrease assertion (monotonic-ish, not per-step): `mean(loss[-4:]) < 0.8 * mean(loss[:4])`
    and at least 75% of consecutive 4-step-window means decrease. Record the curve in the test log.
 4. Finite-difference gradient check: after one training-mode forward/backward on the fixed batch,
-   compare `lf_debug_grad_acc` values against central finite differences for ≥16 sampled A and B
-   elements across ≥2 layers (perturb via `lf_debug_set_tensor`, re-evaluate loss forward-only,
+   compare `ll_debug_grad_acc` values against central finite differences for ≥16 sampled A and B
+   elements across ≥2 layers (perturb via `ll_debug_set_tensor`, re-evaluate loss forward-only,
    restore). Acceptance tolerance: relative error `|g_an − g_fd| / max(|g_an|, |g_fd|, 1e-8)`
    ≤ 5e-2 per element, documented in the test docstring (the quantized forward is deterministic,
    so FD is well-defined; this is a full-graph Python-level check, distinct from the per-op
@@ -115,9 +115,9 @@ interchange check runs as a subprocess against the vendor-built binary in the sa
 ## PR notes
 
 - Branch: `ticket/S1-03-p0-proof-of-gradient`.
-- One llama-farm PR: shim debug accessors + Python tests + docs. No vendored llama.cpp changes,
+- One learning-llamas PR: shim debug accessors + Python tests + docs. No vendored llama.cpp changes,
   so no two-repo flow.
 - Upstreaming disposition: **fork-local**.
 - Soft coordination: S1-05 will hide `sft_ce_stopgap` behind a debug flag rather than delete it —
-  keep the epilogue name stable; S1-08 replaces the `lf_debug_*` accessors with the real G2 API
+  keep the epilogue name stable; S1-08 replaces the `ll_debug_*` accessors with the real G2 API
   and should remove them in its PR.

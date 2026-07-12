@@ -48,7 +48,7 @@ segmented reduction, in the spirit of the mmid compaction reused by E2), atomicA
    variant pending MSL verification, opt-in only.
 3. **Vulkan audit:** confirm the existing scan handles batch dims; extend if not.
 4. **Unpick the FIXMEs:** decide param handling for `token_embd.weight`/`rope_freqs.weight`
-   (`llama-context.cpp:3207-3212`); extend llama-farm's S1-01 filter to offer embedding-LoRA A/B,
+   (`llama-context.cpp:3207-3212`); extend learning-llamas's S1-01 filter to offer embedding-LoRA A/B,
    honoring the flipped convention (`llama-adapter.cpp:356-368`).
 5. **Tests:** extend `test-backend-ops` GET_ROWS_BACK cases with batch dims and wide-vocab shapes
    (MODE_GRAD vs CPU oracle); add an e2e tiny-model run training token_embd + lm_head LoRA whose
@@ -74,12 +74,12 @@ segmented reduction, in the spirit of the mmid compaction reused by E2), atomicA
 
 Vendored `tests/test-backend-ops` MODE_GRAD vs the CPU oracle (ADR-0002): `ci-cuda` and `ci-metal`
 targeted per-PR, full nightly; `ci-vulkan` covers the batch-dim audit. The e2e embedding-training
-test lives in llama-farm `tests/` and runs in `ci-cpu` per-PR.
+test lives in learning-llamas `tests/` and runs in `ci-cpu` per-PR.
 
 ## PR notes
 
 - Branch: `ticket/B-05-get-rows-back-embedding-training`.
-- Two-repo flow per S0-02: fork PR + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-early** for the kernel generalizations (pure improvements to
   an existing upstream op with existing tests, ROADMAP §11 triage a); the llama-context FIXME
   unpick goes upstream with it (mainline carries the same FIXMEs).

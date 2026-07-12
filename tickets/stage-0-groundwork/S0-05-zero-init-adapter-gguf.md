@@ -16,7 +16,7 @@ base-model metadata alone — loadable by stock llama.cpp — plus read/enumerat
 
 ## Why (context)
 
-The LoRA adapter GGUF format is a complete, stable interchange contract, and llama-farm adopts
+The LoRA adapter GGUF format is a complete, stable interchange contract, and learning-llamas adopts
 it as both its adapter format and its checkpoint format (BLUEPRINT §1.3, D3): anything we write
 must load in stock llama.cpp/llama-server/ollama with zero conversion. gguf-py alone can create
 a zero-init adapter from the base model's metadata — no C code needed (BLUEPRINT §0 fact 5, §6.1
@@ -52,7 +52,7 @@ model.ne[1]==b.ne[1] && a.ne[1]==b.ne[0]` for normal targets, but `token_embd.we
    use a llama.cpp checkout at `4f37f519722aa3242eecb7649466b4a4a2d6d6da` and switch the path
    before this PR merges. Do not pin PyPI `gguf` — the mirrors must match the vendored commit
    atomically (BLUEPRINT §3).
-2. `src/llama_farm/adapter.py` — enumeration: `enumerate_targets(base_gguf_path, preset=DEFAULT,
+2. `src/learning_llamas/adapter.py` — enumeration: `enumerate_targets(base_gguf_path, preset=DEFAULT,
    include_output=False, include_token_embd=False)` reads the base GGUF via `GGUFReader` (mmap)
    and returns the LoRA target list: tensor name, shape `(n_in, n_out)` in GGUF `ne` terms, and
    dtype. Default preset per BLUEPRINT D5: suffix-match `attn_q`, `attn_k`, `attn_v`,
@@ -104,7 +104,7 @@ model.ne[1]==b.ne[1] && a.ne[1]==b.ne[0]` for normal targets, but `token_embd.we
 
 ## Acceptance criteria
 
-- [ ] `pytest tests/test_adapter.py` passes in a pure-Python environment (no compiled llama-farm
+- [ ] `pytest tests/test_adapter.py` passes in a pure-Python environment (no compiled learning-llamas
       extension) using vendored gguf-py.
 - [ ] A created adapter contains exactly the four KVs with `general.type="adapter"`,
       `adapter.type="lora"`, base-matching `general.architecture`, and `adapter.lora.alpha > 0`
@@ -131,7 +131,7 @@ model.ne[1]==b.ne[1] && a.ne[1]==b.ne[0]` for normal targets, but `token_embd.we
 ## PR notes
 
 - Branch: `ticket/S0-05-zero-init-adapter-gguf`.
-- Single llama-farm PR; no vendored llama.cpp changes.
+- Single learning-llamas PR; no vendored llama.cpp changes.
 - Upstreaming disposition: **fork-local** (Python product code; the file format is already
   upstream's).
 - Format-writing logic is informed by `convert_lora_to_gguf.py` (MIT): add a provenance note in

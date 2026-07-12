@@ -101,7 +101,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    `--device vulkan` (fixture must be a Mamba-2-class config so the scan stays
    GPU-resident); the fallback report must show the SSM backward ops on Vulkan.
    Lavapipe correctness; perf numbers only from the native lane.
-8. **Submodule bump PR** in llama-farm per S0-02, appending both ops to the ci-vulkan
+8. **Submodule bump PR** in learning-llamas per S0-02, appending both ops to the ci-vulkan
    targeted-op defaults.
 
 ## Out of scope
@@ -135,7 +135,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] `tests/test_ssm_training.py --device vulkan` passes on the lavapipe lane; the
       native-lane fallback report shows `SSM_CONV_BACK`/`SSM_SCAN_BACK` executing on
       Vulkan.
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR),
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR),
       `ci-vulkan / gpu` (label-gated), and `ci-cpu`.
 
 ## Testing & verification
@@ -150,9 +150,9 @@ e2e job; S4-09 later folds the SSM ops into the fallback-forbidden set.
 ## PR notes
 
 - Branch: `ticket/S4-07-vulkan-ssm-backward-ports`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
   with the ticket ID in the title (may be split fork-side into conv-back and scan-back
-  commits for review), plus a trivial llama-farm submodule-bump PR referencing the same
+  commits for review), plus a trivial learning-llamas submodule-bump PR referencing the same
   ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — the `SSM_*_BACK` op
   enums ride the op-family RFC with S1-29/30/31 once the CPU oracle and one GPU backend

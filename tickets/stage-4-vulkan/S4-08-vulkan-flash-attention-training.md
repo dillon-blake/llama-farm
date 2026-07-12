@@ -114,7 +114,7 @@ DKQ=576, no sink gradients.
    2k and 4k ctx with FA on, recording peak allocation vs the naive path (naive OOM at
    4k is an acceptable recorded outcome). Lavapipe runs correctness-only small shapes —
    no perf claims from software Vulkan.
-8. **Submodule bump PR** in llama-farm per S0-02, adding the ops to the ci-vulkan
+8. **Submodule bump PR** in learning-llamas per S0-02, adding the ops to the ci-vulkan
    targeted list.
 
 ## Out of scope
@@ -145,7 +145,7 @@ DKQ=576, no sink gradients.
       wrong answer.
 - [ ] The e2e artifact exists on the native lane: peak-memory numbers for FA-on vs
       naive at 2k and 4k ctx, with FA-on completing at 4k.
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR) and
       `ci-vulkan / gpu` (label-gated), plus `ci-cpu`.
 
 ## Testing & verification
@@ -161,8 +161,8 @@ fallback-forbidden set only if landed.
 ## PR notes
 
 - Branch: `ticket/S4-08-vulkan-flash-attention-training`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title) plus
-  a trivial llama-farm submodule-bump PR referencing the same ID.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title) plus
+  a trivial learning-llamas submodule-bump PR referencing the same ID.
 - Size XL — stage commits within one fork PR: (1) forward LSE emission + split-k
   reduce; (2) backward passes 1+3 at D=64; (3) pass 2 + GQA + full
   mask/ALiBi/softcap/sinks semantics; (4) D=128/256 gate + supports_op + full test

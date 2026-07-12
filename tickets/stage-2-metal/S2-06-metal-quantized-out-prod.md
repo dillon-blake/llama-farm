@@ -80,7 +80,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    param — grads then flow through the quantized-src0 `OUT_PROD`, matching real LoRA training.
    Soft coordination: the stage-3 CUDA quantized-OUT_PROD ticket (ROADMAP §5 C1) needs the
    same cases; if they already exist on the fork branch, only enable them for Metal.
-8. **Submodule bump PR** in llama-farm per S0-02; confirm in the S2-01 nightly e2e run that
+8. **Submodule bump PR** in learning-llamas per S0-02; confirm in the S2-01 nightly e2e run that
    the sched fallback report no longer lists `OUT_PROD` for the tiny Q4_K dense model.
 
 ## Out of scope
@@ -104,7 +104,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       IQ types are deferred, the PR description lists them and a backlog note exists.
 - [ ] S2-01 nightly e2e fallback report for the tiny Q4_K dense model no longer contains
       `OUT_PROD` in the CPU-fallback op set.
-- [ ] llama-farm submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
 
 ## Testing & verification
 
@@ -118,8 +118,8 @@ report without `OUT_PROD`) comes from the S2-01 nightly convergence-gate run wit
 ## PR notes
 
 - Branch: `ticket/S2-06-metal-quantized-out-prod`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch with
-  the ticket ID in the title, plus a trivial llama-farm submodule-bump PR referencing it.
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch with
+  the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR referencing it.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — Metal backward
   kernels are pure additions behind supports_op; mainline training benefits directly).
 - Provenance per S0-01: the kernel carries a header naming its pattern source

@@ -72,7 +72,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    switch and the shared-memory fallback), softcap on/off, logit scale ≠ 1. Extend the
    exact-zero masked-row assertion to compare CUDA output bitwise. Append the op to
    `PROJECT_ADDED_OPS` device coverage if S1-12's wrapper needs a backend entry.
-6. **Submodule bump PR** in llama-farm per S0-02; ensure ci-cuda's targeted default op list
+6. **Submodule bump PR** in learning-llamas per S0-02; ensure ci-cuda's targeted default op list
    includes `CROSS_ENTROPY_LOSS_SPARSE`.
 
 ## Out of scope
@@ -98,13 +98,13 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       new code; grep-verifiable).
 - [ ] The kernels implement the ADR-0003 ABI choices verbatim (reviewer checks against the
       ADR; no CUDA-only semantic deviation).
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD + forward eval on the CUDA
 backend vs the S1-04 CPU oracle, under ADR-0002 tolerances. Runs on the fork branch CI,
-then per-PR in llama-farm's `ci-cuda` GPU lane (kernel-gated, targeted `-o`) and the nightly
+then per-PR in learning-llamas's `ci-cuda` GPU lane (kernel-gated, targeted `-o`) and the nightly
 full sweep (S3-01). The S1-12 grad-check pytest wrapper picks the op up via
 `PROJECT_ADDED_OPS` with `--device cuda` in the nightly e2e job. End-to-end, the loss head's
 residency shows up in ci-cuda's fallback report immediately and becomes a hard requirement
@@ -113,7 +113,7 @@ at S3-10.
 ## PR notes
 
 - Branch: `ticket/S3-03-cuda-sparse-ce-kernels`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both carrying the ticket ID.
 - Upstreaming disposition: **upstream-later** (ROADMAP §11 triage class b) — this CUDA port
   is the "one GPU backend" that, together with the S1-04 CPU oracle, makes the sparse-CE op

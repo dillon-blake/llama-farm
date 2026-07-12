@@ -92,7 +92,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    the worst quant type; if outside ADR-0002 bounds, apply the pre-scoped contingency (BF16
    A/B or chunked F32 SGEMM) and document the choice. Full convergence-relevant validation
    happens at S3-10's gate.
-10. **Submodule bump PR** in llama-farm per S0-02, appending `OUT_PROD` coverage to the
+10. **Submodule bump PR** in learning-llamas per S0-02, appending `OUT_PROD` coverage to the
     ci-cuda targeted default list.
 
 ## Out of scope
@@ -119,13 +119,13 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] The why-not-mmq / why-not-fused design comment exists in `out-prod.cu`.
 - [ ] `supports_op` rejects TQ1_0/TQ2_0 src0 (converter nullptr) — covered by a `support`
       mode check or unit assertion.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` — `test` and `grad` modes on the CUDA
 backend vs the CPU oracle, per ADR-0002 (S0-09). Runs on the fork branch CI and, after the
-submodule bump, in llama-farm's `ci-cuda` GPU lane per-PR (kernel-gated targeted `-o
+submodule bump, in learning-llamas's `ci-cuda` GPU lane per-PR (kernel-gated targeted `-o
 OUT_PROD`) and in the nightly full sweep (S3-01). The convergence-relevant precision
 question (ROADMAP §12 Q2) is finally settled by S3-10's convergence gate on `--device cuda`;
 this ticket records MODE_GRAD margins as the leading indicator.
@@ -133,8 +133,8 @@ this ticket records MODE_GRAD margins as the leading indicator.
 ## PR notes
 
 - Branch: `ticket/S3-02-cuda-quantized-out-prod-cublas`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
-  with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR referencing
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
+  with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR referencing
   the same ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a) — mainline
   training benefits directly and the quantized `test_out_prod` cases already exist upstream;

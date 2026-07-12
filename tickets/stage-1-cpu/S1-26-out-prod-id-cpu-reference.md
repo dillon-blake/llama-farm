@@ -84,7 +84,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    finite differences tractable.
 7. **Determinism test:** fork-side check that two runs at different `n_threads` produce
    bitwise-identical dB (pattern: the S1-23 determinism assertion).
-8. **Submodule bump PR** in llama-farm per S0-02.
+8. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -104,13 +104,13 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - [ ] Determinism test passes: bitwise-identical dB across different `n_threads`.
 - [ ] Broadcast (`ne_b1 == 1`) and non-broadcast cases both pass.
 - [ ] All pre-existing test-backend-ops eval cases still pass on CPU.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD (finite differences vs the
 kernel, CPU as oracle, ADR-0002 tolerance from S0-09), plus the fork-side determinism
-test. Runs on the fork branch CI and in llama-farm's `ci-cpu` lane per-PR after the
+test. Runs on the fork branch CI and in learning-llamas's `ci-cpu` lane per-PR after the
 submodule bump; nightly `ci-cpu` re-runs the full grad suite. Stage-2/3/4 port tickets
 re-run the identical case list on their backends against this CPU reference (max-abs
 gradient error ≤ 0.05 at fp16 per ADR-0002). End-to-end MoE convergence is owned by
@@ -119,7 +119,7 @@ S1-28.
 ## PR notes
 
 - Branch: `ticket/S1-26-out-prod-id-cpu-reference`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas
   submodule-bump PR, both referencing the ticket ID.
 - Upstreaming disposition: **fork-local** initially; upstreams later as part of the
   E2/E3 op-family RFC once the CPU oracle plus one GPU backend prove the design

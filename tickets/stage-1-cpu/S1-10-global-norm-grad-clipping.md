@@ -12,7 +12,7 @@ pr: null
 # S1-10 — Gradient clipping
 
 **One-line outcome:** global-norm gradient clipping is available in the training loop via a
-flat C ABI (`lf_set_grad_clip`), with pre/post-clip norms exposed for logging, despite
+flat C ABI (`ll_set_grad_clip`), with pre/post-clip norms exposed for logging, despite
 ggml-opt fusing the optimizer step into the backward graph.
 
 ## Why (context)
@@ -62,8 +62,8 @@ manifest decision rule applies: **pick after measuring; record the choice in the
    description. If (b) wins and needs a fork-side hook in ggml-opt's build, that lands via
    the S0-02 two-repo flow; if it is implementable purely in the shim's copied loop
    pieces, no vendor change is needed.
-3. **C ABI in `csrc/farm_api.h`:** `lf_set_grad_clip(ctx, double max_norm)` (0 disables,
-   the default); extend the S1-02 `lf_step_result` (or add a getter) with
+3. **C ABI in `csrc/farm_api.h`:** `ll_set_grad_clip(ctx, double max_norm)` (0 disables,
+   the default); extend the S1-02 `ll_step_result` (or add a getter) with
    `grad_norm_pre_clip` and `grad_norm_post_clip` for the most recent optimizer step, so
    Python logging can plot both. Norms are global L2 over all adapter A/B grads.
 4. **Implementation in `csrc/farm_train.cpp`** behind that ABI, honoring `opt_period`:
@@ -100,7 +100,7 @@ manifest decision rule applies: **pick after measuring; record the choice in the
       to a build of the same step without any clip code path engaged.
 - [ ] `opt_period > 1` test: exactly one clip per accumulation window, applied to the
       accumulated grad, matching a numpy reference computation.
-- [ ] `lf_step_result` (or getter) exposes pre- and post-clip norms; a test asserts both
+- [ ] `ll_step_result` (or getter) exposes pre- and post-clip norms; a test asserts both
       are populated and consistent (`post ≤ pre`, `post ≤ max_norm + tol`).
 - [ ] The PR description records the measured comparison of approaches (a) vs (b) and the
       final choice, per the manifest decision rule.
@@ -117,7 +117,7 @@ pre/post-clip norm log for the exploding-grad repro to the PR.
 ## PR notes
 
 - Branch: `ticket/S1-10-global-norm-grad-clipping`.
-- Expected to be a single llama-farm PR (shim + bindings + tests). Only if the in-graph
+- Expected to be a single learning-llamas PR (shim + bindings + tests). Only if the in-graph
   variant requires touching vendored ggml-opt does the S0-02 two-repo flow apply: fork PR
   first, then a submodule-bump PR here referencing this ticket ID.
 - Upstreaming disposition: **fork-local** initially; if the in-graph clip stage proves

@@ -69,7 +69,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 5. **Flip the S1-29 blocked assertion** for the conv portion of the mamba backward-build
    test (execution through `SSM_CONV_BACK` now runs; the scan portion stays blocked on
    S1-31 if it has not landed).
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -89,22 +89,22 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       fork-side unit test).
 - [ ] The S1-29 mamba backward-build test executes through the `SSM_CONV_BACK` node
       without abort (scan portion may remain marked blocked on S1-31).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR lane runs the new
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR lane runs the new
       MODE_GRAD cases).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD on CPU — finite differences
 vs the analytic kernel under the ADR-0002 tolerance (CPU is the oracle backend, S0-09).
-Runs per-PR in llama-farm's `ci-cpu` lane after the submodule bump; nightly `ci-cpu`
+Runs per-PR in learning-llamas's `ci-cpu` lane after the submodule bump; nightly `ci-cpu`
 re-runs the full suite. GPU parity against these cases is owned by the backend-port
 tickets in stages 2-4.
 
 ## PR notes
 
 - Branch: `ticket/S1-30-ssm-conv-back-cpu-kernel`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
-  with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR referencing
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
+  with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR referencing
   the same ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — rides the `SSM_*_BACK`
   op-family RFC with S1-29/S1-31 once the CPU oracle and one GPU backend prove the design

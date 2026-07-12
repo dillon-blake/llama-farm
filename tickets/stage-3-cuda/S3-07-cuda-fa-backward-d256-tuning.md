@@ -81,7 +81,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    wide-head config exercising D=256: tok/s and peak allocation. Publish as
    `docs/perf/fa-backward-snapshot.md` + a CI artifact; this is the number that
    justifies the XL spend and feeds S3-10's platform table.
-7. **Submodule bump PR** in llama-farm per S0-02.
+7. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -108,13 +108,13 @@ gate (S3-10), and any re-tuning of the *forward* tile tables (upstream owns thos
 - [ ] Config table entries exist for the sm_70 and sm_90 compile classes (measured
       where CI hardware allows, marked best-effort otherwise); `ci-cuda / compile` is
       green on both matrix entries.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile + GPU lanes) and
       `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD on CUDA vs the S1-23 CPU
-oracle per ADR-0002 — per-PR in llama-farm's `ci-cuda` GPU lane (kernel-gated, targeted
+oracle per ADR-0002 — per-PR in learning-llamas's `ci-cuda` GPU lane (kernel-gated, targeted
 `-o FLASH_ATTN_BACK`) and in the nightly full sweep (S3-01). The occupancy study and
 perf snapshot run on the ci-cuda GPU runner (locally on the CUDA VM per the S0-08
 playbook while iterating); their outputs are committed docs plus nightly artifacts, so
@@ -124,9 +124,9 @@ path unchanged.
 ## PR notes
 
 - Branch: `ticket/S3-07-cuda-fa-backward-d256-tuning`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title) plus
-  a trivial llama-farm submodule-bump PR referencing the same ID; the perf/occupancy
-  docs land on the llama-farm side.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title) plus
+  a trivial learning-llamas submodule-bump PR referencing the same ID; the perf/occupancy
+  docs land on the learning-llamas side.
 - Size L — stage commits: (1) occupancy study + doc, (2) nbatch splitting + config
   entries + supports_op, (3) test matrix + perf snapshot.
 - Upstreaming disposition: **upstream-later** — rides the FA-training op-family RFC

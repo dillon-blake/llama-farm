@@ -51,7 +51,7 @@ training (the loader ignores norm vectors — `vendor/llama.cpp/src/llama-adapte
 
 Split into sub-tickets at activation; scope per item:
 
-1. **rsLoRA:** propose the scale-mode KV + `get_scale` change upstream; llama-farm side is
+1. **rsLoRA:** propose the scale-mode KV + `get_scale` change upstream; learning-llamas side is
    adapter-creation metadata (S0-05 writer) plus a convergence A/B run. Small — do first.
 2. **DoRA:** upstream design (magnitude tensor in the adapter GGUF, `build_lora_mm` norm epilogue,
    loader acceptance); then training wiring (magnitude as an extra `ggml_set_param` target) and a
@@ -88,7 +88,7 @@ below into its own file. (The per-item criteria are recorded here so they transf
 
 ## Testing & verification
 
-Adapter variants: llama-farm `tests/` round-trip + convergence checks on `ci-cpu` per-PR, S1-12
+Adapter variants: learning-llamas `tests/` round-trip + convergence checks on `ci-cpu` per-PR, S1-12
 gate config for parity (nightly). MoltenVK benchmark on the macOS VM (`ci-metal` infrastructure,
 manual/nightly — lavapipe cannot stand in). Multi-GPU prototype on a self-hosted 2-GPU CUDA
 runner (manual/nightly; not a per-PR lane).
@@ -100,4 +100,4 @@ runner (manual/nightly; not a per-PR lane).
   the S0-02 two-repo flow.
 - Upstreaming disposition: **upstream-early** for the llama.cpp-side DoRA/rsLoRA changes
   (coordinate before building — the adapter format is the interchange contract, BLUEPRINT D3);
-  the Python-layer work is llama-farm-local.
+  the Python-layer work is learning-llamas-local.

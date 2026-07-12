@@ -51,7 +51,7 @@ test rather than trusting the construction.
 
 ## What to do
 
-1. `src/llama_farm/data/packing.py`: `PackingCollator(n_ubatch, max_samples_per_pack,
+1. `src/learning_llamas/data/packing.py`: `PackingCollator(n_ubatch, max_samples_per_pack,
    strategy)` consuming S1-06 sample records (`tokens`, `weights`, length) and yielding
    fixed-shape batches: token buffer `[n_ubatch]`, weight buffer `[n_ubatch]` F32,
    `seq_id` per slot, and per-sample position values restarting at 0 within each sample
@@ -116,7 +116,7 @@ test rather than trusting the construction.
 ## PR notes
 
 - Branch: `ticket/S1-07-packing-seq-ids-collators`.
-- Single llama-farm PR; no vendored llama.cpp changes.
+- Single learning-llamas PR; no vendored llama.cpp changes.
 - Upstreaming disposition: **fork-local** (product data layer).
 - Provenance: the boundary-mask rule is re-derived from its public one-sentence spec;
   per S0-01 policy add a comment in `packing.py` noting the LGPL exclusion of

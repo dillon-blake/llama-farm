@@ -66,10 +66,10 @@ in-graph per-node wall-clock attribution during a real train step.
    this ticket only flags; it changes no kernels.
 4. **Baseline vs the in-tree finetune example** (BLUEPRINT §9 P1 "benches vs
    `examples/training/finetune`"): run the vendored `examples/training/finetune` binary on a
-   comparable F32-base config and report its tok/s and peak memory next to llama-farm's
+   comparable F32-base config and report its tok/s and peak memory next to learning-llamas's
    quantized-base LoRA numbers, with the config deltas stated (full-FT F32 + F32 KV cache vs
    frozen-quantized + LoRA — the comparison contextualizes, it does not race like-for-like).
-5. **Memory worksheet:** `src/llama_farm/sizing.py` (or equivalent) implementing the
+5. **Memory worksheet:** `src/learning_llamas/sizing.py` (or equivalent) implementing the
    BLUEPRINT §10 risk-5 formula as a function of (model hparams, quant type, n_ctx,
    n_ubatch, rank), plus worked examples for 2-3 named configs; cross-check predictions
    against measured peak RSS from the benchmark runs and report the delta. Note in the
@@ -125,7 +125,7 @@ Silicon) run via the S0-08 playbooks; their reports land in `docs/perf/cpu.md`, 
 ## PR notes
 
 - Branch: `ticket/S1-32-cpu-throughput-audit-toks-sizing`.
-- Single-repo PR (llama-farm only): no vendored-code changes, so no fork PR or submodule
+- Single-repo PR (learning-llamas only): no vendored-code changes, so no fork PR or submodule
   bump — the eval-callback timer lives in the bindings layer.
 - Upstreaming disposition: **fork-local** (project docs and benches; nothing to upstream).
 - No copied external code. Cite measured machines' CPU models and flags in the report for

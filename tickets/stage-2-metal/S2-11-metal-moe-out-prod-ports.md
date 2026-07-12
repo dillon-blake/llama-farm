@@ -90,7 +90,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    CPU-fallback ops on the MoE path (e.g. the fork-local `GLU_BACK` from S1-28, which has
    no Metal kernel yet) are reported, not forbidden — record them in the report and a
    backlog note.
-8. **Submodule bump PR** in llama-farm per S0-02.
+8. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -114,7 +114,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - [ ] `ci-metal` nightly tiny-MoE e2e: loss falls with `--device metal`; the fallback
       report lists `OUT_PROD_ID`/`OUT_PROD_ID_GRP` on Metal and enumerates any remaining
       MoE-path CPU fallbacks.
-- [ ] llama-farm submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`.
+- [ ] learning-llamas submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`.
 
 ## Testing & verification
 
@@ -127,8 +127,8 @@ Determinism checks run as fork-side tests in the same lanes.
 ## PR notes
 
 - Branch: `ticket/S2-11-metal-moe-out-prod-ports`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title; may stage
-  GRP-first then ID commits for review), plus a trivial llama-farm submodule-bump PR.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title; may stage
+  GRP-first then ID commits for review), plus a trivial learning-llamas submodule-bump PR.
 - Upstreaming disposition: **fork-local first, upstream-later** — the new op enums ride the
   E2/E3 op-family RFC with S1-26/S1-27 once the CPU oracle plus one GPU backend prove the
   design (ROADMAP §11 triage b).

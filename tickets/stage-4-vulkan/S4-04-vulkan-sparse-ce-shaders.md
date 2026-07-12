@@ -83,7 +83,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    lavapipe per-PR (targeted `-o CROSS_ENTROPY_LOSS_SPARSE,CROSS_ENTROPY_LOSS_SPARSE_BACK`)
    and native coopmat + scalar nightly. Append both ops to ci-vulkan's targeted default
    list and to the S1-12 `PROJECT_ADDED_OPS` wrapper's Vulkan coverage.
-7. **Submodule bump PR** in llama-farm per S0-02.
+7. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -110,7 +110,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] A reviewer can map every ABI-relevant choice (lse stash/recompute, aliasing, op-param
       handling) to an ADR-0003 clause — stated explicitly in the fork PR description.
 - [ ] supports_op has no dense-CE case and carries the intentional-skip comment.
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` and `ci-cpu`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` and `ci-cpu`.
 
 ## Testing & verification
 
@@ -124,7 +124,7 @@ up in the S4-01 nightly fallback report and is enforced at S4-09.
 ## PR notes
 
 - Branch: `ticket/S4-04-vulkan-sparse-ce-shaders`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both referencing the ticket ID.
 - Upstreaming disposition: **upstream-later** (ROADMAP §11 triage class b) — the sparse-CE
   op enums are fork-local at tail position; this port rides the S1-04 RFC once the CPU

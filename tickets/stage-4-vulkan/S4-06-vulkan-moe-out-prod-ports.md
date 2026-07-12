@@ -94,7 +94,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 6. **e2e:** run S1-28's tiny-MoE training test with `--device vulkan` — correctness on
    lavapipe, perf numbers only from the native lane (S4-01 split); the fallback report
    must show both ops executing on Vulkan.
-7. **Submodule bump PR** in llama-farm per S0-02, appending both ops to the ci-vulkan
+7. **Submodule bump PR** in learning-llamas per S0-02, appending both ops to the ci-vulkan
    targeted-op defaults.
 
 ## Out of scope
@@ -124,7 +124,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       recorded in the fork PR with rationale.
 - [ ] Tiny-MoE e2e passes with `--device vulkan` on the lavapipe lane; the native-lane
       run's fallback report shows `OUT_PROD_ID`/`OUT_PROD_ID_GRP` executing on Vulkan.
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR) and
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` (per-PR) and
       `ci-vulkan / gpu` (label-gated), plus `ci-cpu`.
 
 ## Testing & verification
@@ -139,8 +139,8 @@ nightly ci-vulkan e2e job; S4-09 later folds both ops into the fallback-forbidde
 ## PR notes
 
 - Branch: `ticket/S4-06-vulkan-moe-out-prod-ports`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
-  with the ticket ID in the title, plus a trivial llama-farm submodule-bump PR
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
+  with the ticket ID in the title, plus a trivial learning-llamas submodule-bump PR
   referencing the same ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — the op enums ride the
   E2/E3 op-family RFC once the CPU oracle plus one GPU backend prove the design (ROADMAP

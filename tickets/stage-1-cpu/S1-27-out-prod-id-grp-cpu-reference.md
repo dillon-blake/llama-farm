@@ -85,7 +85,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    build-only to executing).
 6. **Determinism test:** bitwise-identical dAs across different `n_threads` (same
    fork-side harness as S1-26).
-7. **Submodule bump PR** in llama-farm per S0-02.
+7. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -106,21 +106,21 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       zero.
 - [ ] Determinism test passes: bitwise-identical dAs across different `n_threads`.
 - [ ] The F32-only assert fires (death test or checked abort) for non-F32 inputs.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD (finite differences, CPU
 oracle, ADR-0002 tolerance from S0-09) plus the fork-side determinism test; the nested
 LoRA-shaped case doubles as the executable version of S1-25's graph test. Runs on the
-fork branch CI and in llama-farm's `ci-cpu` lane per-PR after the submodule bump;
+fork branch CI and in learning-llamas's `ci-cpu` lane per-PR after the submodule bump;
 nightly `ci-cpu` re-runs the full suite. Backend ports (stage 2/3/4) re-run the same
 cases against this CPU reference under the ADR-0002 parity criterion.
 
 ## PR notes
 
 - Branch: `ticket/S1-27-out-prod-id-grp-cpu-reference`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas
   submodule-bump PR, both referencing the ticket ID.
 - Upstreaming disposition: **fork-local** initially; upstreams later in the E2/E3
   op-family RFC once the CPU oracle plus one GPU backend prove the design

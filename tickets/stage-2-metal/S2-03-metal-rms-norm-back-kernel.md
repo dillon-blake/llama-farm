@@ -78,7 +78,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    `ggml_set_param`, so MODE_GRAD builds backward graphs containing `RMS_NORM_BACK`; the
    per-node `supports_op` re-check now passes on Metal). Capture before/after
    (NOT_SUPPORTED → passing) output for the PR.
-7. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+7. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -100,7 +100,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] `test-backend-ops support -b <Metal device>` reports `RMS_NORM_BACK` supported (probe
       output attached to the PR).
 - [ ] The kernel contains no atomic operations (grep-verifiable) — deterministic per ADR-0002.
-- [ ] llama-farm submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
+- [ ] learning-llamas submodule-bump PR is green: `ci-metal / build` and `ci-metal / grad` per-PR;
       one nightly (or `workflow_dispatch`) full-sweep run green.
 
 ## Testing & verification
@@ -115,7 +115,7 @@ tiny-model e2e.
 ## PR notes
 
 - Branch: `ticket/S2-03-metal-rms-norm-back-kernel`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — pure addition
   behind `supports_op` with existing upstream tests).

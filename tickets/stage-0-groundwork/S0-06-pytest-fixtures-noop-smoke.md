@@ -108,7 +108,7 @@ Python tests build on.
 ## PR notes
 
 - Branch: `ticket/S0-06-pytest-fixtures-noop-smoke`.
-- One PR; pure llama-farm Python/tests — no vendored llama.cpp changes, so no two-repo
+- One PR; pure learning-llamas Python/tests — no vendored llama.cpp changes, so no two-repo
   flow. Upstreaming disposition: **fork-local**.
 - Soft coordination: S0-07 consumes the marker names and the `-m "not slow"` convention;
   keep them stable or update S0-07's workflow in the same PR window.

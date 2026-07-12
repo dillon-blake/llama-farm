@@ -86,7 +86,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    composition takes different `mul_mm` variants per driver, and all must satisfy ADR-0002.
    Include the S4-02 `trans_b = true` cases with quantized `type_a` (add if the sweep does
    not already generate them).
-6. **Submodule bump PR** in llama-farm per S0-02; ci-vulkan already targets `OUT_PROD`
+6. **Submodule bump PR** in learning-llamas per S0-02; ci-vulkan already targets `OUT_PROD`
    (S4-02).
 
 ## Out of scope
@@ -116,7 +116,7 @@ All ggml changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       as src1) and produces results identical to the materialized-transpose path.
 - [ ] supports_op accepts exactly F16 plus the `ggml_vk_get_to_fp16`-convertible src0
       types, and rejects BF16 (probed via `test-backend-ops support -b Vulkan0`).
-- [ ] llama-farm submodule-bump PR is green in `ci-vulkan / lavapipe` and `ci-cpu`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-vulkan / lavapipe` and `ci-cpu`.
 
 ## Testing & verification
 
@@ -130,7 +130,7 @@ fallback report and is enforced at S4-09's milestone gate.
 ## PR notes
 
 - Branch: `ticket/S4-03-vulkan-quantized-out-prod-composition`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both referencing the ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a — backend-side
   composition behind supports_op, no new op enums or ABI; upstream's quantized

@@ -94,7 +94,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    forcing single-block, `parallel_blocks > 1`, and stream-k paths.
 7. **No-behavior-change guard:** the full existing FLASH_ATTN_EXT suite must pass
    unmodified with the flag off — all new stores/allocs are gated on `emit_lse`.
-8. **Submodule bump PR** in llama-farm per S0-02, adding `FLASH_ATTN_EXT` to the
+8. **Submodule bump PR** in learning-llamas per S0-02, adding `FLASH_ATTN_EXT` to the
    ci-cuda kernel-gated targeted op list.
 
 ## Out of scope
@@ -122,14 +122,14 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       (no diffs to those cases in the PR).
 - [ ] The scratch-vs-LSE assert of step 4 is present, and an `emit_lse` case with
       non-F16 K/V (forcing the F16 conversion scratch) passes.
-- [ ] llama-farm submodule-bump PR is green in `ci-cuda` (compile lane + GPU quick
+- [ ] learning-llamas submodule-bump PR is green in `ci-cuda` (compile lane + GPU quick
       subset with `-o FLASH_ATTN_EXT`) and `ci-cpu`.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` in `test` (forward-parity) mode,
 CUDA vs the S1-21 CPU oracle, per ADR-0002. Runs on the fork branch CI and, after the
-submodule bump, in llama-farm's `ci-cuda` GPU lane per-PR (kernel-gated, targeted
+submodule bump, in learning-llamas's `ci-cuda` GPU lane per-PR (kernel-gated, targeted
 `-o FLASH_ATTN_EXT`) plus the nightly full sweep (S3-01). MODE_GRAD acceptance for the
 FA path lands with S3-06, which validates its backward against S1-23's CPU oracle using
 the LSE this ticket emits.
@@ -137,8 +137,8 @@ the LSE this ticket emits.
 ## PR notes
 
 - Branch: `ticket/S3-05-cuda-fa-forward-lse-emission`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title) plus a
-  trivial llama-farm submodule-bump PR referencing the same ID.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title) plus a
+  trivial learning-llamas submodule-bump PR referencing the same ID.
 - Upstreaming disposition: **upstream-later** (ROADMAP §11 triage class b) — this rides
   the FA-training op-family RFC with the S1-21 `emit_lse` ABI; propose upstream once
   S3-06 proves the design on CUDA.

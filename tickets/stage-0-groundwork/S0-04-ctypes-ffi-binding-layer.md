@@ -11,13 +11,13 @@ pr: null
 
 # S0-04 — ctypes binding layer (_ffi): load order, struct mirrors, version lock
 
-**One-line outcome:** `src/llama_farm/_ffi/` loads the native libraries in the documented order,
+**One-line outcome:** `src/learning_llamas/_ffi/` loads the native libraries in the documented order,
 mirrors the llama.h/ggml-opt.h structs and functions later tickets need, and refuses to run
 against a mismatched vendored commit.
 
 ## Why (context)
 
-Layer 2 of the architecture is ctypes-first (BLUEPRINT §3): every symbol llama-farm needs is
+Layer 2 of the architecture is ctypes-first (BLUEPRINT §3): every symbol learning-llamas needs is
 already exported (`LLAMA_API`/`GGML_API`), the entire ggml-opt driver lives in `libggml-base`
 (its sources are part of the `ggml-base` target,
 `vendor/llama.cpp/ggml/src/CMakeLists.txt:192-210`), and llama.cpp itself ships an in-repo
@@ -29,7 +29,7 @@ stage 0/1 needs it.
 
 Because ctypes mirrors struct layouts by hand, the binding is only correct against the exact
 vendored commit — struct drift produces silent memory corruption, not errors. Hence the
-**version lock**: S0-03's `lf_probe()` exports the commit hash baked into the native build, and
+**version lock**: S0-03's `ll_probe()` exports the commit hash baked into the native build, and
 `_ffi` hard-errors at import if it differs from the hash recorded when the Python package was
 generated. Pinned commit + gguf-py + struct mirrors form one atomic version (BLUEPRINT §3,
 "Packaging").
@@ -45,13 +45,13 @@ with a **Python-owned** `ggml_opt_optimizer_params` struct (mirror of `ggml-opt.
 
 ## What to do
 
-1. `src/llama_farm/_ffi/loader.py`: locate `llama_farm/lib/` in the installed package;
+1. `src/learning_llamas/_ffi/loader.py`: locate `learning_llamas/lib/` in the installed package;
    `ctypes.CDLL(..., mode=RTLD_GLOBAL)` in the S0-03 contract order `libggml-base → libggml →
-   libllama → libllamafarm` (platform-appropriate names; on macOS use the dylib naming). Cache
+   libllama → liblearningllamas` (platform-appropriate names; on macOS use the dylib naming). Cache
    handles as module singletons; expose `load()` returning a namespace of the four handles.
-2. `src/llama_farm/_ffi/farm.py`: mirror `farm_api.h` (`lf_version`, `lf_probe`), restype
+2. `src/learning_llamas/_ffi/farm.py`: mirror `farm_api.h` (`ll_version`, `ll_probe`), restype
    `c_char_p`.
-3. `src/llama_farm/_ffi/llama.py`: mirror the llama.h surface later tickets need — opaque
+3. `src/learning_llamas/_ffi/llama.py`: mirror the llama.h surface later tickets need — opaque
    pointers only where possible (model/context/adapter are opaque `c_void_p`-style handles):
    - lifecycle: `llama_backend_init`, `llama_model_default_params`, `llama_model_load_from_file`
      (`vendor/llama.cpp/include/llama.h:493`), `llama_model_free` (`llama.h:516`),
@@ -64,13 +64,13 @@ with a **Python-owned** `ggml_opt_optimizer_params` struct (mirror of `ggml-opt.
    - the stock training entry points, mirrored as reference/template even though D1 forks the
      loop: `llama_opt_param_filter` typedef (`llama.h:1564`), `llama_opt_init` (`llama.h:1581`),
      `llama_opt_epoch` (`llama.h:1583`), and the `llama_opt_params` struct.
-4. `src/llama_farm/_ffi/ggml_opt.py`: mirrors for `ggml_opt_optimizer_params`
+4. `src/learning_llamas/_ffi/ggml_opt.py`: mirrors for `ggml_opt_optimizer_params`
    (`ggml-opt.h:85-97`), `ggml_opt_params`, and the driver functions `ggml_opt_init`
    (`ggml-opt.h:138`), `ggml_opt_free` (`:139`), `ggml_opt_grad_acc` (`:156`),
    `ggml_opt_result_init`/`_free`/`_loss` (`:164-170`), `ggml_opt_prepare_alloc` (`:177`),
    `ggml_opt_alloc`/`ggml_opt_eval` (`:186-189`), plus `ggml_opt_get_default_optimizer_params`
    (`:105`) and `ggml_opt_get_constant_optimizer_params` (`:108`).
-5. `src/llama_farm/_ffi/ggml_backend.py`: `ggml_backend_tensor_set` / `ggml_backend_tensor_get`
+5. `src/learning_llamas/_ffi/ggml_backend.py`: `ggml_backend_tensor_set` / `ggml_backend_tensor_get`
    (`vendor/llama.cpp/ggml/include/ggml-backend.h:92-93`) — the D7 batch-upload path.
 6. Optimizer-params policy, enforced in code: provide `OptimizerParams` (the Python-owned struct
    wrapper) and a helper that wires `get_opt_pars = ggml_opt_get_constant_optimizer_params,
@@ -78,8 +78,8 @@ with a **Python-owned** `ggml_opt_optimizer_params` struct (mirror of `ggml-opt.
    `ggml_opt_optimizer_params`. Add a unit test that introspects `_ffi` and asserts no such
    CFUNCTYPE exists.
 7. Version lock: at build time (extend the S0-03 CMake/scikit-build step) generate
-   `src/llama_farm/_ffi/_version_lock.py` containing `VENDORED_COMMIT = "4f37f51..."`; on first
-   `load()`, compare `lf_probe()` against it and raise `RuntimeError` naming both hashes on
+   `src/learning_llamas/_ffi/_version_lock.py` containing `VENDORED_COMMIT = "4f37f51..."`; on first
+   `load()`, compare `ll_probe()` against it and raise `RuntimeError` naming both hashes on
    mismatch.
 8. Central symbol table: one declarative list of (library, symbol, argtypes, restype) driving
    registration, so a single test can iterate it and confirm every symbol resolves — this is the
@@ -126,7 +126,7 @@ with a **Python-owned** `ggml_opt_optimizer_params` struct (mirror of `ggml-opt.
 ## PR notes
 
 - Branch: `ticket/S0-04-ctypes-ffi-binding-layer`.
-- Single llama-farm PR; no vendored llama.cpp changes.
+- Single learning-llamas PR; no vendored llama.cpp changes.
 - Upstreaming disposition: **fork-local** (Python bindings are the product, not upstream
   material).
 - Struct mirrors adapted from llama.h/ggml-opt.h declarations: cite the header path + pinned

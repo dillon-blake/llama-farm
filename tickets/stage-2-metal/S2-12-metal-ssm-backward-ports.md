@@ -92,7 +92,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    nightly: loss falls; the S2-01 fallback report shows `SSM_CONV_BACK`/`SSM_SCAN_BACK`
    executing on Metal, with any remaining Mamba-path CPU fallbacks enumerated (reported,
    not forbidden — S2-10's dense set is unaffected).
-9. **Submodule bump PR** in llama-farm per S0-02.
+9. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -116,7 +116,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       case that would overflow without it passes).
 - [ ] `ci-metal` nightly tiny-Mamba e2e: loss falls with `--device metal`; fallback report
       lists both new ops on Metal.
-- [ ] llama-farm submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`.
+- [ ] learning-llamas submodule-bump PR green in `ci-metal / build` and `ci-metal / grad`.
 
 ## Testing & verification
 
@@ -129,8 +129,8 @@ per the S0-08 playbook, using the exact CI invocations.
 ## PR notes
 
 - Branch: `ticket/S2-12-metal-ssm-backward-ports`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (conv-first then scan commits
-  recommended for review), plus a trivial llama-farm submodule-bump PR.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (conv-first then scan commits
+  recommended for review), plus a trivial learning-llamas submodule-bump PR.
 - Upstreaming disposition: **fork-local first, upstream-later** — rides the `SSM_*_BACK`
   op-family RFC with S1-29/30/31 once the CPU oracle plus one GPU backend prove the design
   (ROADMAP §11 triage b).

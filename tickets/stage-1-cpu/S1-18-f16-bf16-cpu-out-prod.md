@@ -70,7 +70,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 5. **Docs:** update the BLUEPRINT §8 constraint table ("KV cache F32 — CPU F16 OUT_PROD
    aborts"): the CPU-side constraint is lifted by this ticket; note that GPU backends fall
    back to CPU for `OUT_PROD` until their own port tickets land (CUDA C2 is stage-3 work).
-6. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02, so `ci-cpu` runs
+6. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02, so `ci-cpu` runs
    the new cases.
 
 ## Out of scope
@@ -81,7 +81,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
   throughput audit flags it.
 - Quantized-src0 out_prod behavior — untouched; this ticket only adds types.
 - Removing the F32-KV-cache *code* in `examples/training/finetune.cpp` (upstream example, not
-  our training path; llama-farm's shim never depended on it).
+  our training path; learning-llamas's shim never depended on it).
 
 ## Acceptance criteria
 
@@ -93,15 +93,15 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       F16/BF16-src0 `OUT_PROD`, within the ADR-0002 per-op tolerance.
 - [ ] No abort remains reachable for F16/BF16 src0: the dispatch, `supports_op`, and
       work-size planner all agree (grep-verifiable in the fork diff).
-- [ ] BLUEPRINT §8 table row for "KV cache F32" is updated in the same llama-farm PR as the
+- [ ] BLUEPRINT §8 table row for "KV cache F32" is updated in the same learning-llamas PR as the
       submodule bump.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR lane runs the vendored
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR lane runs the vendored
       `test-backend-ops` grad + eval cases).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` in eval and MODE_GRAD modes on the fork
-branch, then in llama-farm's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu`
+branch, then in learning-llamas's `ci-cpu` lane per-PR after the submodule bump; nightly `ci-cpu`
 re-runs the full suite. CPU is the oracle backend, so MODE_GRAD here is finite differences vs
 the analytic backward under the ADR-0002 tolerance (S0-09). GPU parity against these cases is
 owned by the later backend-port tickets, not this one.
@@ -109,8 +109,8 @@ owned by the later backend-port tickets, not this one.
 ## PR notes
 
 - Branch: `ticket/S1-18-f16-bf16-cpu-out-prod`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch with
-  the ticket ID in the title, plus a trivial llama-farm PR bumping the `vendor/llama.cpp`
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch with
+  the ticket ID in the title, plus a trivial learning-llamas PR bumping the `vendor/llama.cpp`
   gitlink (and carrying the BLUEPRINT §8 edit), referencing the same ticket ID.
 - Upstreaming disposition: **upstream-early** (ROADMAP §11 triage class a) — mainline training
   benefits directly, the change is a pure gap-fill behind existing tests, and upstream's own

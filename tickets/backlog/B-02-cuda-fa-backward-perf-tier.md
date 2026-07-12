@@ -72,12 +72,12 @@ storage quantized. Sink gradients are dormant by construction — sinks are froz
 ## Testing & verification
 
 Vendored `tests/test-backend-ops` MODE_GRAD FA cases vs the S1-23 CPU oracle, on the fork branch
-and llama-farm `ci-cuda` (targeted per-PR, full nightly). Determinism checks and benches run on
+and learning-llamas `ci-cuda` (targeted per-PR, full nightly). Determinism checks and benches run on
 the CUDA VM; e2e reuses the S3-10 convergence-gate config with FA enabled.
 
 ## PR notes
 
 - Branch: `ticket/B-02-cuda-fa-backward-perf-tier` (split per sub-item if activated separately).
-- Two-repo flow per S0-02: fork PR + llama-farm submodule bump.
+- Two-repo flow per S0-02: fork PR + learning-llamas submodule bump.
 - Upstreaming disposition: **upstream-later** — builds on the fork-local `emit_lse` /
   `ggml_flash_attn_ext_back` ABI (S1-21); rides that RFC once stable (ROADMAP §11 triage b).

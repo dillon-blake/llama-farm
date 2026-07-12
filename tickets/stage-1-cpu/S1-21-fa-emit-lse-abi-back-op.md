@@ -98,7 +98,7 @@ policy that fixes LSE/row-stat precision at F32).
    F16 and F32 K/V; (d) a shape-only test that `ggml_flash_attn_ext_back` constructs a
    correctly-sized node. MODE_GRAD is **not applicable** to this ticket — no backward
    computation exists until S1-22/S1-23; grad acceptance lands there.
-8. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+8. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -123,13 +123,13 @@ policy that fixes LSE/row-stat precision at F32).
       in `ggml.h` next to the new API — the stage-2/3/4 contract text.
 - [ ] Legacy `ggml_flash_attn_back` constructor and declaration are gone; the legacy CPU
       kernel body remains, guarded, for S1-23 (grep-verifiable in the fork diff).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: new test cases in the vendored `tests/test-backend-ops` (forward-eval mode)
 plus small dedicated unit tests in the fork's test tree for the packed-view accessors; run on
-the fork branch CI and in llama-farm's `ci-cpu` lane per-PR after the submodule bump; nightly
+the fork branch CI and in learning-llamas's `ci-cpu` lane per-PR after the submodule bump; nightly
 `ci-cpu` re-runs the full suite. MODE_GRAD acceptance for FA is explicitly deferred to
 S1-22/S1-23 (this ticket ships no backward computation); when S1-23 lands, its MODE_GRAD cases
 run against the LSE this ticket emits, which is why the reference tests here compare against
@@ -138,7 +138,7 @@ an independent naive softmax implementation rather than the FA kernel itself.
 ## PR notes
 
 - Branch: `ticket/S1-21-fa-emit-lse-abi-back-op`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump PR,
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump PR,
   both referencing the ticket ID.
 - Upstreaming disposition: **upstream-later** (ROADMAP §11 triage class b) — the `emit_lse`
   ABI change and the repurposed back-op are fork-local first; propose upstream as one RFC for

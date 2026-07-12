@@ -35,7 +35,7 @@ form. The optional KL penalty uses the low-variance k3 estimator `exp(Δ) − Δ
 The step shape is the three-pass pattern of BLUEPRINT §6.3: (1) generate with the
 adapter on (S1-15), (2) no-grad chunked logp passes for old/ref (S1-13; ref with the
 adapter disabled per D6), (3) the grad pass with the loss above through S1-02's
-`lf_train_step`. Per-token weighting is a plain `mul` by an `advantage·mask` input
+`ll_train_step`. Per-token weighting is a plain `mul` by an `advantage·mask` input
 tensor (MUL VJP at `vendor/llama.cpp/ggml/src/ggml.c:6501`), and the per-sequence/batch
 reduction folds into the single `outputs` scalar under `GGML_OPT_LOSS_TYPE_SUM` (extra
 loss nodes rejected, `vendor/llama.cpp/ggml/src/ggml-opt.cpp:343`). Fixed ubatch shapes
@@ -63,13 +63,13 @@ its first real customer (sample-time logp capture vs chunked recompute).
    `min`) → negate → optional `+ kl_coef · (exp(Δ) − Δ − 1)` masked to completion tokens
    → `sum_rows`/sum into `outputs` under `GGML_OPT_LOSS_TYPE_SUM`. `ε` and `kl_coef` are
    epilogue parameters, fixed per run (topology-stable, D1).
-2. `src/llama_farm/train/grpo.py`: `train_grpo(model, adapter, prompts, reward_fn,
+2. `src/learning_llamas/train/grpo.py`: `train_grpo(model, adapter, prompts, reward_fn,
    config)` orchestrating the three-pass step: S1-15 rollouts → S1-13 chunked no-grad
    passes for `logp_old` cross-check and `logp_ref` (adapter disabled per D6/S1-14's
    helper; skipped when `kl_coef == 0`) → pad rollouts to the fixed batch layout →
-   `lf_train_step` with the `grpo` epilogue; host-normalize by valid tokens; log mean
+   `ll_train_step` with the `grpo` epilogue; host-normalize by valid tokens; log mean
    reward, ratio stats, clip fraction, KL estimate.
-3. Self-verification harness `src/llama_farm/verify.py`: `SelfVerified(fast_fn,
+3. Self-verification harness `src/learning_llamas/verify.py`: `SelfVerified(fast_fn,
    naive_fn, tolerance, name)` — on first invocation (and optionally every N-th) runs
    both, compares within tolerance; on mismatch logs the divergence and permanently
    routes to `naive_fn` for the rest of the process. Wire the first customer:
@@ -123,7 +123,7 @@ its first real customer (sample-time logp capture vs chunked recompute).
 ## PR notes
 
 - Branch: `ticket/S1-16-grpo-step-clip-relu-kl`.
-- Single llama-farm PR (Python + `csrc/` epilogue registration); no vendored llama.cpp
+- Single learning-llamas PR (Python + `csrc/` epilogue registration); no vendored llama.cpp
   changes, so no two-repo flow.
 - Upstreaming disposition: **fork-local** (product training code).
 - Provenance: `verify.py` and the epilogue carry a comment citing the unsloth

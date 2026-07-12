@@ -1,6 +1,6 @@
 ---
 id: S1-33
-title: "Windows/MSVC build of libllamafarm + ci-windows lane (CPU)"
+title: "Windows/MSVC build of liblearningllamas + ci-windows lane (CPU)"
 stage: 1
 track: infra
 size: M
@@ -9,7 +9,7 @@ status: open
 pr: null
 ---
 
-# S1-33 — Windows/MSVC build of libllamafarm + ci-windows lane (CPU)
+# S1-33 — Windows/MSVC build of liblearningllamas + ci-windows lane (CPU)
 
 **One-line outcome:** the shim, bindings, and Python package build and pass the CPU
 test suite under MSVC on Windows, enforced by a `ci-windows` GitHub Actions lane —
@@ -21,7 +21,7 @@ to break it.
 BLUEPRINT §8 lists Windows as "expected to work, untested" with the explicit
 instruction "the shim builds against private C++ internals — make MSVC a CI target
 from P1", and BLUEPRINT §9 names Windows/MSVC CI a P1 deliverable. The risk is
-specific: `libllamafarm` compiles against vendored `src/` internals
+specific: `liblearningllamas` compiles against vendored `src/` internals
 (`vendor/llama.cpp/src/llama-context.h`, `src/llama-graph.h`), not the stable C
 API, so MSVC-specific breakage (symbol visibility, `__declspec` export rules,
 MSVC's stricter C++ conformance in private headers, CRT linkage between the
@@ -35,11 +35,11 @@ matrix is defined by S2-01/S3-01/S4-01).
 
 ## What to do
 
-1. Fix whatever MSVC surfaces in `csrc/`: explicit `LF_API` export macro
+1. Fix whatever MSVC surfaces in `csrc/`: explicit `LL_API` export macro
    (`__declspec(dllexport)`/`visibility("default")`) on every `farm_api.h` symbol;
    no GNU-isms; correct import-lib generation for the shim DLL.
 2. CMake: Windows branch of the S0-03 build (MSVC generator, `/utf-8`, matching
-   CRT across libggml/libllama/libllamafarm); document any vendored-build flags
+   CRT across libggml/libllama/liblearningllamas); document any vendored-build flags
    Windows needs (e.g. `GGML_NATIVE=OFF` for reproducible CI).
 3. `_ffi` loader: Windows DLL search-path handling (`os.add_dll_directory` rather
    than PATH mutation), `.dll` naming, and the load-order contract from S0-04.

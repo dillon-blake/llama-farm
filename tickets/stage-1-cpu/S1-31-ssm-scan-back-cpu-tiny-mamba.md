@@ -88,12 +88,12 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 5. **Flip the S1-29 blocked assertions:** the mamba backward-build test now executes
    end-to-end.
 6. **Tiny-Mamba e2e:** extend the S1-12 convergence-gate fixtures with a tiny Mamba-arch
-   GGUF (2 layers, small `d_inner`/`d_state`); a pytest in llama-farm (e.g.
+   GGUF (2 layers, small `d_inner`/`d_state`); a pytest in learning-llamas (e.g.
    `tests/test_ssm_training.py`) runs a short CPU SFT loop and asserts the loss falls
    (loss-decrease gate; full PEFT-parity curves stay owned by S1-12). Verify the S1-11
    preflight now reports mamba-family archs trainable — its graph walk should flip
    automatically once the backward cases exist; update its expected-arch fixtures.
-7. **Submodule bump PR** in llama-farm referencing this ticket, per S0-02.
+7. **Submodule bump PR** in learning-llamas referencing this ticket, per S0-02.
 
 ## Out of scope
 
@@ -115,7 +115,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
 - [ ] The S1-29 mamba backward-build test executes end-to-end (no blocked markers remain).
 - [ ] `tests/test_ssm_training.py`: tiny-Mamba CPU SFT loss falls over the scripted run;
       the S1-11 preflight report lists the mamba-family test arch as trainable.
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu`; the tiny-Mamba e2e runs in the
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu`; the tiny-Mamba e2e runs in the
       nightly `ci-cpu` job (per-PR runs the MODE_GRAD cases only).
 
 ## Testing & verification
@@ -129,9 +129,9 @@ run as fork-side unit tests in the same lane.
 ## PR notes
 
 - Branch: `ticket/S1-31-ssm-scan-back-cpu-tiny-mamba`.
-- Two-repo flow per S0-02: implementation PR against the fork's `llama-farm-base` branch
+- Two-repo flow per S0-02: implementation PR against the fork's `learning-llamas-base` branch
   (may be split fork-side into store-all reference + chunked variant commits for review),
-  plus one llama-farm submodule-bump PR carrying the e2e pytest and fixtures, all
+  plus one learning-llamas submodule-bump PR carrying the e2e pytest and fixtures, all
   referencing this ticket ID.
 - Upstreaming disposition: **fork-local first, upstream-later** — one RFC for the
   `SSM_*_BACK` op family with S1-29/S1-30 once the CPU oracle (and ideally one GPU port)

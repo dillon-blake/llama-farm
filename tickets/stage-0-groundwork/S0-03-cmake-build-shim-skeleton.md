@@ -1,6 +1,6 @@
 ---
 id: S0-03
-title: "CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton libllamafarm"
+title: "CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton liblearningllamas"
 stage: 0
 track: infra
 size: M
@@ -9,10 +9,10 @@ status: open
 pr: null
 ---
 
-# S0-03 — CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton libllamafarm
+# S0-03 — CMake + scikit-build-core build: vendored llama.cpp (CPU) + shim skeleton liblearningllamas
 
 **One-line outcome:** `pip install -e .` builds vendored llama.cpp (CPU backend) plus an
-empty-but-real `csrc/` shim library `libllamafarm` that compiles against private `src/`
+empty-but-real `csrc/` shim library `liblearningllamas` that compiles against private `src/`
 internals and exports a probe symbol through a flat C ABI (`farm_api.h`).
 
 ## Why (context)
@@ -21,7 +21,7 @@ The shim is Layer 1 of the architecture and the key new native code (BLUEPRINT �
 avoided: the per-ubatch training loop's dependencies — `graph_params`, `llm_graph_result`,
 `balloc`, `memory` — are private C++ (the loop is declared in
 `vendor/llama.cpp/src/llama-context.h:207`, `opt_epoch_iter`), and the public `llama_opt_epoch`
-hardcodes the wrong loss with no masking. So llama-farm ships a thin C++ library compiled
+hardcodes the wrong loss with no masking. So learning-llamas ships a thin C++ library compiled
 **against vendored `src/` internals** (private headers such as `src/llama-context.h` and
 `src/llama-graph.h`), exposing everything Python needs through a flat C ABI in `csrc/farm_api.h`
 (BLUEPRINT §4). ggml-opt's own header sanctions copying its high-level pieces into user code
@@ -36,7 +36,7 @@ the native libraries. The vendored build produces three libraries whose targets 
 i.e. the training driver lives in **libggml-base**),
 `vendor/llama.cpp/ggml/src/CMakeLists.txt:242` (`ggml`), and
 `vendor/llama.cpp/src/CMakeLists.txt:11` (`llama`). The documented load order — `libggml-base →
-libggml → libllama → libllamafarm`, opened with `RTLD_GLOBAL` so future `GGML_BACKEND_DL`
+libggml → libllama → liblearningllamas`, opened with `RTLD_GLOBAL` so future `GGML_BACKEND_DL`
 dlopen'd backends resolve symbols (BLUEPRINT §3) — is fixed here and consumed by the S0-04
 loader.
 
@@ -51,27 +51,27 @@ Stage 0 builds CPU-only: the CPU backend is the correctness oracle for the whole
    `LLAMA_BUILD_EXAMPLES=OFF`, but keep `LLAMA_BUILD_TOOLS` available — S0-06 may want
    `llama-quantize`). Build shared libs (`BUILD_SHARED_LIBS=ON`) so the load-order contract is
    real.
-2. Create `csrc/farm_api.h`: flat C ABI skeleton — `extern "C"`, `LF_API` export macro, and two
-   functions: `const char * lf_version(void)` (llama-farm package version) and `const char *
-   lf_probe(void)` (returns the vendored llama.cpp commit hash the library was built from).
+2. Create `csrc/farm_api.h`: flat C ABI skeleton — `extern "C"`, `LL_API` export macro, and two
+   functions: `const char * ll_version(void)` (learning-llamas package version) and `const char *
+   ll_probe(void)` (returns the vendored llama.cpp commit hash the library was built from).
 3. Create `csrc/farm_probe.cpp` implementing both. Bake the commit hash at configure time:
    `execute_process(git -C vendor/llama.cpp rev-parse HEAD)` → `configure_file` → generated
    `farm_version.h`. Fail configuration if the submodule is uninitialized.
-4. Define the `llamafarm` shared-library target: link `llama` and `ggml`;
+4. Define the `learningllamas` shared-library target: link `llama` and `ggml`;
    `target_include_directories` including `vendor/llama.cpp/src` (private headers). To prove
    private-internal access now (S1-01/S1-02 depend on it), have one TU `#include
    "llama-context.h"` and `#include "llama-graph.h"` and reference a private type (e.g.
    `sizeof`-check a struct) behind no public symbol.
 5. Wire scikit-build-core in `pyproject.toml`: install `libggml-base`, `libggml`, `libllama`,
-   `libllamafarm` (platform-appropriate names/sonames) into `llama_farm/lib/` inside the wheel;
+   `liblearningllamas` (platform-appropriate names/sonames) into `learning_llamas/lib/` inside the wheel;
    set RPATH/`@loader_path` so the libraries resolve each other from that directory. Document
    the editable-build workflow (`pip install -e . --no-build-isolation` + rebuild command) in
    `csrc/README.md`.
 6. Document the load-order contract in `csrc/README.md`: `libggml-base → libggml → libllama →
-   libllamafarm`, each opened `RTLD_GLOBAL`; note this anticipates `GGML_BACKEND_DL` dlopen'd
+   liblearningllamas`, each opened `RTLD_GLOBAL`; note this anticipates `GGML_BACKEND_DL` dlopen'd
    backend packages later. S0-04 implements the loader against this text.
-7. Smoke test `tests/test_probe.py`: locate `llama_farm/lib/` from the installed package,
-   `ctypes.CDLL` the four libraries in order, call `lf_probe()`, assert it equals the submodule
+7. Smoke test `tests/test_probe.py`: locate `learning_llamas/lib/` from the installed package,
+   `ctypes.CDLL` the four libraries in order, call `ll_probe()`, assert it equals the submodule
    commit (`4f37f519722aa3242eecb7649466b4a4a2d6d6da`). Keep it dependency-light; S0-06
    formalizes the harness and markers.
 8. Add a `ccache`-friendly setup (compiler launcher variables honored, not required) so S0-07 CI
@@ -79,10 +79,10 @@ Stage 0 builds CPU-only: the CPU backend is the correctness oracle for the whole
 
 ## Out of scope
 
-- Any real shim functionality — adapter APIs, `lf_opt_init_lora`, `lf_train_step` are
+- Any real shim functionality — adapter APIs, `ll_opt_init_lora`, `ll_train_step` are
   S1-01/S1-02.
 - The Python `_ffi` loader/mirrors and version-lock enforcement (S0-04 — this ticket only
-  *exposes* `lf_probe`).
+  *exposes* `ll_probe`).
 - GPU backend builds and their flags (stages 2-4; flag documentation is S0-08).
 - Prebuilt-wheel distribution/cibuildwheel matrix (BLUEPRINT §3 "Distribution" — future infra
   ticket if needed; `tickets/backlog/` candidate).
@@ -92,12 +92,12 @@ Stage 0 builds CPU-only: the CPU backend is the correctness oracle for the whole
 ## Acceptance criteria
 
 - [ ] In a clean venv on Linux x86_64, `pip install -e .` compiles vendored llama.cpp (CPU) +
-      `libllamafarm` and succeeds end-to-end.
-- [ ] `python -m build --wheel` produces a wheel whose `llama_farm/lib/` contains the four
-      libraries (`ggml-base`, `ggml`, `llama`, `llamafarm` platform equivalents).
-- [ ] `pytest tests/test_probe.py` passes: `lf_probe()` returns
+      `liblearningllamas` and succeeds end-to-end.
+- [ ] `python -m build --wheel` produces a wheel whose `learning_llamas/lib/` contains the four
+      libraries (`ggml-base`, `ggml`, `llama`, `learningllamas` platform equivalents).
+- [ ] `pytest tests/test_probe.py` passes: `ll_probe()` returns
       `4f37f519722aa3242eecb7649466b4a4a2d6d6da`.
-- [ ] `lf_version()` returns the `llama_farm.__version__` string.
+- [ ] `ll_version()` returns the `learning_llamas.__version__` string.
 - [ ] The shim contains a TU that includes `llama-context.h` and `llama-graph.h` from
       `vendor/llama.cpp/src` and compiles (private-internals access proven).
 - [ ] Configure fails with an actionable message when `vendor/llama.cpp` is uninitialized.
@@ -115,10 +115,10 @@ Stage 0 builds CPU-only: the CPU backend is the correctness oracle for the whole
 ## PR notes
 
 - Branch: `ticket/S0-03-cmake-build-shim-skeleton`.
-- Single llama-farm PR. No vendored llama.cpp source changes — if a build flag turns out to
+- Single learning-llamas PR. No vendored llama.cpp source changes — if a build flag turns out to
   require a vendor patch, that patch goes through the S0-02 two-repo flow (fork PR + submodule
   bump), not inline here.
 - Upstreaming disposition: **fork-local** (build glue and shim skeleton are
-  llama-farm-specific).
+  learning-llamas-specific).
 - `csrc/` files copied/adapted from llama.cpp later must carry provenance headers per S0-01
   policy; the skeleton itself is original code.

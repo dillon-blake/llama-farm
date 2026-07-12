@@ -73,7 +73,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
    expected-value filtering where gradients are discontinuous
    (`vendor/llama.cpp/tests/test-backend-ops.cpp:319-321`). Extend S1-04's bitwise-zero
    masked-row unit assertion to read back Metal-produced buffers.
-7. **Submodule bump PR** in llama-farm per S0-02; the S2-01 lanes pick the cases up.
+7. **Submodule bump PR** in learning-llamas per S0-02; the S2-01 lanes pick the cases up.
 
 ## Out of scope
 
@@ -81,7 +81,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
   the op contract).
 - Dense `CROSS_ENTROPY_LOSS` Metal port — permanently skipped (ROADMAP §3).
 - CUDA and Vulkan sparse-CE ports — their stage-3/stage-4 tickets (ROADMAP §5 C3, §7 V3).
-- Trainer/loss-epilogue wiring in llama-farm — S1-05; chunked lm_head host pattern — S1-13.
+- Trainer/loss-epilogue wiring in learning-llamas — S1-05; chunked lm_head host pattern — S1-13.
 
 ## Acceptance criteria
 
@@ -95,7 +95,7 @@ All code changes land in the vendored llama.cpp fork via the S0-02 two-repo flow
       still returns false and the skip comment is present (grep-verifiable).
 - [ ] S2-01 nightly e2e fallback report for the tiny dense model no longer lists the sparse
       CE ops in the CPU-fallback set.
-- [ ] llama-farm submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
+- [ ] learning-llamas submodule-bump PR is green in `ci-metal / build` and `ci-metal / grad`.
 
 ## Testing & verification
 
@@ -108,7 +108,7 @@ head appearing GPU-resident here is a prerequisite for S2-10's zero-fallback mil
 ## PR notes
 
 - Branch: `ticket/S2-07-metal-sparse-ce-kernels`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + trivial llama-farm submodule-bump
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + trivial learning-llamas submodule-bump
   PR, both referencing the ticket ID.
 - Upstreaming disposition: **upstream-later** (ROADMAP §11 triage class b) — the sparse-CE op
   enums are fork-local; this Metal port joins the CPU oracle as evidence for the one-RFC-per-

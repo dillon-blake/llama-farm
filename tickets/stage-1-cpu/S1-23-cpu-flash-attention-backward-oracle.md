@@ -106,7 +106,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    documented tolerance derived from ADR-0002. Same binary also asserts
    **determinism**: two runs at different thread counts produce bitwise-identical
    grads.
-9. **Submodule bump PR** in llama-farm per S0-02 so `ci-cpu` runs everything.
+9. **Submodule bump PR** in learning-llamas per S0-02 so `ci-cpu` runs everything.
 
 ## Out of scope
 
@@ -116,7 +116,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
   sink gradients (sinks frozen in LoRA training).
 - SIMD tuning — scalar-first per ROADMAP §4 P3; revisit only if the S1-32 audit
   flags it.
-- Flipping FA on in llama-farm training graphs — the naive path remains default until
+- Flipping FA on in learning-llamas training graphs — the naive path remains default until
   backend milestones flip FA on (later integration ticket owns the switch and the
   preflight report entry).
 
@@ -133,14 +133,14 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
       on CPU (no FLASH_ATTN_EXT grad skip in the CPU run log).
 - [ ] No references to the legacy `ggml_compute_forward_flash_attn_back` remain in the
       fork (grep-verifiable).
-- [ ] llama-farm submodule-bump PR green in `ci-cpu` per-PR; nightly `ci-cpu` runs the
+- [ ] learning-llamas submodule-bump PR green in `ci-cpu` per-PR; nightly `ci-cpu` runs the
       full grad suite.
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD (finite differences vs
 analytic, CPU oracle) plus the dedicated naive-parity/determinism test — both on the
-fork branch CI and, after the submodule bump, in llama-farm's `ci-cpu` lane per-PR
+fork branch CI and, after the submodule bump, in learning-llamas's `ci-cpu` lane per-PR
 (S0-07); nightly `ci-cpu` re-runs the full suite. Stage-2/3/4 FA backward tickets
 verify against this kernel under the ADR-0002 cross-backend criterion (max-abs gradient
 error ≤ 0.05 at fp16), so this reference must be MODE_GRAD-clean first. End-to-end
@@ -149,8 +149,8 @@ FA-on convergence is deferred to the milestone that flips FA on (S1-12 gate ther
 ## PR notes
 
 - Branch: `ticket/S1-23-cpu-flash-attention-backward-oracle`.
-- Two-repo flow per S0-02: fork PR against `llama-farm-base` (ticket ID in title) +
-  trivial llama-farm submodule-bump PR referencing the same ID.
+- Two-repo flow per S0-02: fork PR against `learning-llamas-base` (ticket ID in title) +
+  trivial learning-llamas submodule-bump PR referencing the same ID.
 - Upstreaming disposition: **upstream-later** — part of the FA-training op-family RFC
   (FA1 ABI + FA2 + FA3) once the CPU oracle plus one GPU backend prove the design
   (ROADMAP §11 triage b).

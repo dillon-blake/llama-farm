@@ -12,20 +12,20 @@ pr: null
 # S0-01 — Repo scaffolding, license, packaging skeleton, provenance policy
 
 **One-line outcome:** an empty-but-buildable repo skeleton — pyproject (scikit-build-core),
-`src/llama_farm/` package stub, MIT LICENSE, NOTICE, a written provenance-header policy,
+`src/learning_llamas/` package stub, MIT LICENSE, NOTICE, a written provenance-header policy,
 lint/format/pre-commit config, and `.gitignore` — so every later ticket has a place to land and
 a license story to follow.
 
 ## Why (context)
 
-llama-farm is a four-layer system (BLUEPRINT §3): vendored llama.cpp (Layer 0, arrives in
-S0-02), a C shim `libllamafarm` in `csrc/` (Layer 1, arrives in S0-03), a ctypes binding `_ffi`
+learning-llamas is a four-layer system (BLUEPRINT §3): vendored llama.cpp (Layer 0, arrives in
+S0-02), a C shim `liblearningllamas` in `csrc/` (Layer 1, arrives in S0-03), a ctypes binding `_ffi`
 (Layer 2, S0-04), and the Python library (Layer 3). This ticket creates the repo tree from
 BLUEPRINT §4 so those tickets have stable paths to fill in, and pins the packaging approach:
 scikit-build-core + CMake over a vendored submodule, deliberately *not* depending on
 llama-cpp-python (BLUEPRINT §3, "Packaging").
 
-Licensing must be settled before the first line of copied code. llama-farm itself is **MIT** —
+Licensing must be settled before the first line of copied code. learning-llamas itself is **MIT** —
 chosen so code we later upstream into llama.cpp (itself MIT, `vendor/llama.cpp/LICENSE`) moves
 without friction (BLUEPRINT §7, "Licensing & provenance"; ROADMAP §11 plans substantial
 upstreaming). Two provenance regimes apply to our two reference codebases. Copied llama.cpp code
@@ -41,21 +41,21 @@ be copied from none of the AGPL/LGPL files, and Apache-side code only with per-f
 attribution.**
 
 Every path in this ticket was re-verified against the checkouts at
-`/home/dillon/Desktop/llama-farm/llama.cpp` (clean at `4f37f51`) and
-`/home/dillon/Desktop/llama-farm/unsloth` during ticket authoring.
+`/home/dillon/Desktop/learning-llamas/llama.cpp` (clean at `4f37f51`) and
+`/home/dillon/Desktop/learning-llamas/unsloth` during ticket authoring.
 
 ## What to do
 
 1. Create the directory skeleton per BLUEPRINT §4, each with a one-paragraph `README.md` (or
-   `.gitkeep`) stating which ticket fills it: `csrc/`, `src/llama_farm/`, `tests/`, `benches/`,
+   `.gitkeep`) stating which ticket fills it: `csrc/`, `src/learning_llamas/`, `tests/`, `benches/`,
    `patches/`, `docs/adr/`, `docs/dev/`. Do **not** create `vendor/` — S0-02 owns it.
-2. `src/llama_farm/__init__.py` with `__version__ = "0.0.1"` and a module docstring naming the
+2. `src/learning_llamas/__init__.py` with `__version__ = "0.0.1"` and a module docstring naming the
    project goal (one sentence).
 3. `pyproject.toml`: `build-backend = "scikit_build_core.build"`; project metadata (name
-   `llama-farm`, MIT, Python ≥3.10); a **minimal placeholder** `CMakeLists.txt` (project
+   `learning-llamas`, MIT, Python ≥3.10); a **minimal placeholder** `CMakeLists.txt` (project
    declaration only, no targets) so `pip install -e .` already produces an importable
-   `llama_farm` — S0-03 replaces it with the real vendored build. Configure the `wheel.packages`
-   entry for `src/llama_farm`.
+   `learning_llamas` — S0-03 replaces it with the real vendored build. Configure the `wheel.packages`
+   entry for `src/learning_llamas`.
 4. `LICENSE`: MIT, copyright the project owner, year 2026.
 5. `NOTICE`: names llama.cpp (MIT, `vendor/llama.cpp/LICENSE`, pinned commit `4f37f51`) as a
    source of copied/adapted code, and unsloth (Apache-2.0 top-level with AGPLv3/LGPL carve-outs;
@@ -82,13 +82,13 @@ Every path in this ticket was re-verified against the checkouts at
   creates the empty `patches/` dir).
 - Any real CMake build of native code (S0-03).
 - CI workflows (S0-07); developer build docs (S0-08); the numerics ADR (S0-09).
-- Any code under `csrc/` or `src/llama_farm/` beyond the package stub.
+- Any code under `csrc/` or `src/learning_llamas/` beyond the package stub.
 
 ## Acceptance criteria
 
-- [ ] In a clean venv, `pip install -e .` succeeds and `python -c "import llama_farm;
-      print(llama_farm.__version__)"` prints `0.0.1`.
-- [ ] `python -m build --wheel` produces a wheel containing `llama_farm/__init__.py`.
+- [ ] In a clean venv, `pip install -e .` succeeds and `python -c "import learning_llamas;
+      print(learning_llamas.__version__)"` prints `0.0.1`.
+- [ ] `python -m build --wheel` produces a wheel containing `learning_llamas/__init__.py`.
 - [ ] `LICENSE` (MIT) and `NOTICE` exist; `NOTICE` names both llama.cpp (MIT) and unsloth
       (ideas-only) with the pinned commit.
 - [ ] `docs/PROVENANCE.md` exists, contains the per-file header template, and lists every
@@ -97,7 +97,7 @@ Every path in this ticket was re-verified against the checkouts at
       files above).
 - [ ] `pre-commit run --all-files` exits 0 on the committed tree.
 - [ ] `CONTRIBUTING.md` exists and links `tickets/README.md`.
-- [ ] Directory skeleton `csrc/ src/llama_farm/ tests/ benches/ patches/ docs/adr/ docs/dev/`
+- [ ] Directory skeleton `csrc/ src/learning_llamas/ tests/ benches/ patches/ docs/adr/ docs/dev/`
       exists in git.
 
 ## Testing & verification

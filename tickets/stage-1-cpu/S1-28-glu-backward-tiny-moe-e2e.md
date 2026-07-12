@@ -88,7 +88,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    expected-value filtering for the SWIGLU_OAI/REGLU discontinuities (harness support
    per S1-19). `GEGLU_QUICK` remains uncovered — assert-listed as unsupported, not
    silently wrong.
-6. **Tiny-MoE e2e (llama-farm side, after the submodule bump):** add a 2-4 expert
+6. **Tiny-MoE e2e (learning-llamas side, after the submodule bump):** add a 2-4 expert
    tiny-MoE GGUF fixture (gguf-py, S0-05/S0-06 machinery) with a `build_moe_ffn`-style
    graph exercising SWIGLU_OAI or GEGLU experts; run SFT (S1-05 trainer) with LoRA on
    expert projections for a fixed step budget and assert train loss falls (e.g.
@@ -96,7 +96,7 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
    report now classifies the MoE fixture arch as trainable — no preflight code changes
    should be needed (graph-walk picks up the new backward coverage automatically); if
    its supported-op table is hardcoded anywhere, update it.
-7. **Submodule bump PR** in llama-farm per S0-02.
+7. **Submodule bump PR** in learning-llamas per S0-02.
 
 ## Out of scope
 
@@ -116,26 +116,26 @@ All code lands in the vendored llama.cpp fork via the S0-02 two-repo flow.
 - [ ] Existing split-SWIGLU grad cases still pass unchanged (no regression of the
       SILU_BACK path).
 - [ ] Determinism: bitwise-identical GLU_BACK output across different `n_threads`.
-- [ ] llama-farm: `tests/test_moe_e2e.py::test_tiny_moe_sft_loss_falls` passes in
+- [ ] learning-llamas: `tests/test_moe_e2e.py::test_tiny_moe_sft_loss_falls` passes in
       `ci-cpu` — final train loss below initial loss by the documented margin on the
       tiny-MoE fixture.
 - [ ] S1-11 preflight report marks the tiny-MoE fixture arch trainable (report artifact
       asserted in the same test module).
-- [ ] llama-farm submodule-bump PR is green in `ci-cpu` (per-PR).
+- [ ] learning-llamas submodule-bump PR is green in `ci-cpu` (per-PR).
 
 ## Testing & verification
 
 Primary harness: vendored `tests/test-backend-ops` MODE_GRAD (finite differences, CPU
 oracle, ADR-0002 tolerance from S0-09) for the per-variant kernel checks, on the fork
-branch CI and in llama-farm's `ci-cpu` lane per-PR after the submodule bump. The
-tiny-MoE e2e runs in llama-farm's `ci-cpu` per-PR (small fixture, bounded step budget);
+branch CI and in learning-llamas's `ci-cpu` lane per-PR after the submodule bump. The
+tiny-MoE e2e runs in learning-llamas's `ci-cpu` per-PR (small fixture, bounded step budget);
 nightly `ci-cpu` re-runs the full grad suite plus the e2e. Backend stages later re-run
 the same MODE_GRAD cases against this CPU reference when porting GLU_BACK.
 
 ## PR notes
 
 - Branch: `ticket/S1-28-glu-backward-tiny-moe-e2e`.
-- Two-repo flow per S0-02: fork PR (`llama-farm-base`) + llama-farm PR carrying the
+- Two-repo flow per S0-02: fork PR (`learning-llamas-base`) + learning-llamas PR carrying the
   submodule bump and the e2e test, both referencing the ticket ID.
 - Upstreaming disposition: **fork-local** initially — `GLU_BACK` is a new op enum;
   upstream later as an RFC once the CPU oracle (and ideally one GPU port) proves it
