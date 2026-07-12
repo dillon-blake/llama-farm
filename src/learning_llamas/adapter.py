@@ -246,27 +246,43 @@ def create_zero_adapter(
     if not targets:
         raise ValueError(f"no LoRA targets matched in {base_gguf_path} (preset={preset})")
 
-    architecture = _base_architecture(base_gguf_path)
     rng = np.random.default_rng(seed)
+    pairs = [(t.name, *_zero_init_pair(t, r, sigma, rng)) for t in targets]
 
+    _write_adapter_gguf(out_path, _base_architecture(base_gguf_path), float(alpha), pairs)
+
+    return targets
+
+
+def _write_adapter_gguf(
+    out_path: str | pathlib.Path,
+    architecture: str,
+    alpha: float,
+    pairs: list[tuple[str, np.ndarray, np.ndarray]],
+) -> None:
+    """Write a LoRA adapter GGUF.
+
+    Args:
+        out_path: Where to write it.
+        architecture: The base model's architecture string. The loader requires a match.
+        alpha: ``adapter.lora.alpha``.
+        pairs: One ``(target_name, A, B)`` per target, in GGUF-ready numpy layout.
+    """
     writer = gguf.GGUFWriter(str(out_path), arch=architecture)
     writer.add_type(gguf.GGUFType.ADAPTER)
     writer.add_string(gguf.Keys.Adapter.TYPE, "lora")
-    writer.add_float32(gguf.Keys.Adapter.LORA_ALPHA, float(alpha))
+    writer.add_float32(gguf.Keys.Adapter.LORA_ALPHA, alpha)
 
-    for target in targets:
-        a, b = _zero_init_pair(target, r, sigma, rng)
+    for name, a, b in pairs:
         # The loader strips only ".lora_a"/".lora_b" and looks the rest up by name, so the
         # ".weight" stays (src/llama-adapter.cpp:273-285, 330).
-        writer.add_tensor(f"{target.name}.lora_a", a)
-        writer.add_tensor(f"{target.name}.lora_b", b)
+        writer.add_tensor(f"{name}.lora_a", a)
+        writer.add_tensor(f"{name}.lora_b", b)
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
-
-    return targets
 
 
 def _zero_init_pair(

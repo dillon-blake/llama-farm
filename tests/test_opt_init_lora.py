@@ -18,6 +18,8 @@ That is the BLUEPRINT D2 claim — base stays quantized and mmap'd — and this 
 """
 
 import ctypes
+import gc
+import weakref
 
 import pytest
 
@@ -37,6 +39,81 @@ def _init_lora(libs: _ffi.Libraries, model, params: _ffi.ll_opt_params) -> int:
     """Call ll_opt_init_lora with the model's single attached adapter."""
     adapters = (ctypes.c_void_p * 1)(model.adapter)
     return libs.farm.ll_opt_init_lora(model.ctx, model.model, adapters, 1, ctypes.byref(params))
+
+
+def test_the_binding_layer_owns_the_params_lifetime(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """The shim holds a raw pointer to the params struct; Python must not be able to free it.
+
+    ``ll_opt_init_lora`` stores a pointer to the *caller's* ``ll_opt_params`` and re-reads the
+    learning rate off it on every step — that is what makes an LR schedule a plain attribute
+    assignment instead of a callback into Python on the hot path.
+
+    The cost is a lifetime the C side cannot see, and it is *far* too easy to drop by accident::
+
+        h, _ = make_trainer(...)   # `_` is the params struct
+        for _ in range(16):        # ...and now it is not. Python freed it.
+            h.step()
+
+    The shim then reads hyperparameters out of freed heap. What happens next depends on what lands
+    there: NaN weights, a zero learning rate, a ``GGML_ASSERT(alpha > 0)`` abort, or a segfault —
+    nondeterministically, run to run. That is not hypothetical; it is what S1-03's own test did, and
+    the symptom was a training run that diverged on some processes and not others.
+
+    So :func:`_ffi.opt_init_lora` keeps the reference itself, and this pins it: drop every reference
+    the caller holds, collect, and the struct must still be alive.
+    """
+    adapter_path = tmp_path / "adapter.gguf"
+    create_zero_adapter(tiny_q4_k, adapter_path, r=RANK)
+
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=N_UBATCH, training=True)
+    model.attach_adapter(adapter_path, scale=1.0)
+
+    params = _default_opt_params()
+    alive = weakref.ref(params)
+
+    _ffi.opt_init_lora(libs, model.ctx, model.model, [model.adapter], params)
+
+    # The caller drops its only reference. Nothing else in this frame holds one.
+    del params
+    gc.collect()
+
+    # THE assertion. Everything else here is corroboration.
+    #
+    # It is written against the object graph rather than against the symptom on purpose. The
+    # obvious version -- free the struct, train, assert the loss is not NaN -- does not work: the
+    # freed bytes usually still hold the old values, so the shim reads exactly what it read before
+    # and the test passes *even when the bug is present*. Measured: 5/5 green with the keepalive
+    # removed. Whether it reproduces depends on the allocator reusing that block, which is not
+    # something a test may depend on.
+    #
+    # So assert the invariant that actually has to hold -- the binding layer still holds the struct
+    # the shim is pointing at -- which is exact, deterministic, and fails the moment it stops being
+    # true.
+    assert alive() is not None, (
+        "the binding layer dropped the ll_opt_params struct while the shim still holds a pointer "
+        "to it. Every subsequent training step now reads its hyperparameters out of freed heap."
+    )
+
+    n = 8
+    tokens = (ctypes.c_int32 * n)(*([7, 11, 13, 17] * 2))
+    targets = (ctypes.c_int32 * n)(*([11, 13, 17, 7] * 2))
+    weights = (ctypes.c_float * n)(*([1.0] * n))
+
+    losses = []
+    for _ in range(4):
+        loss = ctypes.c_float()
+        _ffi.check(
+            libs.farm.ll_train_step(
+                model.ctx, tokens, targets, weights, n, True, ctypes.byref(loss)
+            ),
+            "ll_train_step",
+        )
+        losses.append(loss.value)
+
+    assert all(x == x for x in losses), f"loss went NaN after the caller dropped params: {losses}"  # noqa: PLR0124
+    assert all(x > 0.0 for x in losses), f"loss went degenerate: {losses}"
+
+    _ffi.opt_free(libs, model.ctx)
 
 
 @pytest.fixture

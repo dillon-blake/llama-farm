@@ -20,6 +20,7 @@
 #include <memory>
 #include <unordered_map>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace {
@@ -41,6 +42,13 @@ struct ll_train_state {
     // Every A/B tensor we flagged, in flagging order. S1-08 saves them; S1-09 checkpoints their
     // optimizer state.
     std::vector<ggml_tensor *> param_tensors;
+
+    // The gradient accumulator of each param tensor, keyed by the tensor's name.
+    //
+    // Captured once, from inside the first training step, because that is the only window in
+    // which ggml_opt will tell us: with dynamic graphs, ggml_opt_eval nulls the graphs it looked
+    // them up in. The tensors themselves persist in opt_ctx's static context.
+    std::unordered_map<std::string, ggml_tensor *> grad_accs;
 
     // OUR ggml_opt context, not llama_context's.
     //
@@ -208,7 +216,22 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     ctx->set_training(true);
 
     ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
-    opt_params.opt_period = (int32_t)(ctx->n_batch() / ctx->n_ubatch());
+    // opt_period = 1: ONE optimizer step per ll_train_step, always.
+    //
+    // The obvious value is n_batch / n_ubatch, which is what llama_opt_init uses. It is wrong
+    // here, and wrong in a way that hides. ggml_opt only takes an optimizer step every
+    // opt_period-th ggml_opt_eval, and opt_step_custom calls eval once per ubatch. With n_batch=64
+    // and n_ubatch=32 that is opt_period=2 -- so a caller passing 32 tokens gets ONE ubatch, opt_i
+    // never wraps, and the optimizer steps on every OTHER call to ll_train_step. The loss still
+    // falls, at half the rate, and nothing says why.
+    //
+    // It also leaves opt_ctx->gb_opt NULL on the steps that do not wrap, and ggml_opt_grad_acc
+    // dereferences gb_opt without checking -- which is how this was found, as a segfault.
+    //
+    // So: one ubatch per step, one optimizer step per step. Accumulating gradients across steps is
+    // the trainer's job, where it is explicit, not something ggml_opt should infer from a
+    // context's batch geometry.
+    opt_params.opt_period = 1;
     opt_params.get_opt_pars = ggml_opt_get_constant_optimizer_params;
     opt_params.get_opt_pars_ud = &state->opt_pars;
     opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
@@ -258,34 +281,77 @@ int32_t ll_opt_n_params(llama_context * ctx) {
 
 namespace {
 
+// Cache the gradient accumulator of every parameter, once, from INSIDE a training step.
+//
+// This has to happen here and nowhere else, and the reason is worth stating plainly because the
+// alternative looks like it should work and segfaults instead.
+//
+// ggml_opt_grad_acc(opt_ctx, t) looks the accumulator up in opt_ctx->gb_opt -- the backward graph.
+// With dynamic graphs (which is what a llama.cpp context uses: the graph is rebuilt every step,
+// because the ubatch shape can change) ggml_opt_eval sets gf, gb_grad and gb_opt back to NULL when
+// it returns, because the caller is about to free the compute context those graphs were built in.
+// So ggml_opt_grad_acc is only meaningful in the window BETWEEN ggml_opt_alloc and ggml_opt_eval --
+// and the set-loss-inputs hook is the one callback that runs inside exactly that window.
+//
+// The accumulator TENSORS, by contrast, live in opt_ctx's own static context. They persist across
+// steps and hold the gradient from the last backward pass. So caching their addresses once is
+// enough; only the graph that indexes them is transient.
+void capture_grad_accs(ll_train_state * state) {
+    if (state == nullptr || !state->grad_accs.empty()) {
+        return;
+    }
+
+    for (ggml_tensor * t : state->param_tensors) {
+        ggml_tensor * grad = ggml_opt_grad_acc(state->opt_ctx, t);
+        if (grad != nullptr) {
+            state->grad_accs[std::string(ggml_get_name(t))] = grad;
+        }
+    }
+}
+
 // Everything the loss builder needs, threaded through llama_context::opt_step_custom as userdata.
 struct loss_ctx {
+    ll_train_state * state = nullptr; // so the alloc-time hook can capture the gradient accumulators
+    bool train = false;
+
     const int32_t * targets = nullptr; // [n_tokens] target id per position
     const float * weights = nullptr;   // [n_tokens] loss weight per position; 0 masks out
     int32_t n_tokens = 0;
 
     // Set by build_masked_ce, filled by upload_masked_ce once ggml_opt_alloc has given it memory.
-    ggml_tensor * labels = nullptr; // [n_vocab, n_ubatch] weighted one-hot
-    int32_t pos = 0;                // this ubatch's offset within the batch
+    ggml_tensor * labels = nullptr;    // I32 [n_ubatch] -- the target token of each position
+    ggml_tensor * ce_weights = nullptr; // F32 [n_ubatch] -- its loss weight, pre-normalized
+    int32_t pos = 0;                   // this ubatch's offset within the batch
     int32_t n_ubatch = 0;
     int64_t n_vocab = 0;
 };
 
-// Build  L = -sum_i w_i * logp_i[target_i] / sum_i w_i  out of the ops that exist today.
+// Build  L = sum_i w_i * (logsumexp_j(x_ij) - x_i[target_i]) / sum_i w_i  -- the masked mean CE.
 //
-// ggml_cross_entropy_loss(logits, labels) computes  -(1/nr) * sum_ij labels_ij * log_softmax(logits)_ij.
-// It is documented as taking a one-hot label matrix, but nothing requires the entries to be 1:
-// putting w_i at row i's target column makes it compute exactly
+// This is S1-04's ggml_cross_entropy_loss_sparse: it takes ONE integer target and ONE weight per
+// token and returns the per-token loss unreduced, so the caller reduces it however it likes. The
+// reduction here is ggml_sum, and the 1/sum(w) normalization is folded into the weights on the
+// host (see upload_masked_ce) so that the graph itself stays a plain weighted sum.
 //
-//     -(1/nr) * sum_i w_i * logp_i[target_i]
+// It replaces a stopgap that reused the DENSE ggml_cross_entropy_loss with a "weighted one-hot"
+// label matrix -- w_i at row i's target column. That trick has a correct forward and a WRONG
+// BACKWARD, which is exactly the kind of bug this ticket exists to catch:
 //
-// which is the masked loss, up to the 1/nr where nr counts ALL rows rather than the unmasked
-// ones. That is corrected on the host by pre-scaling the weights by nr / sum(w) -- see
-// upload_masked_ce. So no new op is needed for a masked loss.
+//   L = -(1/nr) * sum_ij y_ij * log_softmax(x)_ij
+//   dL/dx_ik    =  (1/nr) * (softmax(x)_ik * S_i - y_ik)      where S_i = sum_j y_ij
 //
-// The cost is the dense [n_vocab, n_ubatch] label matrix, which is pure waste: every row is zero
-// except one entry. That is precisely what S1-04's sparse cross-entropy removes, and it is why
-// this is called a stopgap.
+// but the kernel (ggml-cpu/ops.cpp, cross_entropy_loss_back_f32) computes
+//
+//   dL/dx_ik    =  (1/nr) * (softmax(x)_ik - y_ik)
+//
+// i.e. it hardcodes S_i == 1, which the op is entitled to do -- it is documented as taking one-hot
+// labels. A weighted one-hot has S_i = w_i, so every row whose weight is not exactly 1 gets the
+// wrong gradient, and a MASKED row (w_i = 0) gets softmax(x)_i/nr rather than zero. The loss still
+// falls, because the wrong gradient is correlated with the right one; it just converges somewhere
+// else. Nothing short of a finite-difference check would have noticed.
+//
+// The sparse op derives its backward from its own forward and weights it per token, so a masked
+// token contributes a bitwise zero (ADR-0003) and a fractional weight scales the gradient exactly.
 ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml_tensor * logits, int32_t pos,
                               int32_t n_ubatch, void * userdata) {
     auto * lc = (loss_ctx *)userdata;
@@ -294,44 +360,67 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
     lc->n_ubatch = n_ubatch;
     lc->n_vocab = logits->ne[0];
 
-    lc->labels = ggml_new_tensor_2d(ctx_compute, GGML_TYPE_F32, logits->ne[0], n_ubatch);
+    lc->labels = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_I32, n_ubatch);
     ggml_set_input(lc->labels);
-    ggml_set_name(lc->labels, "ll_masked_ce_labels");
+    ggml_set_name(lc->labels, "ll_ce_labels");
 
-    ggml_tensor * loss = ggml_cross_entropy_loss(ctx_compute, logits, lc->labels);
-    ggml_set_name(loss, "ll_masked_ce_loss");
+    lc->ce_weights = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, n_ubatch);
+    ggml_set_input(lc->ce_weights);
+    ggml_set_name(lc->ce_weights, "ll_ce_weights");
+
+    // logit_scale = 1.0 (off), softcap = 0.0 (off): a plain llama arch applies neither. Gemma-2
+    // and friends do, and S1-11 wires them through -- the op already takes them.
+    ggml_tensor * per_token =
+        ggml_cross_entropy_loss_sparse(ctx_compute, logits, lc->labels, lc->ce_weights, 1.0f, 0.0f);
+    ggml_set_name(per_token, "ll_ce_per_token");
+
+    ggml_tensor * loss = ggml_sum(ctx_compute, per_token);
+    ggml_set_name(loss, "ll_ce_loss");
 
     ggml_build_forward_expand(gf, loss);
 
     return loss;
 }
 
-// Fill the label matrix. Runs after ggml_opt_alloc, because until then `labels` has no memory.
+// Fill the targets and weights. Runs after ggml_opt_alloc, because until then they have no memory.
+//
+// It is also the only moment at which ggml_opt will hand over the gradient accumulators, so the
+// shim grabs them here on the first training step. See capture_grad_accs.
 void upload_masked_ce(void * userdata) {
     auto * lc = (loss_ctx *)userdata;
+
+    if (lc->train) {
+        capture_grad_accs(lc->state);
+    }
 
     const int64_t n_vocab = lc->n_vocab;
     const int32_t n_ubatch = lc->n_ubatch;
 
-    // ggml_cross_entropy_loss divides by the row count -- ALL rows, including the masked ones.
-    // We want the mean over the tokens that count. Pre-scale the weights by n_rows / sum(w) so
-    // the two cancel. If every weight is zero the loss is zero and there is nothing to scale.
+    // Normalize by the weight actually carried, not by the token count: a batch that is 90% prompt
+    // must not have its loss (and so its gradient) scaled down 10x relative to one that is 10%
+    // prompt. Folding 1/sum(w) into the weights here keeps the graph a plain sum. A batch with no
+    // unmasked token at all has zero loss and zero gradient, which is the honest answer.
     float sum_w = 0.0f;
     for (int32_t i = 0; i < n_ubatch; ++i) {
         sum_w += lc->weights[lc->pos + i];
     }
-    const float scale = sum_w > 0.0f ? (float)n_ubatch / sum_w : 0.0f;
+    const float scale = sum_w > 0.0f ? 1.0f / sum_w : 0.0f;
 
-    std::vector<float> labels((size_t)n_vocab * n_ubatch, 0.0f);
+    std::vector<int32_t> labels(n_ubatch);
+    std::vector<float> weights(n_ubatch);
+
     for (int32_t i = 0; i < n_ubatch; ++i) {
         const int32_t target = lc->targets[lc->pos + i];
-        if (target < 0 || target >= n_vocab) {
-            continue; // out-of-range target: treat as masked rather than corrupt memory
-        }
-        labels[(size_t)i * n_vocab + target] = lc->weights[lc->pos + i] * scale;
+        const bool in_range = target >= 0 && target < n_vocab;
+
+        // An out-of-range target is masked out rather than allowed to index off the end of a row.
+        // Label 0 is then arbitrary but never read, because its weight is zero.
+        labels[i] = in_range ? target : 0;
+        weights[i] = in_range ? lc->weights[lc->pos + i] * scale : 0.0f;
     }
 
-    ggml_backend_tensor_set(lc->labels, labels.data(), 0, labels.size() * sizeof(float));
+    ggml_backend_tensor_set(lc->labels, labels.data(), 0, labels.size() * sizeof(int32_t));
+    ggml_backend_tensor_set(lc->ce_weights, weights.data(), 0, weights.size() * sizeof(float));
 }
 
 } // namespace
@@ -347,6 +436,16 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
         return LL_ERR_NOT_INITIALIZED;
     }
     ll_train_state * state = it->second.get();
+
+    // One ubatch per step -- see the opt_period comment in ll_opt_init_lora. A batch that spans
+    // several ubatches would take several optimizer steps, which is not what "one training step"
+    // means.
+    if ((uint32_t) n_tokens > ctx->n_ubatch()) {
+        LLAMA_LOG_ERROR("%s: n_tokens (%d) exceeds n_ubatch (%u): a training step must fit in one "
+                        "ubatch. Accumulate gradients across steps instead.\n",
+                        __func__, n_tokens, ctx->n_ubatch());
+        return LL_ERR_INVALID_ARG;
+    }
 
     // Refresh the optimizer hyperparameters from the caller's struct. This is what makes a
     // learning-rate schedule a plain attribute assignment in Python.
@@ -367,6 +466,8 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     }
 
     loss_ctx lc;
+    lc.state = state;
+    lc.train = train;
     lc.targets = targets;
     lc.weights = weights;
     lc.n_tokens = n_tokens;
@@ -386,4 +487,134 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     llama_batch_free(batch);
 
     return status == 0 ? LL_OK : LL_ERR_STEP_FAILED;
+}
+
+// ---------------------------------------------------------------------------
+// Debug accessors (S1-03) -- see farm_api.h for why these exist and why ll_debug_*.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The A or B tensor of one adapted base tensor, or nullptr.
+ggml_tensor * find_adapter_tensor(ll_train_state * state, const char * base_name, bool is_b) {
+    // param_tensors was filled in ab_map order, A then B for each entry. Rather than re-derive
+    // that ordering, look the tensor up by its ggml name -- which llama.cpp set from the adapter
+    // GGUF, so it is exactly "<base>.lora_a" / "<base>.lora_b".
+    const std::string want = std::string(base_name) + (is_b ? ".lora_b" : ".lora_a");
+
+    for (ggml_tensor * t : state->param_tensors) {
+        if (want == ggml_get_name(t)) {
+            return t;
+        }
+    }
+    return nullptr;
+}
+
+ll_train_state * state_for(llama_context * ctx) {
+    const auto it = train_states().find(ctx);
+    return it == train_states().end() ? nullptr : it->second.get();
+}
+
+} // namespace
+
+int64_t ll_debug_n_elements(llama_context * ctx, const char * base_name, bool is_b) {
+    if (ctx == nullptr || base_name == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_adapter_tensor(state, base_name, is_b);
+    if (t == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    return ggml_nelements(t);
+}
+
+int64_t ll_debug_get_tensor(llama_context * ctx, const char * base_name, bool is_b, float * out,
+                            int64_t n_max) {
+    if (ctx == nullptr || base_name == nullptr || out == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_adapter_tensor(state, base_name, is_b);
+    if (t == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const int64_t n = ggml_nelements(t);
+    if (n > n_max) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_tensor_get(t, out, 0, n*sizeof(float));
+    return n;
+}
+
+int64_t ll_debug_set_tensor(llama_context * ctx, const char * base_name, bool is_b,
+                            const float * data, int64_t n) {
+    if (ctx == nullptr || base_name == nullptr || data == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_adapter_tensor(state, base_name, is_b);
+    if (t == nullptr || ggml_nelements(t) != n) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_tensor_set(t, data, 0, n*sizeof(float));
+    return n;
+}
+
+int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, float * out,
+                      int64_t n_max) {
+    if (ctx == nullptr || base_name == nullptr || out == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->opt_ctx == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_adapter_tensor(state, base_name, is_b);
+    if (t == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // Read the CACHED accumulator, not ggml_opt_grad_acc.
+    //
+    // ggml_opt_grad_acc looks the accumulator up in opt_ctx->gb_opt -- and with dynamic graphs
+    // ggml_opt_eval sets gb_opt (and gf, and gb_grad) back to NULL when it finishes, because the
+    // caller is expected to free the compute context those graphs live in. So calling
+    // ggml_opt_grad_acc after a step dereferences a null graph. It is only usable BETWEEN
+    // ggml_opt_alloc and ggml_opt_eval -- which is where the shim captures it (see capture_grads).
+    //
+    // The accumulator TENSORS themselves live in opt_ctx's static context and persist, holding
+    // the gradient from the last backward pass. Caching their pointers once is all that is needed.
+    const auto git = state->grad_accs.find(std::string(ggml_get_name(t)));
+    if (git == state->grad_accs.end()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+    ggml_tensor * grad = git->second;
+    if (grad == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    const int64_t n = ggml_nelements(grad);
+    if (n > n_max) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_tensor_get(grad, out, 0, n*sizeof(float));
+    return n;
 }

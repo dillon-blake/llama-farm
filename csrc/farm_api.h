@@ -118,7 +118,22 @@ struct ll_opt_params {
 //   model:      the model the adapters were loaded against.
 //   adapters:   the same handles passed to llama_set_adapters_lora.
 //   n_adapters: how many.
-//   params:     AdamW hyperparameters. The caller must keep this alive for the whole run.
+//   params:     AdamW hyperparameters.
+//
+//               THE SHIM STORES THIS POINTER AND RE-READS THE STRUCT ON EVERY STEP. That is the
+//               feature -- a learning-rate schedule is `params.alpha = ...` between steps, with no
+//               callback back into the caller on the hot path -- and it is also the sharpest edge
+//               in this header, so it is spelled out:
+//
+//               The caller MUST keep the struct alive until ll_opt_free. If it does not, every
+//               subsequent step reads its hyperparameters out of freed memory, and what happens
+//               then depends on what the allocator put there: NaN weights, a learning rate of
+//               zero, an abort on ggml's `GGML_ASSERT(alpha > 0)`, or a segfault -- differing from
+//               run to run. There is no way for the shim to detect it.
+//
+//               From Python, do not call this directly: `_ffi.opt_init_lora` holds the reference
+//               for you (src/learning_llamas/_ffi/farm.py). A bare `h, _ = init(...)` followed by
+//               `for _ in range(n)` is enough to free the struct, and it has already happened once.
 //
 // Returns the number of tensors flagged (2 x the number of adapted base tensors), or a negative
 // LL_ERR_* code.
@@ -164,6 +179,36 @@ LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 // Returns LL_OK, or a negative LL_ERR_* code.
 LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
                              const float * weights, int32_t n_tokens, bool train, float * loss_out);
+
+// ---------------------------------------------------------------------------
+// Debug accessors (S1-03)
+// ---------------------------------------------------------------------------
+//
+// Deliberately named ll_debug_*, and deliberately outside any API-stability promise. They exist
+// so a test can reach into a live adapter tensor and its gradient, which is the only way to run
+// a finite-difference check on the WHOLE graph rather than on one op. S1-08 supersedes them with
+// a real enumeration/save API.
+//
+// Tensors are addressed by their base tensor name (the ab_map key, e.g. "blk.0.attn_q.weight")
+// plus which of the pair is wanted.
+
+// Number of elements in an adapter tensor, or a negative LL_ERR_* code.
+LL_API int64_t ll_debug_n_elements(struct llama_context * ctx, const char * base_name, bool is_b);
+
+// Copy an adapter tensor's values out. Returns the number of elements written, or LL_ERR_*.
+LL_API int64_t ll_debug_get_tensor(struct llama_context * ctx, const char * base_name, bool is_b,
+                                   float * out, int64_t n_max);
+
+// Overwrite an adapter tensor's values. Returns the number of elements written, or LL_ERR_*.
+LL_API int64_t ll_debug_set_tensor(struct llama_context * ctx, const char * base_name, bool is_b,
+                                   const float * data, int64_t n);
+
+// Copy an adapter tensor's GRADIENT out, from ggml-opt's accumulator.
+//
+// Only valid after a training step has built the backward graph; before that there is no
+// accumulator and this returns LL_ERR_NOT_INITIALIZED.
+LL_API int64_t ll_debug_grad(struct llama_context * ctx, const char * base_name, bool is_b,
+                             float * out, int64_t n_max);
 
 #ifdef __cplusplus
 }
