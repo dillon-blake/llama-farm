@@ -4,7 +4,7 @@ title: "Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors"
 stage: 1
 track: shim
 size: M
-deps: ["S0-03", "S0-04"]
+deps: ["S1-00", "S0-03", "S0-04"]
 status: open
 pr: null
 ---

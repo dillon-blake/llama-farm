@@ -45,10 +45,10 @@ causal/padding/SWA/ALiBi into a single additive mask — `fill_mask`,
 `vendor/llama.cpp/src/llama-graph.cpp:406-453` (F16 on the FA path, F32 otherwise).
 The `SOFT_MAX_BACK` `max_bias==0` restriction
 (`vendor/llama.cpp/ggml/src/ggml-cpu/ops.cpp:5539`) does not apply here: backward
-recomputes P directly from Q/K/mask/LSE. Training graphs have no KV cache — K/V arrive
-as F32→F16 casts (`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`) — so F16 K/V
-support is required and quantized-KV backward is out of scope by construction
-(ROADMAP §8). Numerics (ROADMAP §12 Q4): the forward's FTZ threshold and KQ max-offset
+recomputes P directly from Q/K/mask/LSE. Training graphs bypass the KV cache **once S1-00
+lands** — K/V then arrive as F32→F16 casts
+(`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`) — so F16 K/V support is required and
+quantized-KV backward is out of scope by construction (ROADMAP §8, as corrected by S1-00). Numerics (ROADMAP §12 Q4): the forward's FTZ threshold and KQ max-offset
 mean recomputed P will not bit-match the forward's P; tolerances are set against
 finite differences and the naive path per ADR-0002, and the LSE-with-sinks definition
 must match FA1 exactly (the forward folds sinks into its running max/sum `M`/`S`,

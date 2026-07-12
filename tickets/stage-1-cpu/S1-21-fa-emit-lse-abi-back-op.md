@@ -4,7 +4,7 @@ title: "FA1: emit_lse ABI on FLASH_ATTN_EXT + ggml_flash_attn_ext_back op + CPU 
 stage: 1
 track: kernels
 size: M
-deps: ["S0-09"]
+deps: ["S1-00", "S0-09"]
 status: open
 pr: null
 ---
@@ -44,9 +44,10 @@ its packed output — `dq‖dk‖dv` as `GGML_PAD`-aligned regions of one 1D F32
 honor (mask, scale, max_bias/slope, softcap, sinks) because llama.cpp bakes causal/padding/
 SWA/ALiBi into one additive mask (`fill_mask`,
 `vendor/llama.cpp/src/llama-graph.cpp:406-453`): one signature covers all model variants.
-Training graphs have no KV cache — K/V arrive as F32→F16 casts
-(`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`) — so quantized-KV backward is out of scope
-by construction. Current constructor facts to build on: op_params floats
+Training graphs bypass the KV cache **once S1-00 lands** (not before — see that ticket; today
+the causal training graph goes through the cache and backward-graph construction aborts). After
+S1-00, K/V arrive as F32→F16 casts (`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`), so
+quantized-KV backward is out of scope by construction. Current constructor facts to build on: op_params floats
 `{scale, max_bias, logit_softcap}` (`ggml.c:5414-5415`), precision at i32 slot 3
 (`:5426-5443`), sinks in `src[4]` (`:5445-5459`).
 

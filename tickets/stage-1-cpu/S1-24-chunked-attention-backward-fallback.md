@@ -4,7 +4,7 @@ title: "FA8: graph-level chunked-attention backward fallback (kernel-free long-c
 stage: 1
 track: shim
 size: M
-deps: ["S1-19", "S1-20"]
+deps: ["S1-00", "S1-19", "S1-20"]
 status: open
 pr: null
 ---

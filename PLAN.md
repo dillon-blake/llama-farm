@@ -17,7 +17,7 @@ agent-executable backlog:
   flash-attention backward, MoE and SSM ops), numerics/determinism policy,
   licensing audit of reusable unsloth ideas.
 
-The backlog itself lives in `tickets/` — **83 tickets, each scoped to one pull
+The backlog itself lives in `tickets/` — **84 tickets, each scoped to one pull
 request**, with `tickets/README.md` as the guide agents read before picking up
 work (ordering, claim protocol, definition of done, CI model).
 
@@ -40,9 +40,17 @@ two binding ADRs (numerics + determinism policy; fork lineage).
 **Exit:** CPU CI green; a zero-B adapter attached to a tiny model provably
 changes nothing (the no-op smoke test).
 
-### Stage 1 — CPU training core (33 tickets)
+### Stage 1 — CPU training core (34 tickets)
 
 Everything needed to train **correctly** end-to-end on CPU:
+
+- **S1-00 first — the training graph must bypass the KV cache.** At the pinned commit,
+  causal-arch attention writes K/V into the cache (`ggml_set_rows`) and re-reads them
+  through a *view*, so there is no autodiff edge from `k_cur` to attention, and
+  `ggml_build_backward_expand` hard-aborts (`ggml.c:7093`) the moment anything upstream of
+  K/V needs a gradient — which is every multi-layer LoRA config. Verified by running
+  upstream's own `llama-finetune`, which aborts before printing a loss. Nothing that builds
+  a backward graph can land before this.
 
 - **Shim/library:** `ggml_set_param` wiring on adapter A/B (the whole trick —
   BLUEPRINT D2), the forked per-ubatch training loop with pluggable losses,
@@ -119,7 +127,7 @@ settled in S0-09).
 | Stage | Tickets | Rough effort (from ROADMAP sizing) |
 |---|---|---|
 | 0 — Groundwork | 9 | ~3–4 eng-weeks |
-| 1 — CPU core | 33 | ~14–18 eng-weeks (parallel lanes: shim/python vs kernels) |
+| 1 — CPU core | 34 | ~14–18 eng-weeks (parallel lanes: shim/python vs kernels) |
 | 2 — Metal | 13 | ~8–10 eng-weeks (M2 quantized OUT_PROD + FA7 are the long poles) |
 | 3 — CUDA | 10 | ~10–14 eng-weeks (FA5 backward is the flagship XL) |
 | 4 — Vulkan | 9 | ~6–9 eng-weeks |

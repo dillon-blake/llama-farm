@@ -25,7 +25,7 @@ Work proceeds in stages, **in this order**:
 | Stage | Directory | Theme | Exit criterion |
 |---|---|---|---|
 | 0 | `stage-0-groundwork/` | Repo, build, bindings, fixtures, CPU CI, policies | S0-07 CI green; no-op adapter smoke test passes |
-| 1 | `stage-1-cpu/` | Complete, **correct** training on CPU (the oracle): shim, losses, SFT/DPO/GRPO, all new ops' CPU reference kernels, FA fallback, MoE + SSM on CPU | S1-12 convergence gate green on CPU; MoE + SSM tiny models train |
+| 1 | `stage-1-cpu/` | Complete, **correct** training on CPU (the oracle): **S1-00 first** (training graph must bypass the KV cache or backward aborts), then shim, losses, SFT/DPO/GRPO, all new ops' CPU reference kernels, FA fallback, MoE + SSM on CPU | S1-12 convergence gate green on CPU; MoE + SSM tiny models train |
 | 2 | `stage-2-metal/` | Metal kernel suite → GPU-resident training on Apple Silicon | S2-10 milestone: convergence gate on `--device metal`, zero CPU fallback (dense) |
 | 3 | `stage-3-cuda/` | CUDA ports + flash-attention backward flagship | S3-10 milestone: fully GPU-resident incl. FA |
 | 4 | `stage-4-vulkan/` | Vulkan ports → NVIDIA/AMD/Intel coverage | S4-09 milestone: cross-backend parity report |
@@ -135,11 +135,12 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | S0-08 | Developer docs: build guide + per-backend VM playbooks | docs | S | S0-01 |
 | S0-09 | ADR: numerics policy + determinism default (gate G-B) + parity criterion | docs | S | S0-01 |
 
-### Stage 1 — CPU training core (33 tickets)
+### Stage 1 — CPU training core (34 tickets)
 
 | ID | Title | Track | Size | Depends on |
 |---|---|---|---|---|
-| S1-01 | Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors | shim | M | S0-03, S0-04 |
+| S1-00 | Training attention path: bypass the KV cache so gradients reach K/V (unblocks all backward) | kernels | M | S0-02, S0-03 |
+| S1-01 | Shim: lf_opt_init_lora — ggml_set_param on adapter A/B tensors | shim | M | S1-00, S0-03, S0-04 |
 | S1-02 | Shim: lf_train_step — forked opt_epoch_iter with pluggable loss + extra inputs | shim | L | S1-01 |
 | S1-03 | P0 proof-of-gradient: stopgap composite CE, loss falls, FD check, llama-cli loads adapter | python | M | S1-02, S0-06 |
 | S1-04 | New ggml op: ggml_cross_entropy_loss_sparse — ABI (gate G-A) + CPU oracle fwd/bwd | kernels | M | S0-09 |
@@ -159,10 +160,10 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | S1-18 | K-F16OP: F16/BF16 CPU out_prod (replace abort with to_float row path) | kernels | S | S0-02 |
 | S1-19 | Small VJPs: TANH, SIGMOID, CLAMP (composite backward rules) | kernels | S | S0-02 |
 | S1-20 | K-SMB: SOFT_MAX_BACK max_bias>0 — add the missing test, lift the CPU assert | kernels | S | S0-02 |
-| S1-21 | FA1: emit_lse ABI on FLASH_ATTN_EXT + ggml_flash_attn_ext_back op + CPU forward LSE | kernels | M | S0-09 |
+| S1-21 | FA1: emit_lse ABI on FLASH_ATTN_EXT + ggml_flash_attn_ext_back op + CPU forward LSE | kernels | M | S1-00, S0-09 |
 | S1-22 | FA2: FLASH_ATTN_EXT autograd wiring in ggml_compute_backward | kernels | S | S1-21 |
 | S1-23 | FA3: CPU flash-attention backward (modernize legacy kernel — the GPU oracle) | kernels | L | S1-21, S1-22 |
-| S1-24 | FA8: graph-level chunked-attention backward fallback (kernel-free long-context path) | shim | M | S1-19, S1-20 |
+| S1-24 | FA8: graph-level chunked-attention backward fallback (kernel-free long-context path) | shim | M | S1-00, S1-19, S1-20 |
 | S1-25 | MoE: MUL_MAT_ID + ADD_ID backward wiring (E1/E4) | kernels | S | S0-02 |
 | S1-26 | MoE: OUT_PROD_ID CPU reference (activation grads through quantized experts) | kernels | M | S1-25, S0-09 |
 | S1-27 | MoE: OUT_PROD_ID_GRP CPU reference (grouped expert outer product for LoRA A/B grads) | kernels | M | S1-25, S0-09 |

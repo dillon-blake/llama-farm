@@ -21,11 +21,17 @@ Padding-free packing is one of the highest-value throughput techniques for SFT o
 samples, and llama.cpp gives the hard part away: attention isolation between packed
 samples is **native**. Assigning each packed sample a distinct `seq_id` in the
 `llama_batch` (`vendor/llama.cpp/include/llama.h:250-251`) makes the graph's mask input
-block cross-sequence attention — the no-KV-cache training path's `fill_mask` explicitly
-skips positions whose seq_id differs ("mask different sequences",
-`vendor/llama.cpp/src/llama-graph.cpp:424-427`, inside
+block cross-sequence attention — `fill_mask` explicitly skips positions whose seq_id differs
+("mask different sequences", `vendor/llama.cpp/src/llama-graph.cpp:424-427`, inside
 `llm_graph_input_attn_no_cache::set_input` at `llama-graph.cpp:406-453`). So the Python
 collator only decides placement and weights; no attention code changes (BLUEPRINT D7).
+
+**Depends on S1-00 for this to hold.** That `fill_mask` belongs to the *no-cache* attention
+input, which serves embedding/non-causal archs — not the causal archs trained here, which today
+route through the KV cache and get a `[n_kv, n_tokens]` mask instead. S1-00 makes the training
+graph bypass the cache and emit the uncached-shaped mask with seq_id isolation preserved; that
+is what makes packing-by-seq_id work. Verify the isolation property against the post-S1-00
+graph, not by assumption.
 
 Two correctness rules define the collator. First, **boundary masking**: next-token CE at
 the last token of packed sample k would predict the first token of sample k+1, so that

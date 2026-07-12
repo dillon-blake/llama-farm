@@ -35,9 +35,10 @@ nthreads/occupancy/nbatch_fa/nbatch_K via the macro at `:13-19`, accessors at
 `:345-375`) are the tuning pattern the backward reuses; mma-family backward is a later
 perf phase (backlog B-02). One backward signature covers all model variants because
 llama.cpp bakes causal/padding/SWA/ALiBi into a single additive mask (`fill_mask`,
-`vendor/llama.cpp/src/llama-graph.cpp:406-453`); training graphs have no KV cache — K/V
-arrive as F32→F16 casts (`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`) — so F16 K/V
-is the one storage type needed and quantized-KV backward is out of scope by construction.
+`vendor/llama.cpp/src/llama-graph.cpp:406-453`); training graphs bypass the KV cache once
+S1-00 lands — K/V then arrive as F32→F16 casts
+(`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`) — so F16 K/V is the one storage type needed
+and quantized-KV backward is out of scope by construction.
 
 Two decided constraints bind the design. **Determinism (gate G-B, ADR-0002/S0-09):** no
 atomics in v1 — dK/dV and dQ use exclusive-write grids (the CPU oracle's

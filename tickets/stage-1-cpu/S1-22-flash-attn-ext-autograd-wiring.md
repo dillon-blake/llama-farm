@@ -38,7 +38,8 @@ automatic I32 exclusion in `ggml_build_backward_expand`
 `ignore_src` marks, exactly like ROPE's positions
 (`vendor/llama.cpp/ggml/src/ggml.c:7069-7076`).
 
-One more path matters for training graphs specifically: they have no KV cache, so K and
+One more path matters for training graphs specifically: **after S1-00** they bypass the KV
+cache (before it, backward-graph construction aborts outright), so K and
 V arrive as F32→F16 casts (`vendor/llama.cpp/src/llama-graph.cpp:2416-2422`;
 `ggml_cast` emits a `GGML_OP_CPY` node, `vendor/llama.cpp/ggml/src/ggml.c:3527`). The
 dK/dV produced by the back op must therefore flow through the existing CPY backward
