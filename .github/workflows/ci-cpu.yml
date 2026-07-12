@@ -1,0 +1,204 @@
+# ci-cpu — the always-on tier of the CI matrix (ROADMAP §11).
+#
+# TWO-TIER PHILOSOPHY. Every backend lane copies this shape:
+#
+#   per-PR   quick. Build the wheel, run pytest's default selection (-m "not slow"),
+#            and run a TARGETED test-backend-ops subset. Budget: under 20 minutes for
+#            the slowest matrix entry. Trim the op subset before loosening the budget.
+#   nightly  detailed. The full test-backend-ops sweep in both `test` and `grad` modes
+#            (no -o filter), plus the full pytest suite including `slow` — which is
+#            where the tiny-model convergence gate (S1-12) lives.
+#
+# CHECK NAMING. Jobs are named so required checks read `ci-cpu / build` and
+# `ci-cpu / test`. Later lanes follow `ci-<backend> / <job>` (ci-metal, ci-cuda,
+# ci-vulkan), so branch-protection rules stay uniform across backends.
+#
+# WHY CPU IS NOT JUST A BUILD CHECK. CPU is the correctness ORACLE for the entire kernel
+# plan (ROADMAP §4, ADR-0002): every GPU kernel is accepted by matching CPU within
+# tolerance. So a green CPU MODE_GRAD run is the baseline that protects every later
+# backend ticket, and it runs from day one — before the kernels that will depend on it
+# exist.
+
+name: ci-cpu
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 04:17 UTC daily. Off the hour on purpose: scheduled runs pile up on the hour and
+    # get queued.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cpu-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The vendored tree is CPU-only on this lane. On macOS this is load-bearing rather
+  # than decorative: GGML_METAL defaults ON for Apple builds
+  # (vendor/llama.cpp/ggml/CMakeLists.txt:239), so a macOS build that says nothing about
+  # Metal *gets* Metal, and the lane would silently stop being CPU-only.
+  CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF"
+
+jobs:
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-cpu-${{ matrix.os }}
+          max-size: 500M
+
+      - name: Install build tooling
+        run: pip install scikit-build-core cmake ninja build
+
+      - name: Verify the patch queue applies
+        run: ./scripts/apply-patches.sh
+
+      - name: Build the wheel
+        run: python -m build --wheel --no-isolation
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.whl
+
+  test:
+    name: test
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-cpu-${{ matrix.os }}
+          max-size: 500M
+
+      - name: Install
+        run: |
+          pip install scikit-build-core cmake ninja pytest
+          pip install -e . --no-build-isolation
+          # gguf-py comes from the vendored tree, never PyPI: the pinned llama.cpp commit,
+          # gguf-py, and the _ffi struct mirrors are one atomic version (ADR-0001).
+          pip install -e vendor/llama.cpp/gguf-py
+
+      - name: pytest (per-PR selection)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: pytest tests/ -m "not slow" -v
+
+      - name: pytest (full suite, incl. slow)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: pytest tests/ -v
+
+  ops:
+    name: ops
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-cpu-ops-${{ matrix.os }}
+          max-size: 500M
+
+      - name: Build test-backend-ops
+        run: |
+          cmake -S vendor/llama.cpp -B build/vendor-tests \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/vendor-tests --target test-backend-ops -j 4
+
+      # Per-PR: a targeted subset, chosen for the ops the training path actually depends
+      # on. MUL_MAT and OUT_PROD are the backward core (every MUL_MAT gradient goes
+      # through OUT_PROD); SOFT_MAX and RMS_NORM are the two normalizations in the graph;
+      # CROSS_ENTROPY_LOSS is the loss S1-04 replaces with a sparse variant. Adding an op
+      # here is cheap; adding the FULL sweep to the per-PR lane is not, which is why it is
+      # nightly.
+      - name: test-backend-ops — test (targeted, CPU)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          ./build/vendor-tests/bin/test-backend-ops test -b CPU \
+            -o MUL_MAT,OUT_PROD,SOFT_MAX,RMS_NORM,CROSS_ENTROPY_LOSS
+
+      # MODE_GRAD is the acceptance harness for every kernel ticket (ADR-0002). Running it
+      # per-PR from day one protects the CPU oracle that stages 2-4 are measured against.
+      - name: test-backend-ops — grad (targeted, MODE_GRAD)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          ./build/vendor-tests/bin/test-backend-ops grad \
+            -o OUT_PROD,CROSS_ENTROPY_LOSS,SOFT_MAX,RMS_NORM
+
+      - name: test-backend-ops — full sweep (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          ./build/vendor-tests/bin/test-backend-ops test -b CPU
+          ./build/vendor-tests/bin/test-backend-ops grad
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install pre-commit
+      # vendor/ is excluded in .pre-commit-config.yaml, so this needs no submodule.
+      - run: pre-commit run --all-files --show-diff-on-failure
