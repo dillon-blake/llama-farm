@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S0-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/16
 ---
 
 # S1-18 — K-F16OP: F16/BF16 CPU out_prod (replace abort with to_float row path)
