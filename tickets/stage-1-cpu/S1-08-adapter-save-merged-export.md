@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-01", "S0-05"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/22
 ---
 
 # S1-08 — Adapter save-from-training + merged-model export with re-quantize

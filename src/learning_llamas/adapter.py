@@ -44,10 +44,13 @@ copied; see docs/PROVENANCE.md.
 
 from __future__ import annotations
 
+import ctypes
 import pathlib
 from dataclasses import dataclass
 
 import numpy as np
+
+from learning_llamas import _ffi
 
 try:
     import gguf
@@ -377,3 +380,82 @@ def read_adapter(path: str | pathlib.Path) -> AdapterInfo:
         )
 
     return AdapterInfo(architecture=architecture, alpha=alpha, ranks=ranks, shapes=shapes)
+
+
+def save_adapter(
+    libs: _ffi.Libraries,
+    adapter: int,
+    out_path: str | pathlib.Path,
+    architecture: str,
+    alpha: float,
+) -> int:
+    """Write a live adapter's tensors — trained or not — out as a GGUF.
+
+    The tensors are read from the adapter itself, not from a training context, so this works after
+    ``ll_opt_free`` and on an adapter that was never trained at all. It is the counterpart of
+    :func:`create_zero_adapter`: what that writes, this reads back.
+
+    Args:
+        libs: The loaded native libraries.
+        adapter: A ``llama_adapter_lora *``.
+        out_path: Where to write the GGUF.
+        architecture: The base model's architecture string. The loader refuses a mismatch, so
+            passing the wrong one produces a file that cannot be loaded rather than one that
+            silently misbehaves.
+        alpha: ``adapter.lora.alpha``. Must be non-zero: llama.cpp computes the effective scale as
+            ``alpha ? user_scale * alpha / rank : user_scale`` (src/llama-adapter.h:55), so a zero
+            alpha does not scale the adapter to nothing — it silently DROPS the ``alpha/rank``
+            factor and applies the user scale alone.
+
+    Returns:
+        How many base tensors were written (each contributing one A and one B).
+
+    Raises:
+        ValueError: If ``alpha`` is zero, or the adapter has no tensors.
+        RuntimeError: If the shim rejects the adapter.
+    """
+    if alpha == 0:
+        raise ValueError(
+            "adapter.lora.alpha must be non-zero. llama.cpp computes the effective scale as "
+            "`alpha ? user_scale * alpha / rank : user_scale`, so alpha == 0 does not scale the "
+            "adapter to zero — it drops the alpha/rank factor entirely. Pass alpha=rank for 1.0."
+        )
+
+    n = _ffi.check(libs.farm.ll_adapter_n_tensors(adapter), "ll_adapter_n_tensors")
+    if n == 0:
+        raise ValueError("the adapter has no tensors")
+
+    pairs = []
+
+    for i in range(n):
+        name_buf = ctypes.create_string_buffer(256)
+        ne_a = (ctypes.c_int64 * 4)()
+        ne_b = (ctypes.c_int64 * 4)()
+
+        _ffi.check(
+            libs.farm.ll_adapter_tensor_info(adapter, i, name_buf, 256, ne_a, ne_b),
+            "ll_adapter_tensor_info",
+        )
+
+        name = name_buf.value.decode()
+
+        # numpy shapes are the reverse of GGUF ne, and the writer wants numpy. An A of
+        # ne = [n_in, r] is a numpy array of shape (r, n_in).
+        a = _read(libs, adapter, i, is_b=False).reshape(int(ne_a[1]), int(ne_a[0]))
+        b = _read(libs, adapter, i, is_b=True).reshape(int(ne_b[1]), int(ne_b[0]))
+
+        pairs.append((name, a, b))
+
+    _write_adapter_gguf(out_path, architecture, float(alpha), pairs)
+
+    return n
+
+
+def _read(libs: _ffi.Libraries, adapter: int, index: int, is_b: bool) -> np.ndarray:
+    """One adapter tensor, flat."""
+    n = _ffi.check(libs.farm.ll_adapter_get(adapter, index, is_b, None, 0), "ll_adapter_get")
+
+    buf = (ctypes.c_float * n)()
+    got = _ffi.check(libs.farm.ll_adapter_get(adapter, index, is_b, buf, n), "ll_adapter_get")
+
+    return np.frombuffer(buf, dtype=np.float32, count=got).copy()
