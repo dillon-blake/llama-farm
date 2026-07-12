@@ -1,0 +1,9 @@
+"""Generated from _version_lock.py.in at CMake configure time. Do not edit.
+
+The vendored llama.cpp commit the ctypes struct mirrors in this package were written against.
+:func:`learning_llamas._ffi.loader.load` compares it against ``ll_probe()``, the commit baked
+into the native build, and refuses to run on a mismatch — because a struct-layout mismatch
+corrupts memory rather than failing to link.
+"""
+
+VENDORED_COMMIT = "@LL_LLAMA_CPP_COMMIT@"
