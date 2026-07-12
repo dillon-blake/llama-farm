@@ -6,6 +6,7 @@ accumulate, or how the learning rate moves. That common part lives in :mod:`.loo
 """
 
 from .loop import Batch, Hooks, StepMetrics, TrainableModel, TrainConfig, Trainer, run
+from .packing import n_sequences, pack
 from .schedule import constant, warmup_cosine
 from .sft import SFTConfig, SFTResult, collate, to_batch, train_sft
 
@@ -20,6 +21,8 @@ __all__ = [
     "TrainableModel",
     "collate",
     "constant",
+    "n_sequences",
+    "pack",
     "run",
     "to_batch",
     "train_sft",

@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-06"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/21
 ---
 
 # S1-07 — Data layer: sample packing with seq_ids, boundary masking, fixed-shape collators

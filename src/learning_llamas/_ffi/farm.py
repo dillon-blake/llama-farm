@@ -211,6 +211,8 @@ SYMBOLS = [
             ctypes.POINTER(ctypes.c_int32),  # tokens
             ctypes.POINTER(ctypes.c_int32),  # targets
             ctypes.POINTER(ctypes.c_float),  # weights (0 masks a token out)
+            ctypes.POINTER(ctypes.c_int32),  # seq_ids, or NULL for "all one sequence"
+            ctypes.POINTER(ctypes.c_int32),  # positions, or NULL for 0..n-1
             ctypes.c_int32,  # n_tokens
             ctypes.c_bool,  # train
             ctypes.POINTER(ctypes.c_float),  # loss_out

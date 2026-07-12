@@ -82,6 +82,8 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
         n_ubatch: int | None = None,
         training: bool = False,
         full_finetune: bool = False,
+        n_seq_max: int = 1,
+        kv_unified: bool = True,
     ) -> Model:
         model = Model(
             libs,
@@ -90,6 +92,8 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
             n_ubatch=n_ubatch,
             training=training,
             full_finetune=full_finetune,
+            n_seq_max=n_seq_max,
+            kv_unified=kv_unified,
         )
         opened.append(model)
         return model
@@ -114,6 +118,8 @@ class Model:
         n_ubatch: int | None = None,
         training: bool = False,
         full_finetune: bool = False,
+        n_seq_max: int = 1,
+        kv_unified: bool = True,
     ) -> None:
         """Load a model and a context to run it in.
 
@@ -123,6 +129,11 @@ class Model:
             n_ctx: Context size to request (llama.cpp may pad it — read it back).
             n_ubatch: Physical batch size; defaults to ``n_ctx``.
             training: Configure for *any* kind of training — disables extra buffer types.
+            n_seq_max: How many sequences the context can hold. Packing (S1-07) needs one per
+                packed sample, plus one for the pads.
+            kv_unified: Keep the KV cache single-stream. Packing requires it: it is what makes
+                llama.cpp hand the batch to the graph in its original order (split_simple) rather
+                than regrouping it by sequence (split_equal).
             full_finetune: Additionally disable mmap, because base weights will be written.
                 LoRA does **not** need this, and that is exactly the point of BLUEPRINT D2.
         """
@@ -162,6 +173,13 @@ class Model:
         ctx_params.n_ubatch = n_ubatch if n_ubatch is not None else n_ctx
         ctx_params.n_threads = 2
         ctx_params.n_threads_batch = 2
+
+        # Packing (S1-07) needs one sequence per packed sample, and it needs llama.cpp NOT to
+        # regroup the batch by sequence on its way to the graph -- which is what kv_unified buys:
+        # it makes the KV cache single-stream, and the ubatch splitter then hands out contiguous
+        # slices in the original order (split_simple) rather than reordering them (split_equal).
+        ctx_params.n_seq_max = n_seq_max
+        ctx_params.kv_unified = kv_unified
         self.ctx = libs.llama.llama_init_from_model(self.model, ctx_params)
         if not self.ctx:
             libs.llama.llama_model_free(self.model)

@@ -36,7 +36,9 @@ def _step(libs, model, tokens, targets, weights, train=True) -> float:
     tok, tgt, wts = _arrays(tokens, targets, weights)
     loss = ctypes.c_float()
     _ffi.check(
-        libs.farm.ll_train_step(model.ctx, tok, tgt, wts, len(tokens), train, ctypes.byref(loss)),
+        libs.farm.ll_train_step(
+            model.ctx, tok, tgt, wts, None, None, len(tokens), train, ctypes.byref(loss)
+        ),
         "ll_train_step",
     )
     return loss.value
@@ -169,7 +171,7 @@ def test_step_before_init_is_rejected(tiny_f32, load_model, libs: _ffi.Libraries
     model = load_model(tiny_f32, n_ctx=N_CTX, n_ubatch=N_UBATCH, training=True)
     tok, tgt, wts = _arrays([7, 11], [11, 7], [1.0, 1.0])
 
-    result = libs.farm.ll_train_step(model.ctx, tok, tgt, wts, 2, True, None)
+    result = libs.farm.ll_train_step(model.ctx, tok, tgt, wts, None, None, 2, True, None)
     assert result == _ffi.LLError.NOT_INITIALIZED
 
 
@@ -177,7 +179,11 @@ def test_null_arguments_are_rejected(trainer, libs: _ffi.Libraries) -> None:
     model, _ = trainer
     tok, tgt, wts = _arrays([7, 11], [11, 7], [1.0, 1.0])
 
-    assert libs.farm.ll_train_step(None, tok, tgt, wts, 2, True, None) == _ffi.LLError.INVALID_ARG
     assert (
-        libs.farm.ll_train_step(model.ctx, tok, tgt, wts, 0, True, None) == _ffi.LLError.INVALID_ARG
+        libs.farm.ll_train_step(None, tok, tgt, wts, None, None, 2, True, None)
+        == _ffi.LLError.INVALID_ARG
+    )
+    assert (
+        libs.farm.ll_train_step(model.ctx, tok, tgt, wts, None, None, 0, True, None)
+        == _ffi.LLError.INVALID_ARG
     )
