@@ -35,9 +35,12 @@ from .llama import (
     FlashAttnType,
     GGMLType,
     SplitMode,
+    ggml_log_callback,
+    llama_batch,
     llama_context_params,
     llama_model_params,
     llama_opt_params,
+    llama_token,
 )
 from .loader import SYMBOLS, Libraries, library_dir, library_filename, load
 from .registry import Library, Symbol
@@ -58,12 +61,15 @@ __all__ = [
     "SGDParams",
     "SplitMode",
     "Symbol",
+    "ggml_log_callback",
     "ggml_opt_optimizer_params",
     "ggml_opt_params",
     "library_dir",
     "library_filename",
+    "llama_batch",
     "llama_context_params",
     "llama_model_params",
     "llama_opt_params",
+    "llama_token",
     "load",
 ]

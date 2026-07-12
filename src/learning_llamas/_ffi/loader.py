@@ -26,7 +26,7 @@ import pathlib
 import sys
 from dataclasses import dataclass
 
-from . import farm, ggml_backend, ggml_opt, llama
+from . import farm, ggml, ggml_backend, ggml_opt, llama
 from ._version_lock import VENDORED_COMMIT
 from .registry import Library, Symbol, bind
 
@@ -35,6 +35,7 @@ from .registry import Library, Symbol, bind
 SYMBOLS: list[Symbol] = [
     *farm.SYMBOLS,
     *llama.SYMBOLS,
+    *ggml.SYMBOLS,
     *ggml_opt.SYMBOLS,
     *ggml_backend.SYMBOLS,
 ]

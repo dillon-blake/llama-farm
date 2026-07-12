@@ -21,6 +21,8 @@ from .registry import Library, Symbol
 llama_model_p = ctypes.c_void_p
 llama_context_p = ctypes.c_void_p
 llama_adapter_lora_p = ctypes.c_void_p
+llama_vocab_p = ctypes.c_void_p
+llama_memory_p = ctypes.c_void_p
 
 llama_token = ctypes.c_int32
 llama_pos = ctypes.c_int32
@@ -154,6 +156,30 @@ class llama_context_params(ctypes.Structure):  # noqa: N801 — mirrors the C na
     ]
 
 
+class llama_batch(ctypes.Structure):  # noqa: N801 — mirrors the C name
+    """``struct llama_batch`` (llama.h).
+
+    Returned **by value** from ``llama_batch_get_one`` and passed **by value** to
+    ``llama_decode``. Only ``n_tokens`` and ``token`` are set by the helper; llama.cpp fills in
+    positions and sequence ids itself, and a NULL ``logits`` means "output logits for the last
+    token only".
+    """
+
+    _fields_ = [
+        ("n_tokens", ctypes.c_int32),
+        ("token", ctypes.POINTER(llama_token)),
+        ("embd", ctypes.POINTER(ctypes.c_float)),
+        ("pos", ctypes.POINTER(llama_pos)),
+        ("n_seq_id", ctypes.POINTER(ctypes.c_int32)),
+        ("seq_id", ctypes.POINTER(ctypes.POINTER(llama_seq_id))),
+        ("logits", ctypes.POINTER(ctypes.c_int8)),
+    ]
+
+
+# void (*)(enum ggml_log_level, const char * text, void * user_data) -- ggml.h.
+# Safe as a CFUNCTYPE: returns void.
+ggml_log_callback = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
+
 # bool (*)(const struct ggml_tensor * tensor, void * userdata) -- llama.h:1564.
 # Safe to declare as a CFUNCTYPE: it returns a bool, not a struct.
 llama_opt_param_filter = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -202,6 +228,29 @@ SYMBOLS = [
         llama_context_p,
     ),
     Symbol(Library.LLAMA, "llama_free", [llama_context_p]),
+    Symbol(Library.LLAMA, "llama_log_set", [ggml_log_callback, ctypes.c_void_p]),
+    # Model and vocab introspection.
+    Symbol(Library.LLAMA, "llama_model_get_vocab", [llama_model_p], llama_vocab_p),
+    Symbol(Library.LLAMA, "llama_vocab_n_tokens", [llama_vocab_p], ctypes.c_int32),
+    Symbol(Library.LLAMA, "llama_model_n_embd", [llama_model_p], ctypes.c_int32),
+    Symbol(Library.LLAMA, "llama_n_ctx", [llama_context_p], ctypes.c_uint32),
+    # Decode. llama_batch_get_one returns the batch BY VALUE and llama_decode takes it by
+    # value; both are fine through ctypes (it is only *callbacks* returning structs that trap).
+    Symbol(
+        Library.LLAMA,
+        "llama_batch_get_one",
+        [ctypes.POINTER(llama_token), ctypes.c_int32],
+        llama_batch,
+    ),
+    Symbol(Library.LLAMA, "llama_decode", [llama_context_p, llama_batch], ctypes.c_int32),
+    Symbol(
+        Library.LLAMA,
+        "llama_get_logits_ith",
+        [llama_context_p, ctypes.c_int32],
+        ctypes.POINTER(ctypes.c_float),
+    ),
+    Symbol(Library.LLAMA, "llama_get_memory", [llama_context_p], ctypes.c_void_p),
+    Symbol(Library.LLAMA, "llama_memory_clear", [ctypes.c_void_p, ctypes.c_bool]),
     # Adapters. llama_set_adapters_lora is the batch attach API present at the pinned commit
     # (llama.h:690); if a vendor bump removes it, the symbol-table test fails loudly, which is
     # the entire point of declaring it here.
