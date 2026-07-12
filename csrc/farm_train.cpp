@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <cstddef>
 #include <vector>
 
 namespace {
@@ -40,26 +41,25 @@ struct ll_train_state {
     // Every A/B tensor we flagged, in flagging order. S1-08 saves them; S1-09 checkpoints their
     // optimizer state.
     std::vector<ggml_tensor *> param_tensors;
+
+    // OUR ggml_opt context, not llama_context's.
+    //
+    // llama_opt_init builds one with GGML_OPT_LOSS_TYPE_CROSS_ENTROPY hardcoded, and keeps it
+    // private. We need GGML_OPT_LOSS_TYPE_SUM instead -- because with SUM, ggml-opt simply sums
+    // whatever node it is handed as `outputs`, and summing a scalar is the identity. So our own
+    // loss node *becomes* the loss, and the loss is pluggable with no ggml change at all.
+    ggml_opt_context_t opt_ctx = nullptr;
+
+    ~ll_train_state() {
+        if (opt_ctx) {
+            ggml_opt_free(opt_ctx);
+        }
+    }
 };
 
 std::unordered_map<llama_context *, std::unique_ptr<ll_train_state>> & train_states() {
     static std::unordered_map<llama_context *, std::unique_ptr<ll_train_state>> states;
     return states;
-}
-
-// A param filter that says no to everything.
-//
-// llama_opt_init does two things we want -- it puts the context into training mode (so attention
-// bypasses the KV cache, S1-00) and it creates the ggml_opt context -- and one thing we do not:
-// it walks the BASE model's tensors and offers them to this filter. Rejecting all of them means
-// the base model stays frozen, which is the entire point of LoRA: the base can remain quantized
-// and memory-mapped, because nothing ever writes to it.
-//
-// We then flag the adapter tensors ourselves, which llama.cpp never offers to the filter at all.
-bool reject_every_base_tensor(const ggml_tensor * tensor, void * userdata) {
-    (void)tensor;
-    (void)userdata;
-    return false;
 }
 
 // Can the backward pass actually differentiate through this base tensor?
@@ -191,17 +191,6 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     auto state = std::make_unique<ll_train_state>();
     state->params = params;
 
-    // Put the context into training mode and create its ggml_opt context. The reject-all filter
-    // is what keeps the base model frozen: llama_opt_init would otherwise flag every F32 base
-    // tensor and we would be doing a full fine-tune with extra steps.
-    llama_opt_params lopt = {};
-    lopt.n_ctx_train = 0; // use the context's n_ctx
-    lopt.param_filter = reject_every_base_tensor;
-    lopt.param_filter_ud = nullptr;
-    lopt.get_opt_pars = ggml_opt_get_constant_optimizer_params;
-    lopt.get_opt_pars_ud = &state->opt_pars;
-    lopt.optimizer_type = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
-
     state->opt_pars.adamw.alpha = params->alpha;
     state->opt_pars.adamw.beta1 = params->beta1;
     state->opt_pars.adamw.beta2 = params->beta2;
@@ -210,7 +199,21 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     state->opt_pars.sgd.alpha = params->alpha;
     state->opt_pars.sgd.wd = params->wd;
 
-    llama_opt_init(ctx, model, lopt);
+    // Training mode: attention must bypass the KV cache or the backward graph cannot be built at
+    // all (S1-00). This also disables flash attention, which has no backward rule.
+    //
+    // We deliberately do NOT call llama_opt_init. It would build a ggml_opt context with the loss
+    // type hardcoded to cross-entropy and keep it private, and it would walk the base model's
+    // tensors offering them to a param filter. We want neither -- see ll_train_state::opt_ctx.
+    ctx->set_training(true);
+
+    ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
+    opt_params.opt_period = (int32_t)(ctx->n_batch() / ctx->n_ubatch());
+    opt_params.get_opt_pars = ggml_opt_get_constant_optimizer_params;
+    opt_params.get_opt_pars_ud = &state->opt_pars;
+    opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+
+    state->opt_ctx = ggml_opt_init(opt_params);
 
     // THE trick: flag the adapter's A/B tensors. Everything else -- gradients, the AdamW
     // momenta, the backward graph -- falls out of ggml_build_backward_expand with no
@@ -247,4 +250,140 @@ int32_t ll_opt_n_params(llama_context * ctx) {
         return LL_ERR_NOT_INITIALIZED;
     }
     return (int32_t)it->second->param_tensors.size();
+}
+
+// ---------------------------------------------------------------------------
+// ll_train_step (S1-02) -- one training step with a MASKED cross-entropy loss.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Everything the loss builder needs, threaded through llama_context::opt_step_custom as userdata.
+struct loss_ctx {
+    const int32_t * targets = nullptr; // [n_tokens] target id per position
+    const float * weights = nullptr;   // [n_tokens] loss weight per position; 0 masks out
+    int32_t n_tokens = 0;
+
+    // Set by build_masked_ce, filled by upload_masked_ce once ggml_opt_alloc has given it memory.
+    ggml_tensor * labels = nullptr; // [n_vocab, n_ubatch] weighted one-hot
+    int32_t pos = 0;                // this ubatch's offset within the batch
+    int32_t n_ubatch = 0;
+    int64_t n_vocab = 0;
+};
+
+// Build  L = -sum_i w_i * logp_i[target_i] / sum_i w_i  out of the ops that exist today.
+//
+// ggml_cross_entropy_loss(logits, labels) computes  -(1/nr) * sum_ij labels_ij * log_softmax(logits)_ij.
+// It is documented as taking a one-hot label matrix, but nothing requires the entries to be 1:
+// putting w_i at row i's target column makes it compute exactly
+//
+//     -(1/nr) * sum_i w_i * logp_i[target_i]
+//
+// which is the masked loss, up to the 1/nr where nr counts ALL rows rather than the unmasked
+// ones. That is corrected on the host by pre-scaling the weights by nr / sum(w) -- see
+// upload_masked_ce. So no new op is needed for a masked loss.
+//
+// The cost is the dense [n_vocab, n_ubatch] label matrix, which is pure waste: every row is zero
+// except one entry. That is precisely what S1-04's sparse cross-entropy removes, and it is why
+// this is called a stopgap.
+ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml_tensor * logits, int32_t pos,
+                              int32_t n_ubatch, void * userdata) {
+    auto * lc = (loss_ctx *)userdata;
+
+    lc->pos = pos;
+    lc->n_ubatch = n_ubatch;
+    lc->n_vocab = logits->ne[0];
+
+    lc->labels = ggml_new_tensor_2d(ctx_compute, GGML_TYPE_F32, logits->ne[0], n_ubatch);
+    ggml_set_input(lc->labels);
+    ggml_set_name(lc->labels, "ll_masked_ce_labels");
+
+    ggml_tensor * loss = ggml_cross_entropy_loss(ctx_compute, logits, lc->labels);
+    ggml_set_name(loss, "ll_masked_ce_loss");
+
+    ggml_build_forward_expand(gf, loss);
+
+    return loss;
+}
+
+// Fill the label matrix. Runs after ggml_opt_alloc, because until then `labels` has no memory.
+void upload_masked_ce(void * userdata) {
+    auto * lc = (loss_ctx *)userdata;
+
+    const int64_t n_vocab = lc->n_vocab;
+    const int32_t n_ubatch = lc->n_ubatch;
+
+    // ggml_cross_entropy_loss divides by the row count -- ALL rows, including the masked ones.
+    // We want the mean over the tokens that count. Pre-scale the weights by n_rows / sum(w) so
+    // the two cancel. If every weight is zero the loss is zero and there is nothing to scale.
+    float sum_w = 0.0f;
+    for (int32_t i = 0; i < n_ubatch; ++i) {
+        sum_w += lc->weights[lc->pos + i];
+    }
+    const float scale = sum_w > 0.0f ? (float)n_ubatch / sum_w : 0.0f;
+
+    std::vector<float> labels((size_t)n_vocab * n_ubatch, 0.0f);
+    for (int32_t i = 0; i < n_ubatch; ++i) {
+        const int32_t target = lc->targets[lc->pos + i];
+        if (target < 0 || target >= n_vocab) {
+            continue; // out-of-range target: treat as masked rather than corrupt memory
+        }
+        labels[(size_t)i * n_vocab + target] = lc->weights[lc->pos + i] * scale;
+    }
+
+    ggml_backend_tensor_set(lc->labels, labels.data(), 0, labels.size() * sizeof(float));
+}
+
+} // namespace
+
+int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                      int32_t n_tokens, bool train, float * loss_out) {
+    if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || n_tokens <= 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const auto it = train_states().find(ctx);
+    if (it == train_states().end()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+    ll_train_state * state = it->second.get();
+
+    // Refresh the optimizer hyperparameters from the caller's struct. This is what makes a
+    // learning-rate schedule a plain attribute assignment in Python.
+    state->opt_pars.adamw.alpha = state->params->alpha;
+    state->opt_pars.adamw.beta1 = state->params->beta1;
+    state->opt_pars.adamw.beta2 = state->params->beta2;
+    state->opt_pars.adamw.eps = state->params->eps;
+    state->opt_pars.adamw.wd = state->params->wd;
+
+    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+    batch.n_tokens = n_tokens;
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = true; // every position needs logits: every one may carry loss
+    }
+
+    loss_ctx lc;
+    lc.targets = targets;
+    lc.weights = weights;
+    lc.n_tokens = n_tokens;
+
+    ggml_opt_result_t result = ggml_opt_result_init();
+
+    const int32_t status =
+        ctx->opt_step_custom(batch, state->opt_ctx, result, build_masked_ce, upload_masked_ce, &lc, train);
+
+    if (status == 0 && loss_out != nullptr) {
+        double loss = 0.0;
+        ggml_opt_result_loss(result, &loss, nullptr);
+        *loss_out = (float)loss;
+    }
+
+    ggml_opt_result_free(result);
+    llama_batch_free(batch);
+
+    return status == 0 ? LL_OK : LL_ERR_STEP_FAILED;
 }

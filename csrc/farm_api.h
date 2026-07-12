@@ -66,10 +66,12 @@ struct llama_adapter_lora;
 #define LL_ERR_TENSOR_NOT_F32 -4  // an adapter tensor is not F32; LoRA A/B must be
 #define LL_ERR_TENSOR_NOT_LEAF -5 // an adapter tensor is not a leaf (op != GGML_OP_NONE)
 #define LL_ERR_NOT_INITIALIZED -6 // no training state for this context
-#define LL_ERR_BASE_BUFT_NO_BACKWARD                                                                                   \
-    -7 // a base tensor's buffer type cannot run OUT_PROD, so
-       // its gradient node would be unschedulable. Load the
-       // model with use_extra_bufts=false.
+
+// A base tensor's buffer type cannot run OUT_PROD, so its gradient node would be
+// unschedulable. Load the model with use_extra_bufts=false.
+#define LL_ERR_BASE_BUFT_NO_BACKWARD -7
+
+#define LL_ERR_STEP_FAILED -8 // the training step itself failed
 
 // AdamW hyperparameters, owned by the caller and read afresh on every optimizer step.
 //
@@ -129,6 +131,39 @@ LL_API int32_t ll_opt_free(struct llama_context * ctx);
 
 // The number of tensors ll_opt_init_lora flagged, or LL_ERR_NOT_INITIALIZED.
 LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
+
+// ---------------------------------------------------------------------------
+// Training step (S1-02)
+// ---------------------------------------------------------------------------
+
+// Run one training step over `tokens`, with a per-token weighted cross-entropy loss.
+//
+// The stock training path (llama_opt_epoch) hardcodes an unmasked cross-entropy over dense
+// one-hot labels. That cannot train an instruction-tuned model, where the prompt tokens must
+// contribute NOTHING to the loss -- which is the single most common thing anyone wants to do,
+// and the reason BLUEPRINT D1 forks the loop.
+//
+// Here the loss is
+//
+//     L = -sum_i w_i * log_softmax(logits_i)[target_i] / sum_i w_i
+//
+// so a token with w_i = 0 contributes exactly zero, and the result is the mean over the tokens
+// that actually count -- not over all of them. Setting every w_i = 1 recovers the standard
+// next-token loss.
+//
+// Args:
+//   ctx:      a context that has been through ll_opt_init_lora.
+//   tokens:   the input token ids, length n_tokens.
+//   targets:  the target token id for each position, length n_tokens. Usually tokens shifted
+//             left by one.
+//   weights:  the per-token loss weight, length n_tokens. 0 masks a token out.
+//   n_tokens: how many. Must not exceed the context's n_batch.
+//   train:    true to backpropagate and step the optimizer; false for a forward-only eval.
+//   loss_out: receives the loss. May be NULL.
+//
+// Returns LL_OK, or a negative LL_ERR_* code.
+LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
+                             const float * weights, int32_t n_tokens, bool train, float * loss_out);
 
 #ifdef __cplusplus
 }

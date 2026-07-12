@@ -19,6 +19,7 @@ class LLError(IntEnum):
     TENSOR_NOT_LEAF = -5
     NOT_INITIALIZED = -6
     BASE_BUFT_NO_BACKWARD = -7
+    STEP_FAILED = -8
 
 
 class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
@@ -82,4 +83,19 @@ SYMBOLS = [
     ),
     Symbol(Library.FARM, "ll_opt_free", [ctypes.c_void_p], ctypes.c_int32),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-02: one training step with a per-token weighted (maskable) cross-entropy loss.
+    Symbol(
+        Library.FARM,
+        "ll_train_step",
+        [
+            ctypes.c_void_p,  # llama_context *
+            ctypes.POINTER(ctypes.c_int32),  # tokens
+            ctypes.POINTER(ctypes.c_int32),  # targets
+            ctypes.POINTER(ctypes.c_float),  # weights (0 masks a token out)
+            ctypes.c_int32,  # n_tokens
+            ctypes.c_bool,  # train
+            ctypes.POINTER(ctypes.c_float),  # loss_out
+        ],
+        ctypes.c_int32,
+    ),
 ]

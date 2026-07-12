@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: L
 deps: ["S1-01"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/13
 ---
 
 # S1-02 — Shim: ll_train_step — forked opt_epoch_iter with pluggable loss + extra inputs
