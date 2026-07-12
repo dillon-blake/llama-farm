@@ -151,11 +151,11 @@ int32_t validate_adapter_tensor(const ggml_tensor * tensor) {
 } // namespace
 
 int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter_lora ** adapters, size_t n_adapters,
-                         ll_opt_params * params, int32_t opt_period) {
+                         ll_opt_params * params, int32_t opt_period, float grad_clip) {
     if (ctx == nullptr || model == nullptr || adapters == nullptr || params == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
-    if (opt_period < 1) {
+    if (opt_period < 1 || grad_clip < 0.0f) {
         return LL_ERR_INVALID_ARG;
     }
     if (n_adapters == 0) {
@@ -237,6 +237,16 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     // So gradient accumulation is the trainer's decision, stated explicitly, and one ll_train_step
     // is always exactly one micro-batch.
     opt_params.opt_period = opt_period;
+
+    // Global-norm gradient clipping, applied inside the graph (see ggml_opt_build). 0 disables it
+    // and inserts no nodes, so an unclipped run's graph is exactly what it always was.
+    //
+    // It cannot be done from here, and that is worth knowing rather than rediscovering: the AdamW
+    // step is fused into the backward graph, so by the time ll_train_step regains control the
+    // weights have already moved. A host-side clip could only ever see the gradients of the
+    // micro-steps BEFORE the one that triggers the step.
+    opt_params.grad_clip = grad_clip;
+
     opt_params.get_opt_pars = ggml_opt_get_constant_optimizer_params;
     opt_params.get_opt_pars_ud = &state->opt_pars;
     opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;

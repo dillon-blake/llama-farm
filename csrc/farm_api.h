@@ -125,6 +125,13 @@ struct ll_opt_params {
 //   opt_period: how many ll_train_step calls make one optimizer step. 1 = step every call.
 //               Anything greater accumulates gradients across that many calls and steps on the
 //               last -- which is what gradient accumulation IS. Must be >= 1.
+//   grad_clip:  clip the gradients to this GLOBAL norm before every optimizer step. 0 disables it.
+//               Global, i.e. one norm over every trainable tensor jointly -- which bounds the
+//               length of the update without rotating it.
+//
+//               Applied as nodes in the graph, because it cannot be applied anywhere else: the
+//               optimizer step is fused into the backward graph, so by the time this shim regains
+//               control the weights have already moved.
 //   params:     AdamW hyperparameters.
 //
 //               THE SHIM STORES THIS POINTER AND RE-READS THE STRUCT ON EVERY STEP. That is the
@@ -146,7 +153,7 @@ struct ll_opt_params {
 // LL_ERR_* code.
 LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model * model,
                                 struct llama_adapter_lora ** adapters, size_t n_adapters,
-                                struct ll_opt_params * params, int32_t opt_period);
+                                struct ll_opt_params * params, int32_t opt_period, float grad_clip);
 
 // Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
 LL_API int32_t ll_opt_free(struct llama_context * ctx);

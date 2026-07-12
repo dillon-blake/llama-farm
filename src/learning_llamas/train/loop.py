@@ -104,6 +104,12 @@ class TrainConfig:
         weight_decay: AdamW's decoupled weight decay. 0 disables it.
         grad_accum: How many batches make one optimizer step. This is ggml-opt's ``opt_period``:
             the gradients of ``grad_accum`` batches are summed and the optimizer steps on the last.
+        grad_clip: Clip the gradients to this **global** norm — one norm over every trainable
+            tensor jointly, so the update's length is bounded without rotating its direction.
+            0 disables it, and a clip above the gradient's norm is a bit-exact no-op.
+
+            Applied inside the graph, which is the only place it can be: the optimizer step is
+            fused into the backward, so there is no moment on the host between the two.
         schedule: ``"constant"`` or ``"cosine"`` (linear warmup, then cosine decay).
         warmup_steps: Optimizer steps to ramp the LR over. Only used by ``"cosine"``.
         min_lr: The floor the cosine decays to.
@@ -114,6 +120,7 @@ class TrainConfig:
     eps: float = 1e-8
     weight_decay: float = 0.0
     grad_accum: int = 1
+    grad_clip: float = 0.0
     schedule: str = "constant"
     warmup_steps: int = 0
     min_lr: float = 0.0
@@ -122,6 +129,8 @@ class TrainConfig:
         """Reject a nonsensical config here, rather than mid-run."""
         if self.grad_accum < 1:
             raise ValueError(f"grad_accum must be at least 1, got {self.grad_accum}")
+        if self.grad_clip < 0:
+            raise ValueError(f"grad_clip cannot be negative, got {self.grad_clip}")
         if self.schedule not in ("constant", "cosine"):
             raise ValueError(f"unknown schedule {self.schedule!r}; use 'constant' or 'cosine'")
 
@@ -231,6 +240,7 @@ class Trainer:
             [model.adapter],
             self._params,
             opt_period=config.grad_accum,
+            grad_clip=config.grad_clip,
         )
 
         if config.schedule == "cosine":

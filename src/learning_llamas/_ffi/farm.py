@@ -71,6 +71,7 @@ def opt_init_lora(
     adapters: list[int],
     params: ll_opt_params,
     opt_period: int = 1,
+    grad_clip: float = 0.0,
 ) -> int:
     """Flag an adapter's A/B tensors as the only trainable parameters.
 
@@ -84,6 +85,9 @@ def opt_init_lora(
             its fields between steps to schedule the learning rate.
         opt_period: How many ``ll_train_step`` calls make one optimizer step. 1 steps every call;
             anything greater accumulates gradients across that many calls and steps on the last.
+        grad_clip: Clip the gradients to this global norm before every optimizer step. 0 disables
+            it. Unlike the learning rate this is fixed at init, because it is structural: it is
+            nodes in the graph, not a number the optimizer reads.
 
     Returns:
         The number of tensors flagged — two per adapted base tensor.
@@ -95,7 +99,7 @@ def opt_init_lora(
 
     n_flagged = check(
         libs.farm.ll_opt_init_lora(
-            ctx, model, arr, len(adapters), ctypes.byref(params), opt_period
+            ctx, model, arr, len(adapters), ctypes.byref(params), opt_period, grad_clip
         ),
         "ll_opt_init_lora",
     )
@@ -154,6 +158,7 @@ SYMBOLS = [
             ctypes.c_size_t,  # n_adapters
             ctypes.POINTER(ll_opt_params),
             ctypes.c_int32,  # opt_period
+            ctypes.c_float,  # grad_clip (0 disables)
         ],
         ctypes.c_int32,
     ),
