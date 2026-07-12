@@ -5,7 +5,7 @@ stage: 0
 track: python
 size: M
 deps: ["S0-01"]
-status: open
+status: pr-open
 pr: null
 ---
 
