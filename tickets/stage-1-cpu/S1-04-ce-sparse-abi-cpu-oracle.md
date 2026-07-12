@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S0-09"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/17
 ---
 
 # S1-04 — New ggml op: ggml_cross_entropy_loss_sparse — ABI (gate G-A) + CPU oracle fwd/bwd

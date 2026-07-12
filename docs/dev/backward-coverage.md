@@ -85,7 +85,7 @@ ticket until it is the whole table and the qualifier can be deleted.
 Genuinely grad-checked (the test class calls `ggml_set_param`) **and** green:
 
 ```
-test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM,TANH,SIGMOID,CLAMP
+test-backend-ops grad -o CROSS_ENTROPY_LOSS,CROSS_ENTROPY_LOSS_SPARSE,RMS_NORM,TANH,SIGMOID,CLAMP
 ```
 
 **S1-19 added TANH, SIGMOID and CLAMP.** All three now grad-check (6, 6 and 5 cases). Note that
