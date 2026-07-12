@@ -431,7 +431,8 @@ void upload_masked_ce(void * userdata) {
 } // namespace
 
 int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
-                      int32_t n_tokens, bool train, float * loss_out) {
+                      const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, bool train,
+                      float * loss_out) {
     if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || n_tokens <= 0) {
         return LL_ERR_INVALID_ARG;
     }
@@ -479,6 +480,41 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
         return LL_ERR_SHAPE_MISMATCH;
     }
 
+    // Packing (S1-07): several independent samples in one batch, told apart by seq_id.
+    //
+    // Two things must hold for that to be correct, and both fail SILENTLY, so both are checked
+    // rather than documented.
+    //
+    // 1. The batch must not be REORDERED on its way to the graph. llama.cpp picks its ubatch
+    //    splitter from the KV cache's stream count -- `n_stream == 1 ? split_simple : split_equal`
+    //    (llama-kv-cache.cpp), and n_stream is `unified ? 1 : n_seq_max`. split_simple hands out
+    //    contiguous slices in the original order, which is exactly what the loss builder assumes
+    //    when it reads targets[pos + i]. split_equal REGROUPS THE TOKENS BY SEQUENCE. With
+    //    kv_unified off, targets and weights would then pair with the wrong tokens -- and the loss
+    //    would still look perfectly reasonable, because it IS a valid loss, just of the wrong thing.
+    //
+    // 2. Every seq_id must fit in the context's n_seq_max, or the batch allocator rejects the batch
+    //    with a message about sequence ids and nothing about packing.
+    if (seq_ids != nullptr) {
+        if (!ctx->get_cparams().kv_unified) {
+            LLAMA_LOG_ERROR("%s: packing (seq_ids) needs a context created with kv_unified=true. "
+                            "Without it, llama.cpp regroups the batch by sequence and the loss "
+                            "targets would silently pair with the wrong tokens.\n",
+                            __func__);
+            return LL_ERR_INVALID_ARG;
+        }
+
+        const int32_t n_seq_max = (int32_t) ctx->n_seq_max();
+        for (int32_t i = 0; i < n_tokens; ++i) {
+            if (seq_ids[i] < 0 || seq_ids[i] >= n_seq_max) {
+                LLAMA_LOG_ERROR("%s: seq_id %d at position %d is outside n_seq_max (%d). Create the "
+                                "context with n_seq_max >= the most samples you will pack.\n",
+                                __func__, seq_ids[i], i, n_seq_max);
+                return LL_ERR_INVALID_ARG;
+            }
+        }
+    }
+
     // Refresh the optimizer hyperparameters from the caller's struct. This is what makes a
     // learning-rate schedule a plain attribute assignment in Python.
     state->opt_pars.adamw.alpha = state->params->alpha;
@@ -491,9 +527,14 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     batch.n_tokens = n_tokens;
     for (int32_t i = 0; i < n_tokens; ++i) {
         batch.token[i] = tokens[i];
-        batch.pos[i] = i;
+
+        // NULL means "one sequence, in order" -- the unpacked case. When they are given, each
+        // packed sample gets its own seq_id and restarts its positions at 0, and llama.cpp's mask
+        // then makes the samples invisible to one another (S1-07).
+        batch.pos[i] = positions ? positions[i] : i;
         batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
+        batch.seq_id[i][0] = seq_ids ? seq_ids[i] : 0;
+
         batch.logits[i] = true; // every position needs logits: every one may carry loss
     }
 

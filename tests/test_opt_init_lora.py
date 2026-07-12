@@ -104,7 +104,7 @@ def test_the_binding_layer_owns_the_params_lifetime(tiny_q4_k, tmp_path, load_mo
         loss = ctypes.c_float()
         _ffi.check(
             libs.farm.ll_train_step(
-                model.ctx, tokens, targets, weights, n, True, ctypes.byref(loss)
+                model.ctx, tokens, targets, weights, None, None, n, True, ctypes.byref(loss)
             ),
             "ll_train_step",
         )
@@ -175,7 +175,9 @@ def test_lora_trains_a_memory_mapped_quantized_base(
         loss = ctypes.c_float()
         # If anything in here wrote a base weight, the process would already be dead.
         _ffi.check(
-            libs.farm.ll_train_step(model.ctx, tok, tgt, wts, n, True, ctypes.byref(loss)),
+            libs.farm.ll_train_step(
+                model.ctx, tok, tgt, wts, None, None, n, True, ctypes.byref(loss)
+            ),
             "ll_train_step",
         )
         losses.append(loss.value)

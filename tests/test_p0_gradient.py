@@ -111,7 +111,15 @@ class Harness:
         loss = ctypes.c_float()
         _ffi.check(
             self.libs.farm.ll_train_step(
-                self.model.ctx, self.tok, self.tgt, self.wts, self.n, train, ctypes.byref(loss)
+                self.model.ctx,
+                self.tok,
+                self.tgt,
+                self.wts,
+                None,
+                None,
+                self.n,
+                train,
+                ctypes.byref(loss),
             ),
             "ll_train_step",
         )

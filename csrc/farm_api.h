@@ -183,9 +183,26 @@ LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 //   train:    true to backpropagate and step the optimizer; false for a forward-only eval.
 //   loss_out: receives the loss. May be NULL.
 //
+// seq_ids and positions are what make PACKING work (S1-07). Several independent samples share one
+// batch; llama.cpp derives the attention mask from (seq_id, pos), and the training path masks
+// across sequences exactly as the cached path does (`if (s0 != s1) continue`, llama-graph.cpp), so
+// giving each packed sample its own seq_id and restarting its positions at 0 makes them invisible
+// to one another. Pass NULL for both to get the unpacked default: one sequence, positions 0..n-1.
+//
+// Args:
+//   tokens:    [n_tokens] the input token at each position.
+//   targets:   [n_tokens] the token that position is asked to predict.
+//   weights:   [n_tokens] how much that prediction counts. 0 masks it out entirely.
+//   seq_ids:   [n_tokens] which sequence each position belongs to, or NULL for "all one".
+//   positions: [n_tokens] each position's index WITHIN its sequence, or NULL for 0..n-1.
+//   n_tokens:  the batch size. Must be the same on every step -- see LL_ERR_SHAPE_MISMATCH.
+//   train:     false runs the forward pass only: no gradient, no optimizer state, nothing written.
+//   loss_out:  the loss, per valid token.
+//
 // Returns LL_OK, or a negative LL_ERR_* code.
 LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
-                             const float * weights, int32_t n_tokens, bool train, float * loss_out);
+                             const float * weights, const int32_t * seq_ids, const int32_t * positions,
+                             int32_t n_tokens, bool train, float * loss_out);
 
 // ---------------------------------------------------------------------------
 // Debug accessors (S1-03)

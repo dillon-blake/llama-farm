@@ -56,19 +56,35 @@ class Batch:
         targets: The token position ``i`` is asked to predict — i.e. ``tokens[i + 1]``.
         weights: How much position ``i``'s prediction counts. ``0.0`` masks it out entirely: the
             loss is zero there and so is the gradient, bitwise (ADR-0003).
+        seq_ids: Which sample each position belongs to, when several are **packed** into one batch
+            (S1-07). llama.cpp masks attention across sequences, so packed samples cannot see one
+            another. ``None`` means the whole batch is one sequence.
+        positions: Each position's index *within its own sequence* — so a packed sample's positions
+            restart at 0. ``None`` means ``0..n-1``.
     """
 
     tokens: list[int]
     targets: list[int]
     weights: list[float]
+    seq_ids: list[int] | None = None
+    positions: list[int] | None = None
 
     def __post_init__(self) -> None:
         """Reject a ragged batch at construction, not three layers down in ctypes."""
         n = len(self.tokens)
-        if len(self.targets) != n or len(self.weights) != n:
+        lengths = {
+            "targets": len(self.targets),
+            "weights": len(self.weights),
+        }
+        if self.seq_ids is not None:
+            lengths["seq_ids"] = len(self.seq_ids)
+        if self.positions is not None:
+            lengths["positions"] = len(self.positions)
+
+        wrong = {k: v for k, v in lengths.items() if v != n}
+        if wrong:
             raise ValueError(
-                f"a batch's tokens, targets and weights must be the same length; got "
-                f"{n}, {len(self.targets)}, {len(self.weights)}"
+                f"every field of a batch must be as long as its tokens ({n}); got {wrong}"
             )
 
     @property
@@ -334,11 +350,24 @@ class Trainer:
         tokens = (ctypes.c_int32 * n)(*batch.tokens)
         targets = (ctypes.c_int32 * n)(*batch.targets)
         weights = (ctypes.c_float * n)(*batch.weights)
+
+        # NULL is the unpacked default: one sequence, positions 0..n-1. The shim reads it that way.
+        seq_ids = (ctypes.c_int32 * n)(*batch.seq_ids) if batch.seq_ids else None
+        positions = (ctypes.c_int32 * n)(*batch.positions) if batch.positions else None
+
         loss = ctypes.c_float()
 
         _ffi.check(
             self._libs.farm.ll_train_step(
-                self._model.ctx, tokens, targets, weights, n, train, ctypes.byref(loss)
+                self._model.ctx,
+                tokens,
+                targets,
+                weights,
+                seq_ids,
+                positions,
+                n,
+                train,
+                ctypes.byref(loss),
             ),
             "ll_train_step",
         )
