@@ -50,6 +50,9 @@ struct ll_train_state {
     // them up in. The tensors themselves persist in opt_ctx's static context.
     std::unordered_map<std::string, ggml_tensor *> grad_accs;
 
+    // The n_tokens of the first step. Every later step must match it -- see ll_train_step.
+    int32_t n_tokens_seen = 0;
+
     // OUR ggml_opt context, not llama_context's.
     //
     // llama_opt_init builds one with GGML_OPT_LOSS_TYPE_CROSS_ENTROPY hardcoded, and keeps it
@@ -148,8 +151,11 @@ int32_t validate_adapter_tensor(const ggml_tensor * tensor) {
 } // namespace
 
 int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter_lora ** adapters, size_t n_adapters,
-                         ll_opt_params * params) {
+                         ll_opt_params * params, int32_t opt_period) {
     if (ctx == nullptr || model == nullptr || adapters == nullptr || params == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    if (opt_period < 1) {
         return LL_ERR_INVALID_ARG;
     }
     if (n_adapters == 0) {
@@ -216,22 +222,21 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     ctx->set_training(true);
 
     ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
-    // opt_period = 1: ONE optimizer step per ll_train_step, always.
+
+    // opt_period comes from the CALLER, and means "how many ll_train_step calls per optimizer
+    // step". It is not inferred from the context's batch geometry.
     //
-    // The obvious value is n_batch / n_ubatch, which is what llama_opt_init uses. It is wrong
-    // here, and wrong in a way that hides. ggml_opt only takes an optimizer step every
-    // opt_period-th ggml_opt_eval, and opt_step_custom calls eval once per ubatch. With n_batch=64
-    // and n_ubatch=32 that is opt_period=2 -- so a caller passing 32 tokens gets ONE ubatch, opt_i
-    // never wraps, and the optimizer steps on every OTHER call to ll_train_step. The loss still
-    // falls, at half the rate, and nothing says why.
+    // llama_opt_init infers it, as n_batch / n_ubatch, and that is wrong in a way that hides.
+    // ggml_opt steps only on every opt_period-th ggml_opt_eval, and opt_step_custom evals once per
+    // ubatch. With n_batch=64 and n_ubatch=32 that gives opt_period=2 -- so a caller passing 32
+    // tokens gets ONE ubatch, opt_i never wraps, and the optimizer steps on every OTHER call to
+    // ll_train_step. The loss still falls, at half the rate, and nothing says why. (It also leaves
+    // opt_ctx->gb_opt NULL on the steps that do not wrap, which is how it was found: as a segfault
+    // inside ggml_opt_grad_acc.)
     //
-    // It also leaves opt_ctx->gb_opt NULL on the steps that do not wrap, and ggml_opt_grad_acc
-    // dereferences gb_opt without checking -- which is how this was found, as a segfault.
-    //
-    // So: one ubatch per step, one optimizer step per step. Accumulating gradients across steps is
-    // the trainer's job, where it is explicit, not something ggml_opt should infer from a
-    // context's batch geometry.
-    opt_params.opt_period = 1;
+    // So gradient accumulation is the trainer's decision, stated explicitly, and one ll_train_step
+    // is always exactly one micro-batch.
+    opt_params.opt_period = opt_period;
     opt_params.get_opt_pars = ggml_opt_get_constant_optimizer_params;
     opt_params.get_opt_pars_ud = &state->opt_pars;
     opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
@@ -445,6 +450,33 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
                         "ubatch. Accumulate gradients across steps instead.\n",
                         __func__, n_tokens, ctx->n_ubatch());
         return LL_ERR_INVALID_ARG;
+    }
+
+    // Every step must have the same n_tokens as the first.
+    //
+    // This is not a limitation ggml announces, and it does not currently crash -- a 32-token step
+    // followed by a 16-token step runs, and the loss keeps falling. It is guarded anyway, because
+    // what makes it work is a coincidence:
+    //
+    // ggml_opt_build allocates opt_ctx->grad_accs ONCE, sized to the FIRST graph's node count
+    // (`if (opt_ctx->grad_accs.empty())`, ggml-opt.cpp), and thereafter ggml_build_backward_expand
+    // indexes that array by node index on every rebuilt graph. A transformer's node COUNT happens
+    // not to depend on the ubatch size, so the indices line up. Nothing enforces that -- a fused-op
+    // choice that keys off shape, or a future graph tweak, changes the node count for one shape and
+    // not another, and then the backward reads past the end of the vector. That is a silent
+    // out-of-bounds, not an assert: it corrupts gradients rather than stopping.
+    //
+    // So the shape is pinned to the first step's, and a mismatch is a clear error. Fixed-shape
+    // batches are what the trainer produces anyway (it pads with weight-0 tokens); this just means
+    // a caller cannot get it wrong quietly.
+    if (state->n_tokens_seen == 0) {
+        state->n_tokens_seen = n_tokens;
+    } else if (state->n_tokens_seen != n_tokens) {
+        LLAMA_LOG_ERROR("%s: n_tokens changed from %d to %d. Every step must have the same shape: "
+                        "ggml-opt indexes its optimizer state by graph node index, and sizes it "
+                        "from the first graph it sees. Pad the batch instead (weight 0).\n",
+                        __func__, state->n_tokens_seen, n_tokens);
+        return LL_ERR_SHAPE_MISMATCH;
     }
 
     // Refresh the optimizer hyperparameters from the caller's struct. This is what makes a

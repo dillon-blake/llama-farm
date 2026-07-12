@@ -73,6 +73,10 @@ struct llama_adapter_lora;
 
 #define LL_ERR_STEP_FAILED -8 // the training step itself failed
 
+// n_tokens changed between steps. ggml-opt indexes its optimizer state by graph node index and
+// sizes it from the first graph it sees, so every step must have the same shape. Pad instead.
+#define LL_ERR_SHAPE_MISMATCH -9
+
 // AdamW hyperparameters, owned by the caller and read afresh on every optimizer step.
 //
 // Python keeps this struct alive and mutates it between steps, which is how a learning-rate
@@ -118,6 +122,9 @@ struct ll_opt_params {
 //   model:      the model the adapters were loaded against.
 //   adapters:   the same handles passed to llama_set_adapters_lora.
 //   n_adapters: how many.
+//   opt_period: how many ll_train_step calls make one optimizer step. 1 = step every call.
+//               Anything greater accumulates gradients across that many calls and steps on the
+//               last -- which is what gradient accumulation IS. Must be >= 1.
 //   params:     AdamW hyperparameters.
 //
 //               THE SHIM STORES THIS POINTER AND RE-READS THE STRUCT ON EVERY STEP. That is the
@@ -139,7 +146,7 @@ struct ll_opt_params {
 // LL_ERR_* code.
 LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model * model,
                                 struct llama_adapter_lora ** adapters, size_t n_adapters,
-                                struct ll_opt_params * params);
+                                struct ll_opt_params * params, int32_t opt_period);
 
 // Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
 LL_API int32_t ll_opt_free(struct llama_context * ctx);

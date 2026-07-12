@@ -20,6 +20,7 @@ class LLError(IntEnum):
     NOT_INITIALIZED = -6
     BASE_BUFT_NO_BACKWARD = -7
     STEP_FAILED = -8
+    SHAPE_MISMATCH = -9
 
 
 class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
@@ -63,7 +64,14 @@ class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
 _LIVE_PARAMS: dict[int, ll_opt_params] = {}
 
 
-def opt_init_lora(libs, ctx: int, model: int, adapters: list[int], params: ll_opt_params) -> None:
+def opt_init_lora(
+    libs,
+    ctx: int,
+    model: int,
+    adapters: list[int],
+    params: ll_opt_params,
+    opt_period: int = 1,
+) -> int:
     """Flag an adapter's A/B tensors as the only trainable parameters.
 
     Args:
@@ -74,18 +82,27 @@ def opt_init_lora(libs, ctx: int, model: int, adapters: list[int], params: ll_op
         params: The AdamW hyperparameters. **Kept alive by this module** for as long as ``ctx`` is
             initialized, because the shim holds a pointer to it and reads it on every step. Mutate
             its fields between steps to schedule the learning rate.
+        opt_period: How many ``ll_train_step`` calls make one optimizer step. 1 steps every call;
+            anything greater accumulates gradients across that many calls and steps on the last.
+
+    Returns:
+        The number of tensors flagged — two per adapted base tensor.
 
     Raises:
         RuntimeError: If the shim rejects the adapters (see :class:`LLError`).
     """
     arr = (ctypes.c_void_p * len(adapters))(*adapters)
 
-    check(
-        libs.farm.ll_opt_init_lora(ctx, model, arr, len(adapters), ctypes.byref(params)),
+    n_flagged = check(
+        libs.farm.ll_opt_init_lora(
+            ctx, model, arr, len(adapters), ctypes.byref(params), opt_period
+        ),
         "ll_opt_init_lora",
     )
 
     _LIVE_PARAMS[int(ctx)] = params
+
+    return n_flagged
 
 
 def opt_free(libs, ctx: int) -> None:
@@ -136,6 +153,7 @@ SYMBOLS = [
             ctypes.POINTER(ctypes.c_void_p),  # llama_adapter_lora **
             ctypes.c_size_t,  # n_adapters
             ctypes.POINTER(ll_opt_params),
+            ctypes.c_int32,  # opt_period
         ],
         ctypes.c_int32,
     ),

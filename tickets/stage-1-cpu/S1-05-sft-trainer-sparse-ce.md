@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-03", "S1-04", "S1-06"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/20
 ---
 
 # S1-05 — SFT trainer on sparse CE + masked validation eval

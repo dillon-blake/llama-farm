@@ -151,6 +151,7 @@ class Model:
             # for "did anything touch the base model?" (see test_opt_init_lora).
             model_params.use_mmap = False
 
+        self.path = path
         self.model = libs.llama.llama_model_load_from_file(str(path).encode(), model_params)
         if not self.model:
             raise RuntimeError(f"failed to load {path}")
