@@ -28,6 +28,15 @@ message(STATUS "learning-llamas: version ${LL_VERSION}, vendored llama.cpp ${LL_
 
 configure_file(farm_version.h.in "${CMAKE_CURRENT_BINARY_DIR}/farm_version.h" @ONLY)
 
+# The Python half of the version lock (S0-04). Generated into the *source* tree rather than the
+# install tree on purpose: under an editable install `learning_llamas._ffi` resolves out of
+# src/, so a copy installed into site-packages would either be invisible or -- worse -- shadow
+# the whole subpackage. It is gitignored and rewritten on every configure.
+configure_file(
+    "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py.in"
+    "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py"
+    @ONLY)
+
 add_library(learningllamas
     farm_api.h
     farm_probe.cpp

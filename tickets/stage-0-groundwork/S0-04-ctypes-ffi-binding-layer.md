@@ -5,8 +5,8 @@ stage: 0
 track: python
 size: M
 deps: ["S0-03"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/4
 ---
 
 # S0-04 — ctypes binding layer (_ffi): load order, struct mirrors, version lock
