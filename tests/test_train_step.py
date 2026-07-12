@@ -52,15 +52,11 @@ def trainer(tiny_f32, tmp_path, load_model, libs: _ffi.Libraries):
     model.attach_adapter(adapter_path, scale=1.0)
 
     params = _ffi.ll_opt_params(alpha=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.0)
-    adapters = (ctypes.c_void_p * 1)(model.adapter)
-    _ffi.check(
-        libs.farm.ll_opt_init_lora(model.ctx, model.model, adapters, 1, ctypes.byref(params)),
-        "ll_opt_init_lora",
-    )
+    _ffi.opt_init_lora(libs, model.ctx, model.model, [model.adapter], params)
 
     yield model, params
 
-    libs.farm.ll_opt_free(model.ctx)
+    _ffi.opt_free(libs, model.ctx)
 
 
 def test_a_step_runs_and_the_loss_falls(trainer, libs: _ffi.Libraries) -> None:

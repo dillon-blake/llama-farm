@@ -41,6 +41,64 @@ class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
     ]
 
 
+# Every ll_opt_params struct the shim is holding a pointer to, keyed by its llama_context.
+#
+# The shim stores a RAW POINTER to the caller's struct and re-reads alpha/beta1/beta2/eps/wd off it
+# on every single step. That is the whole design: a learning-rate schedule is `params.alpha = ...`
+# between steps, with no callback into Python and no GIL round-trip on the hot path.
+#
+# The cost is a lifetime the C side cannot see. If Python frees the struct, the shim goes on reading
+# it, and the hyperparameters become whatever now occupies that heap: training silently produces
+# NaN, or an alpha of zero, or it aborts on `GGML_ASSERT(alpha > 0)`, or it segfaults -- and which
+# one you get depends on the heap layout, so it is nondeterministic across runs.
+#
+# And it is *far* too easy to do by accident. This is enough:
+#
+#     h, _ = make_trainer(...)    # `_` is the params struct
+#     for _ in range(16):         # ...and now it is not: the loop rebound `_`, Python freed it
+#         h.step()
+#
+# So the binding layer keeps the reference itself and the lifetime stops being the caller's problem.
+# Nothing outside this module should call ll_opt_init_lora / ll_opt_free directly.
+_LIVE_PARAMS: dict[int, ll_opt_params] = {}
+
+
+def opt_init_lora(libs, ctx: int, model: int, adapters: list[int], params: ll_opt_params) -> None:
+    """Flag an adapter's A/B tensors as the only trainable parameters.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: A ``llama_context *``.
+        model: The ``llama_model *`` the adapters were loaded against.
+        adapters: One or more ``llama_adapter_lora *``.
+        params: The AdamW hyperparameters. **Kept alive by this module** for as long as ``ctx`` is
+            initialized, because the shim holds a pointer to it and reads it on every step. Mutate
+            its fields between steps to schedule the learning rate.
+
+    Raises:
+        RuntimeError: If the shim rejects the adapters (see :class:`LLError`).
+    """
+    arr = (ctypes.c_void_p * len(adapters))(*adapters)
+
+    check(
+        libs.farm.ll_opt_init_lora(ctx, model, arr, len(adapters), ctypes.byref(params)),
+        "ll_opt_init_lora",
+    )
+
+    _LIVE_PARAMS[int(ctx)] = params
+
+
+def opt_free(libs, ctx: int) -> None:
+    """Release the shim's training state for ``ctx``, and the params struct it was reading.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: The ``llama_context *`` passed to :func:`opt_init_lora`.
+    """
+    libs.farm.ll_opt_free(ctx)
+    _LIVE_PARAMS.pop(int(ctx), None)
+
+
 def check(result: int, what: str) -> int:
     """Raise if a shim call returned a negative error code.
 
@@ -82,6 +140,49 @@ SYMBOLS = [
         ctypes.c_int32,
     ),
     Symbol(Library.FARM, "ll_opt_free", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-03 debug accessors. Outside any API-stability promise; superseded by S1-08.
+    Symbol(
+        Library.FARM,
+        "ll_debug_n_elements",
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_bool],
+        ctypes.c_int64,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_debug_get_tensor",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_debug_set_tensor",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_debug_grad",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
     # S1-02: one training step with a per-token weighted (maskable) cross-entropy loss.
     Symbol(

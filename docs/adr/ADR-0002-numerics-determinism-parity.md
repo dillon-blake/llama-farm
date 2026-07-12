@@ -165,6 +165,58 @@ docs/PROVENANCE.md.)
 
 Tightening either bound later requires amending this ADR.
 
+### A finite difference through a quantized base measures nothing
+
+*(Amended by S1-03, which measured this rather than assuming it. It invalidates that ticket's own
+stated acceptance criterion, so it is recorded here rather than in a PR description.)*
+
+llama.cpp does not implement a quantized matmul by dequantizing the weights and multiplying in
+float. It **quantizes the activations** to the weight type's `vec_dot_type` — Q8_K for a Q4_K
+weight, Q8_0 for a Q8_0 one — and dot-products in the integer domain.
+
+So a small perturbation of a trainable weight makes a small perturbation of the activations, which
+*usually changes their 8-bit codes not at all*, and *occasionally flips one by a whole quantum*.
+**The forward pass is a step function of the weights**, with steps of order 1e-3 in the loss.
+Measured on the tiny fixture, sweeping one element of a LoRA `B`:
+
+```
+  B[0]      Q4_K base        F32 base
+ -0.040   6.3610424995    6.2726659775
+ -0.020   6.3612122536    6.2726297379
+  0.000   6.3611059189    6.2725958824
+ +0.020   6.3608088493    6.2725639343
+ +0.040   6.3606944084    6.2725348473
+```
+
+The F32 column is a straight line. The Q4_K column has **no trend at all**: the true signal — a
+slope of ~1e-3 across the entire sweep — is buried under the quantization steps. No choice of `eps`
+recovers it, because shrinking `eps` shrinks the signal and leaves the steps exactly where they are.
+
+The backward, meanwhile, differentiates the **smooth dequantized** function: the MUL_MAT gradient is
+`ggml_out_prod(W, grad)`, which dequantizes `W`. That is the correct and intended behaviour — the
+standard straight-through treatment of a non-differentiable quantizer. The analytic gradient and the
+finite difference are therefore computing **different functions**, and neither is wrong.
+
+> **Normative:** an end-to-end finite-difference gradient check must run on an **F32 base**. A ticket
+> that reports one on a quantized base is reporting noise, and a tolerance loose enough to let it
+> pass is loose enough to hide a genuinely wrong gradient. (The S1-02 backward bug — a masked-CE
+> loss whose gradient was wrong for every non-unit weight — sat at a relative error of 0.4–1.4,
+> which is *inside* the noise floor of a Q4_K finite difference.)
+
+The quantized backward is instead validated **against the F32 backward**, and the evidence is the
+*trend*, not any single threshold: a backward that dequantizes correctly must degrade gracefully and
+monotonically with bit width, because bit width is the only thing that changed. Measured on
+`blk.0.attn_q`, same adapter, same batch:
+
+```
+  q8_0   cosine 0.99991    0.8° from the F32 gradient   magnitude x0.998
+  q4_k   cosine 0.97791   12.1° from the F32 gradient   magnitude x1.019
+```
+
+A backward that dequantized the wrong way, or transposed, has no reason to be three orders of
+magnitude tighter at 8 bits than at 4. That ordering is the assertion; see
+`tests/test_p0_gradient.py::test_the_quantized_backward_tracks_the_f32_backward`.
+
 ## Consequences
 
 **Every kernel ticket must include:**

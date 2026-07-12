@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-02", "S0-06"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/19
 ---
 
 # S1-03 — P0 proof-of-gradient: stopgap composite CE, loss falls, FD check, llama-cli loads adapter
