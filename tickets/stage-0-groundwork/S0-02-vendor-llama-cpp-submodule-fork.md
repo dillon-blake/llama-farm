@@ -5,8 +5,8 @@ stage: 0
 track: infra
 size: S
 deps: ["S0-01"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/2
 ---
 
 # S0-02 — Vendor llama.cpp as pinned submodule + fork + patch queue
