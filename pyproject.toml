@@ -44,6 +44,20 @@ install.components = ["learningllamas"]
 provider = "scikit_build_core.metadata.regex"
 input = "src/learning_llamas/__init__.py"
 
+# ---------------------------------------------------------------------------
+# pytest. The per-PR CI selection is `-m "not slow"` with the backend markers
+# deselected; the nightly lane runs everything (S0-07).
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: nightly-only (convergence gates, full sweeps)",
+    "cuda: requires a CUDA backend build",
+    "metal: requires a Metal backend build",
+    "vulkan: requires a Vulkan backend build",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

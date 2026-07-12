@@ -5,8 +5,8 @@ stage: 0
 track: python
 size: M
 deps: [S0-04, S0-05]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/6
 ---
 
 # S0-06 — Test harness: pytest + tiny fixture GGUF models + no-op adapter smoke test
