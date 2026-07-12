@@ -16,6 +16,9 @@
 #ifndef LEARNING_LLAMAS_FARM_API_H
 #define LEARNING_LLAMAS_FARM_API_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +49,86 @@ LL_API const char * ll_version(void);
 //
 // Returns a static, NUL-terminated string; the caller must not free it.
 LL_API const char * ll_probe(void);
+
+// ---------------------------------------------------------------------------
+// Training (S1-01)
+// ---------------------------------------------------------------------------
+
+struct llama_context;
+struct llama_model;
+struct llama_adapter_lora;
+
+// Negative return codes. Every entry point below returns a non-negative value on success.
+#define LL_OK 0
+#define LL_ERR_INVALID_ARG -1     // a null or nonsensical argument
+#define LL_ERR_NO_ADAPTERS -2     // n_adapters == 0, or an adapter has no A/B tensors
+#define LL_ERR_ALREADY_INIT -3    // ll_opt_init_lora called twice on one context
+#define LL_ERR_TENSOR_NOT_F32 -4  // an adapter tensor is not F32; LoRA A/B must be
+#define LL_ERR_TENSOR_NOT_LEAF -5 // an adapter tensor is not a leaf (op != GGML_OP_NONE)
+#define LL_ERR_NOT_INITIALIZED -6 // no training state for this context
+#define LL_ERR_BASE_BUFT_NO_BACKWARD                                                                                   \
+    -7 // a base tensor's buffer type cannot run OUT_PROD, so
+       // its gradient node would be unschedulable. Load the
+       // model with use_extra_bufts=false.
+
+// AdamW hyperparameters, owned by the caller and read afresh on every optimizer step.
+//
+// Python keeps this struct alive and mutates it between steps, which is how a learning-rate
+// schedule works with no callback: the shim hands ggml the exported
+// ggml_opt_get_constant_optimizer_params with a pointer to this struct as its userdata.
+struct ll_opt_params {
+    float alpha; // learning rate
+    float beta1;
+    float beta2;
+    float eps;
+    float wd; // weight decay; 0 to disable
+};
+
+// Mark the LoRA adapter's A/B tensors as the ONLY trainable parameters, and put the context
+// into training mode.
+//
+// This is the whole trick (BLUEPRINT D2). ggml's autograd gives gradients and optimizer state
+// only to leaf tensors flagged with ggml_set_param. `build_lora_mm` already injects the adapter
+// A/B matmuls into every architecture's forward graph, so flagging those tensors is *all* that
+// is missing -- ggml_build_backward_expand does the rest, with zero per-architecture code.
+//
+// Nobody had wired this: llama.cpp's own llama_set_param helper iterates base-model tensors only
+// and never offers adapter tensors to the filter, so today they ride through training graphs as
+// inert constants.
+//
+// Two orderings are enforced, not merely documented:
+//   - adapters must already be attached to `ctx` (llama_set_adapters_lora), because this call
+//     takes the same handles;
+//   - this must run BEFORE the first training step, because PARAM-flagged leaves are promoted
+//     into graph nodes at build time and ggml-opt's gradient/momentum allocation scans only
+//     graph nodes. Flagging afterwards would silently train nothing.
+//
+// Because only the adapter trains, the base model is never written and may stay quantized AND
+// memory-mapped (use_mmap=true) -- unlike full fine-tuning, which must disable mmap because the
+// optimizer writes weights back in place through what is a read-only mapping.
+//
+// Perf note for stages 2-4: an adapter tensor whose base tensor uses an extra/repacked buffer
+// type falls back to a CPU buffer at load (llama-adapter.cpp:337-350). Once GPU backends exist,
+// that costs cross-backend gradient traffic. Harmless on the CPU-only stage-1 build.
+//
+// Args:
+//   ctx:        the context the adapters are attached to.
+//   model:      the model the adapters were loaded against.
+//   adapters:   the same handles passed to llama_set_adapters_lora.
+//   n_adapters: how many.
+//   params:     AdamW hyperparameters. The caller must keep this alive for the whole run.
+//
+// Returns the number of tensors flagged (2 x the number of adapted base tensors), or a negative
+// LL_ERR_* code.
+LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model * model,
+                                struct llama_adapter_lora ** adapters, size_t n_adapters,
+                                struct ll_opt_params * params);
+
+// Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
+LL_API int32_t ll_opt_free(struct llama_context * ctx);
+
+// The number of tensors ll_opt_init_lora flagged, or LL_ERR_NOT_INITIALIZED.
+LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,7 @@ Typical use::
 
 from __future__ import annotations
 
+from .farm import LLError, check, ll_opt_params
 from .ggml_opt import (
     AdamWParams,
     BuildType,
@@ -49,6 +50,7 @@ from .registry import Library, Symbol
 __all__ = [
     "SYMBOLS",
     "AdamWParams",
+    "LLError",
     "AttentionType",
     "BuildType",
     "ContextType",
@@ -62,6 +64,7 @@ __all__ = [
     "SGDParams",
     "SplitMode",
     "Symbol",
+    "check",
     "ggml_log_callback",
     "ggml_opt_optimizer_params",
     "ggml_opt_params",
@@ -71,6 +74,7 @@ __all__ = [
     "llama_context_params",
     "llama_model_params",
     "llama_opt_param_filter",
+    "ll_opt_params",
     "llama_opt_params",
     "llama_token",
     "load",

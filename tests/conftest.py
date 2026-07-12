@@ -81,8 +81,16 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
         n_ctx: int = 512,
         n_ubatch: int | None = None,
         training: bool = False,
+        full_finetune: bool = False,
     ) -> Model:
-        model = Model(libs, path, n_ctx=n_ctx, n_ubatch=n_ubatch, training=training)
+        model = Model(
+            libs,
+            path,
+            n_ctx=n_ctx,
+            n_ubatch=n_ubatch,
+            training=training,
+            full_finetune=full_finetune,
+        )
         opened.append(model)
         return model
 
@@ -105,20 +113,42 @@ class Model:
         n_ctx: int = 512,
         n_ubatch: int | None = None,
         training: bool = False,
+        full_finetune: bool = False,
     ) -> None:
+        """Load a model and a context to run it in.
+
+        Args:
+            libs: The loaded native libraries.
+            path: The model GGUF.
+            n_ctx: Context size to request (llama.cpp may pad it — read it back).
+            n_ubatch: Physical batch size; defaults to ``n_ctx``.
+            training: Configure for *any* kind of training — disables extra buffer types.
+            full_finetune: Additionally disable mmap, because base weights will be written.
+                LoRA does **not** need this, and that is exactly the point of BLUEPRINT D2.
+        """
         self._libs = libs
 
         model_params = libs.llama.llama_model_default_params()
         model_params.n_gpu_layers = 0  # CPU is the oracle
 
-        if training:
-            # mmap maps the weights READ-ONLY, and the AdamW step writes updated weights back
-            # in place — so training a mmap'd model segfaults inside
-            # ggml_compute_forward_opt_step_adamw. It is not a graceful failure: the process
-            # dies with SIGSEGV after the forward and backward passes have already succeeded,
-            # which makes it look like a kernel bug rather than a loading flag.
-            # llama.cpp's own finetune example disables mmap for exactly this reason
+        if training or full_finetune:
+            # ggml-cpu's "extra buffer types" repack weights (q4_K_8x8 and friends) to speed up
+            # MUL_MAT. But supports_op returns EARLY for any op whose src is in one, delegating
+            # to a handler that implements MUL_MAT and *not* OUT_PROD — precisely what the
+            # backward pass needs. So a repacked base tensor makes its own gradient node
+            # unschedulable and ggml_backend_sched aborts, naming neither op nor tensor.
+            # It bites Q4_K and not Q8_0, purely because a q4_K repack variant exists.
+            model_params.use_extra_bufts = False
+
+        if full_finetune:
+            # mmap maps the weights READ-ONLY, and the AdamW step writes updated weights back in
+            # place — so a mmap'd full fine-tune segfaults inside
+            # ggml_compute_forward_opt_step_adamw, *after* forward and backward have already
+            # succeeded. llama.cpp's finetune example disables mmap for exactly this reason
             # (examples/training/finetune.cpp:28-32).
+            #
+            # LoRA never writes a base weight, so it keeps mmap — which makes mmap a free oracle
+            # for "did anything touch the base model?" (see test_opt_init_lora).
             model_params.use_mmap = False
 
         self.model = libs.llama.llama_model_load_from_file(str(path).encode(), model_params)
@@ -168,7 +198,7 @@ class Model:
         if status != 0:
             raise RuntimeError(f"llama_set_adapters_lora failed with status {status}")
 
-        self._adapter = adapter
+        self.adapter = adapter
 
     def close(self) -> None:
         if getattr(self, "ctx", None):
