@@ -85,8 +85,13 @@ ticket until it is the whole table and the qualifier can be deleted.
 Genuinely grad-checked (the test class calls `ggml_set_param`) **and** green:
 
 ```
-test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM
+test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM,TANH,SIGMOID,CLAMP
 ```
+
+**S1-19 added TANH, SIGMOID and CLAMP.** All three now grad-check (6, 6 and 5 cases). Note that
+`test_clamp` already *declared* `grad_eps()` and `grad_expect() = {0, 1}` — as if it were being
+gradient-checked — while never calling `ggml_set_param`. It looked like a gradient test and
+verified nothing. Exactly the trap this document exists to name.
 
 `MUL_MAT` is genuinely checked and *nearly* green, but it takes **3m20s** and has the marginal
 FD failures above, so it is a nightly candidate rather than a per-PR one. It matters more than it

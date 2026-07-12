@@ -198,7 +198,7 @@ jobs:
       - name: test-backend-ops — grad (targeted, MODE_GRAD)
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
-          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM
+          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM,TANH,SIGMOID,CLAMP
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
