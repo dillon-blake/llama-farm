@@ -541,10 +541,11 @@ def test_the_gradient_survives_a_ratio_landing_exactly_on_the_clip_bound(
     They give the same forward value. They differ in where the gradient goes **at a tie**, and that
     turns out to matter.
 
-    ``ggml_step(0) == 0``. So when the ratio lands exactly on ``lo``, ``relu(r - lo)`` is fed exactly
-    zero, its backward is zero, and ``d(clipped)/dr`` is zero. But ``clipped`` *evaluates* to
-    ``lo == r``, so the two branches of the ``min`` are bitwise equal — a tie. And ``b - relu(b - a)``
-    routes a tie's entire gradient into ``b``: the branch whose derivative was just computed as zero.
+    ``ggml_step(0) == 0``. So when the ratio lands exactly on ``lo``, ``relu(r - lo)`` is fed
+    exactly zero, its backward is zero, and ``d(clipped)/dr`` is zero. But ``clipped`` *evaluates*
+    to ``lo == r``, so the two branches of the ``min`` are bitwise equal — a tie. And
+    ``b - relu(b - a)`` routes a tie's whole gradient into ``b``: the branch whose derivative was
+    just computed as zero.
 
     The token's policy gradient disappears. And for a POSITIVE advantage that is not a subgradient
     choice at a kink — there is no kink. ``min(rA, clip(r)A)`` equals ``rA`` on *both* sides of
