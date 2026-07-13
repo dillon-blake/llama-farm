@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <cstddef>
@@ -61,6 +62,19 @@ struct ll_train_state {
 
     // The n_tokens of the first step. Every later step must match it -- see ll_train_step.
     int32_t n_tokens_seen = 0;
+
+    // And the OBJECTIVE of the first step, for exactly the same reason and with a worse failure.
+    //
+    // Different objectives build different numbers of nodes -- the DPO tail adds a scale, an add and
+    // a softplus that the SFT loss does not have. ggml-opt sizes grad_accs from the FIRST graph's
+    // node count and indexes it by node index thereafter, so switching objectives on one context
+    // makes the backward pass index past the end of that vector. It does not assert; it reads
+    // whatever is next in memory and calls it a gradient tensor. (Found as a segfault.)
+    int32_t loss_kind_seen = -1;
+
+    // The backend scheduler ggml_opt_init was handed. It captures the POINTER and holds it forever;
+    // llama_context is free to replace it. See LL_ERR_SCHED_INVALIDATED.
+    ggml_backend_sched_t sched = nullptr;
 
     // OUR ggml_opt context, not llama_context's.
     //
@@ -260,6 +274,7 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     opt_params.get_opt_pars_ud = &state->opt_pars;
     opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
 
+    state->sched = ctx->get_sched();
     state->opt_ctx = ggml_opt_init(opt_params);
 
     // THE trick: flag the adapter's A/B tensors. Everything else -- gradients, the AdamW
@@ -344,9 +359,23 @@ void capture_grad_accs(ll_train_state * state) {
 }
 
 // Everything the loss builder needs, threaded through llama_context::opt_step_custom as userdata.
+// Which objective the loss builder should build.
+enum ll_loss_kind {
+    LL_LOSS_SFT = 0,  // masked mean cross-entropy, normalized by the weight actually carried
+    LL_LOSS_DPO = 1,  // -log sigmoid(beta * (logratio - ref_logratio))
+    LL_LOSS_LOGP = 2, // sum_i w_i * logp_i, unnormalized -- for precomputing reference logratios
+};
+
 struct loss_ctx {
     ll_train_state * state = nullptr; // so the alloc-time hook can capture the gradient accumulators
     bool train = false;
+
+    ll_loss_kind kind = LL_LOSS_SFT;
+
+    // DPO only. beta scales the implicit reward; ref_delta is the REFERENCE model's log-ratio
+    // logp(chosen) - logp(rejected), precomputed with the adapter off and fed in as a constant.
+    float beta = 0.1f;
+    float ref_delta = 0.0f;
 
     const int32_t * targets = nullptr; // [n_tokens] target id per position
     const float * weights = nullptr;   // [n_tokens] loss weight per position; 0 masks out
@@ -355,6 +384,7 @@ struct loss_ctx {
     // Set by build_masked_ce, filled by upload_masked_ce once ggml_opt_alloc has given it memory.
     ggml_tensor * labels = nullptr;     // I32 [n_ubatch] -- the target token of each position
     ggml_tensor * ce_weights = nullptr; // F32 [n_ubatch] -- its loss weight, pre-normalized
+    ggml_tensor * dpo_ref = nullptr;    // F32 [1] -- beta * ref_delta, a constant (DPO only)
     int32_t pos = 0;                    // this ubatch's offset within the batch
     int32_t n_ubatch = 0;
     int64_t n_vocab = 0;
@@ -408,8 +438,41 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
         ggml_cross_entropy_loss_sparse(ctx_compute, logits, lc->labels, lc->ce_weights, 1.0f, 0.0f);
     ggml_set_name(per_token, "ll_ce_per_token");
 
+    // ce_sparse gives  per_token[i] = w_i * (logsumexp(x_i) - x_i[target_i]) = -w_i * logp_i.
+    // Summing it is therefore  -sum_i w_i * logp_i  -- the negative weighted log-probability.
     ggml_tensor * loss = ggml_sum(ctx_compute, per_token);
     ggml_set_name(loss, "ll_ce_loss");
+
+    if (lc->kind == LL_LOSS_DPO) {
+        // DPO. With weights of +1 on the chosen completion's tokens and -1 on the rejected's,
+        //
+        //     loss (so far) = -(logp_chosen - logp_rejected) = -delta
+        //
+        // and the objective is
+        //
+        //     L = -log sigmoid( beta * (delta - ref_delta) )
+        //       =  softplus( -beta * (delta - ref_delta) )          [ -log sigmoid(x) = softplus(-x) ]
+        //       =  softplus( beta * loss + beta * ref_delta )       [ since loss = -delta ]
+        //
+        // The softplus identity is not a stylistic choice. SIGMOID's backward falls into the unary
+        // default and ABORTS, so -log(sigmoid(x)) cannot be built that way at all -- and softplus is
+        // one node and numerically stable at large |x|, where log(1 + exp(-x)) computed naively is
+        // not.
+        //
+        // ref_delta is the REFERENCE model's log-ratio, precomputed with the adapter off and handed
+        // in as a constant. It carries no gradient, which is the whole point: DPO's gradient is the
+        // policy's, shaped by how far it has moved from a reference that does not move.
+        lc->dpo_ref = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, 1);
+        ggml_set_input(lc->dpo_ref);
+        ggml_set_name(lc->dpo_ref, "ll_dpo_ref");
+
+        ggml_tensor * z = ggml_scale(ctx_compute, loss, lc->beta);
+        z = ggml_add(ctx_compute, z, lc->dpo_ref);
+        ggml_set_name(z, "ll_dpo_logit");
+
+        loss = ggml_softplus(ctx_compute, z);
+        ggml_set_name(loss, "ll_dpo_loss");
+    }
 
     ggml_build_forward_expand(gf, loss);
 
@@ -423,7 +486,7 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
 void upload_masked_ce(void * userdata) {
     auto * lc = (loss_ctx *)userdata;
 
-    if (lc->train) {
+    if (lc->train && lc->state != nullptr) {
         capture_grad_accs(lc->state);
     }
 
@@ -434,11 +497,21 @@ void upload_masked_ce(void * userdata) {
     // must not have its loss (and so its gradient) scaled down 10x relative to one that is 10%
     // prompt. Folding 1/sum(w) into the weights here keeps the graph a plain sum. A batch with no
     // unmasked token at all has zero loss and zero gradient, which is the honest answer.
-    float sum_w = 0.0f;
-    for (int32_t i = 0; i < n_ubatch; ++i) {
-        sum_w += lc->weights[lc->pos + i];
+    //
+    // DPO does NOT normalize, and must not. Its weights are +1 on the chosen completion's tokens and
+    // -1 on the rejected's, so sum(w) is the DIFFERENCE in their lengths -- a number with no meaning
+    // at all as a denominator, and zero whenever the two happen to be the same length. What DPO
+    // wants is the plain sum of per-token log-probabilities, which is what an unnormalized weighted
+    // sum with +/-1 weights is.
+    float scale = 1.0f;
+
+    if (lc->kind == LL_LOSS_SFT) {
+        float sum_w = 0.0f;
+        for (int32_t i = 0; i < n_ubatch; ++i) {
+            sum_w += lc->weights[lc->pos + i];
+        }
+        scale = sum_w > 0.0f ? 1.0f / sum_w : 0.0f;
     }
-    const float scale = sum_w > 0.0f ? 1.0f / sum_w : 0.0f;
 
     std::vector<int32_t> labels(n_ubatch);
     std::vector<float> weights(n_ubatch);
@@ -455,13 +528,22 @@ void upload_masked_ce(void * userdata) {
 
     ggml_backend_tensor_set(lc->labels, labels.data(), 0, labels.size() * sizeof(int32_t));
     ggml_backend_tensor_set(lc->ce_weights, weights.data(), 0, weights.size() * sizeof(float));
+
+    if (lc->dpo_ref != nullptr) {
+        const float value = lc->beta * lc->ref_delta;
+        ggml_backend_tensor_set(lc->dpo_ref, &value, 0, sizeof(float));
+    }
 }
 
 } // namespace
 
-int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
-                      const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, bool train,
-                      float * loss_out) {
+namespace {
+
+// The one training step, with the objective as a parameter. ll_train_step and ll_train_step_dpo are
+// both this; ll_logp_delta is this with train=false and no reduction.
+int32_t train_step_impl(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                        const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, ll_loss_kind kind,
+                        float beta, float ref_delta, bool train, float * loss_out) {
     if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || n_tokens <= 0) {
         return LL_ERR_INVALID_ARG;
     }
@@ -499,6 +581,17 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     // So the shape is pinned to the first step's, and a mismatch is a clear error. Fixed-shape
     // batches are what the trainer produces anyway (it pads with weight-0 tokens); this just means
     // a caller cannot get it wrong quietly.
+    if (state->loss_kind_seen < 0) {
+        state->loss_kind_seen = (int32_t)kind;
+    } else if (state->loss_kind_seen != (int32_t)kind) {
+        LLAMA_LOG_ERROR("%s: the objective changed from %d to %d on one context. Different "
+                        "objectives build different numbers of graph nodes, and ggml-opt indexes its "
+                        "optimizer state by node index off the FIRST graph -- so this would read "
+                        "past the end of that state rather than fail. Use a separate context.\n",
+                        __func__, state->loss_kind_seen, (int32_t)kind);
+        return LL_ERR_SHAPE_MISMATCH;
+    }
+
     if (state->n_tokens_seen == 0) {
         state->n_tokens_seen = n_tokens;
     } else if (state->n_tokens_seen != n_tokens) {
@@ -507,6 +600,25 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
                         "from the first graph it sees. Pad the batch instead (weight 0).\n",
                         __func__, state->n_tokens_seen, n_tokens);
         return LL_ERR_SHAPE_MISMATCH;
+    }
+
+    // Has llama_context swapped its scheduler out from under us?
+    //
+    // ggml_opt_init captured the pointer and holds it for the life of the optimizer context.
+    // llama_context does `sched.reset(ggml_backend_sched_new(...))` whenever sched_need_reserve is
+    // set -- and llama_decode and llama_set_adapters_lora BOTH set it. The old scheduler is freed
+    // and the optimizer is left holding it.
+    //
+    // The next step then aborts inside ggml-backend on an index that is no longer in range, or
+    // corrupts memory quietly. Neither says anything about what actually happened, so check.
+    if (ctx->get_sched() != state->sched) {
+        LLAMA_LOG_ERROR("%s: llama_context has replaced its backend scheduler since ll_opt_init_lora "
+                        "-- the optimizer is holding a freed one. Something called llama_decode or "
+                        "llama_set_adapters_lora on this context after training was set up; both "
+                        "force a re-reserve, which frees the scheduler. Do inference on a separate "
+                        "context, or before ll_opt_init_lora.\n",
+                        __func__);
+        return LL_ERR_SCHED_INVALIDATED;
     }
 
     // Packing (S1-07): several independent samples in one batch, told apart by seq_id.
@@ -570,6 +682,9 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     loss_ctx lc;
     lc.state = state;
     lc.train = train;
+    lc.kind = kind;
+    lc.beta = beta;
+    lc.ref_delta = ref_delta;
     lc.targets = targets;
     lc.weights = weights;
     lc.n_tokens = n_tokens;
@@ -589,6 +704,109 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     llama_batch_free(batch);
 
     return status == 0 ? LL_OK : LL_ERR_STEP_FAILED;
+}
+
+} // namespace
+
+int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                      const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, bool train,
+                      float * loss_out) {
+    return train_step_impl(ctx, tokens, targets, weights, seq_ids, positions, n_tokens, LL_LOSS_SFT,
+                           /*beta =*/0.0f, /*ref_delta =*/0.0f, train, loss_out);
+}
+
+int32_t ll_train_step_dpo(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                          const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, float beta,
+                          float ref_delta, bool train, float * loss_out) {
+    if (beta <= 0.0f) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    return train_step_impl(ctx, tokens, targets, weights, seq_ids, positions, n_tokens, LL_LOSS_DPO, beta, ref_delta,
+                           train, loss_out);
+}
+
+int32_t ll_logp_delta(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                      const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, float * out) {
+    if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || out == nullptr ||
+        n_tokens <= 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // Its OWN, throwaway, forward-only optimizer context. Three things force that, and each one bit.
+    //
+    // 1. It cannot share the training context's optimizer. ggml-opt sizes its optimizer state from
+    //    the node count of the FIRST graph it sees and indexes that state by node index forever
+    //    after. This graph has no DPO tail, so it has fewer nodes than a training step's -- and the
+    //    training step would then index past the end of that state and call whatever it found a
+    //    gradient tensor. It does not assert. (Found as a segfault.)
+    //
+    // 2. It cannot use llama_decode. A plain decode on a TRAINING-mode context crashes on the second
+    //    call -- reproduced in isolation: four decodes are fine with cparams.training false, and the
+    //    second one segfaults with it true. It also sets sched_need_reserve, which makes
+    //    llama_context replace its scheduler; anything holding the old one is left with a freed
+    //    pointer (see LL_ERR_SCHED_INVALIDATED).
+    //
+    // 3. And it must use the TRAINING graph, not the inference one. The two use different kernels --
+    //    KV cache, flash attention, repacked buffer types -- and on a quantized base they disagree at
+    //    the 1e-4 level. Measured: the DPO loss at initialization came out at 0.69252 rather than
+    //    log 2 = 0.693147, which looks like a rounding error and is actually two different models.
+    //
+    // A forward-only build type means ggml_opt_build stops after the forward graph: no backward, no
+    // gradient accumulators, and -- the reason this works at all -- no requirement that the graph
+    // contain any trainable parameters.
+    ctx->set_training(true);
+
+    ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
+    opt_params.build_type = GGML_OPT_BUILD_TYPE_FORWARD;
+    opt_params.opt_period = 1;
+
+    ggml_opt_context_t opt_ctx = ggml_opt_init(opt_params);
+
+    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+    batch.n_tokens = n_tokens;
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = positions ? positions[i] : i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = seq_ids ? seq_ids[i] : 0;
+        batch.logits[i] = true;
+    }
+
+    loss_ctx lc;
+    lc.state = nullptr; // no training state: nothing to capture, nothing to accumulate
+    lc.train = false;
+    lc.kind = LL_LOSS_LOGP;
+    lc.targets = targets;
+    lc.weights = weights;
+    lc.n_tokens = n_tokens;
+
+    ggml_opt_result_t result = ggml_opt_result_init();
+
+    const int32_t status =
+        ctx->opt_step_custom(batch, opt_ctx, result, build_masked_ce, upload_masked_ce, &lc, /*train =*/false);
+
+    double loss = 0.0;
+    if (status == 0) {
+        double value = 0.0;
+        double unc = 0.0;
+        ggml_opt_result_loss(result, &value, &unc);
+        loss = value;
+    }
+
+    ggml_opt_result_free(result);
+    llama_batch_free(batch);
+    ggml_opt_free(opt_ctx);
+
+    if (status != 0) {
+        return LL_ERR_STEP_FAILED;
+    }
+
+    // ce_sparse is -logp, so the graph's sum is -sum_i w_i * logp_i. Negate it once, here, so that
+    // no caller is left to remember the sign of a cross-entropy.
+    *out = (float)-loss;
+
+    return LL_OK;
 }
 
 // ---------------------------------------------------------------------------

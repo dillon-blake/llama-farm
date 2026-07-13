@@ -274,16 +274,45 @@ class Trainer:
             RuntimeError: If the shim rejects the step — most usefully ``SHAPE_MISMATCH``, which
                 means this batch is a different length than the first.
         """
-        opt_step = self._state.micro_step // self._config.grad_accum
-        lr = self._schedule(opt_step)
-
-        # The whole of "applying a learning-rate schedule". The shim reads this struct on its way
-        # into the optimizer, so the next step uses the new value and nothing needs telling.
-        self._params.alpha = lr
+        lr = self.apply_schedule()
 
         started = time.perf_counter()
         loss = self._run(batch, train=True)
         elapsed = time.perf_counter() - started
+
+        return self.record(loss=loss, lr=lr, n_valid=batch.n_valid, seconds=elapsed)
+
+    def apply_schedule(self) -> float:
+        """Set the learning rate for the step that is about to run, and return it.
+
+        This is the whole of "applying a learning-rate schedule": the shim reads the params struct
+        on
+        its way into the optimizer, so assigning to it *is* the schedule. Nothing needs telling.
+
+        Split out from :meth:`step` so that a trainer with a different objective — DPO, GRPO — can
+        reuse the bookkeeping instead of reimplementing it slightly differently.
+
+        Returns:
+            The learning rate now in force.
+        """
+        lr = self._schedule(self._state.micro_step // self._config.grad_accum)
+        self._params.alpha = lr
+
+        return lr
+
+    def record(self, loss: float, lr: float, n_valid: int, seconds: float = 0.0) -> StepMetrics:
+        """Book a completed step: advance the counters, fire the hooks, keep the metrics.
+
+        Args:
+            loss: What the step's objective came out at.
+            lr: The learning rate it used.
+            n_valid: How many positions carried loss.
+            seconds: Wall-clock time.
+
+        Returns:
+            What the step did.
+        """
+        opt_step = self._state.micro_step // self._config.grad_accum
 
         # The optimizer fires on the LAST micro-step of a window, so `stepped` is true when the
         # next micro-step would start a new one.
@@ -295,8 +324,8 @@ class Trainer:
             stepped=stepped,
             loss=loss,
             lr=lr,
-            n_valid=batch.n_valid,
-            seconds=elapsed,
+            n_valid=n_valid,
+            seconds=seconds,
         )
 
         self._state.micro_step += 1

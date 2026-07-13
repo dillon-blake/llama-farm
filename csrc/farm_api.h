@@ -77,6 +77,17 @@ struct llama_adapter_lora;
 // sizes it from the first graph it sees, so every step must have the same shape. Pad instead.
 #define LL_ERR_SHAPE_MISMATCH -9
 
+// llama_context replaced its backend scheduler out from under the optimizer.
+//
+// ggml_opt_init captures the scheduler POINTER and holds it for the life of the optimizer context.
+// llama_context, meanwhile, does `sched.reset(ggml_backend_sched_new(...))` whenever it decides it
+// needs to re-reserve -- and llama_decode and llama_set_adapters_lora both set that flag. The old
+// scheduler is freed, the optimizer is left holding it, and the next training step dereferences it.
+//
+// It does not fail cleanly. It aborts somewhere inside ggml-backend on an index that is no longer
+// in range, or it simply corrupts memory. So the shim checks, and says so.
+#define LL_ERR_SCHED_INVALIDATED -10
+
 // AdamW hyperparameters, owned by the caller and read afresh on every optimizer step.
 //
 // Python keeps this struct alive and mutates it between steps, which is how a learning-rate
@@ -211,6 +222,35 @@ LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens,
                              const float * weights, const int32_t * seq_ids, const int32_t * positions,
                              int32_t n_tokens, bool train, float * loss_out);
 
+// DPO (S1-14): one preference-pair step.
+//
+// The chosen and rejected completions are PACKED into one batch (S1-07), as two sequences, so a
+// single forward pass covers both. `weights` carries +1 on the chosen completion's tokens, -1 on the
+// rejected's, and 0 everywhere else -- so the weighted sum ce_sparse produces is exactly
+//
+//     -(logp(chosen) - logp(rejected))  =  -delta
+//
+// and the objective is  L = -log sigmoid( beta * (delta - ref_delta) ) = softplus(beta*(ref_delta -
+// delta)), which is one node and numerically stable at large |x|. (It is written as a softplus and
+// not as -log(sigmoid(...)) because SIGMOID's backward falls into ggml's unary default and ABORTS.)
+//
+// ref_delta is the REFERENCE model's log-ratio, and D6 is emphatic: the reference is the identical
+// frozen base with the adapter OFF, never a second model. Precompute it with ll_logp_delta and hand
+// it in as a constant -- toggling the adapter set forces a graph rebuild, so it must not be done
+// per step.
+LL_API int32_t ll_train_step_dpo(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
+                                 const float * weights, const int32_t * seq_ids, const int32_t * positions,
+                                 int32_t n_tokens, float beta, float ref_delta, bool train, float * loss_out);
+
+// Forward-only: sum_i weights[i] * logp_i, unnormalized. A LOG-PROBABILITY, sign already flipped
+// from cross-entropy, so callers do not have to remember which way round it goes.
+//
+// With +/-1 weights this is precisely the log-ratio DPO needs; run it with the adapter's scale at 0
+// to get the reference model's.
+LL_API int32_t ll_logp_delta(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
+                             const float * weights, const int32_t * seq_ids, const int32_t * positions,
+                             int32_t n_tokens, float * out);
+
 // ---------------------------------------------------------------------------
 // Trainability preflight (S1-11)
 // ---------------------------------------------------------------------------
@@ -335,6 +375,18 @@ LL_API int32_t ll_adapter_tensor_info(struct llama_adapter_lora * adapter, int32
 // -- the same two-call convention as llama_tokenize.
 LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index, bool is_b, float * out,
                               int64_t n_max);
+
+// Overwrite one. Needs NO training context, which is what makes it usable for DPO's reference pass.
+//
+// The reference model is the base model, and the base model is this adapter with B = 0: the LoRA
+// delta is scale * B(A.x), which is exactly zero when B is, for any A. Zeroing B is therefore an
+// exact way to get the reference -- and unlike llama_set_adapters_lora with a scale of 0, it leaves
+// the adapter tensors IN the graph, which a training context requires.
+//
+// It must also happen before ll_opt_init_lora, because the decode that measures the reference frees
+// the scheduler the optimizer would be holding. See LL_ERR_SCHED_INVALIDATED.
+LL_API int64_t ll_adapter_set(struct llama_adapter_lora * adapter, int32_t index, bool is_b, const float * data,
+                              int64_t n);
 
 // ---------------------------------------------------------------------------
 // Debug accessors (S1-03)

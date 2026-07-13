@@ -5,6 +5,7 @@ what the loss means; they do not differ in how a batch is pushed through the gra
 accumulate, or how the learning rate moves. That common part lives in :mod:`.loop`.
 """
 
+from .dpo import DPOConfig, DPOResult, DPOTrainer, Preference, reference_logratios, train_dpo
 from .loop import Batch, Hooks, StepMetrics, TrainableModel, TrainConfig, Trainer, run
 from .packing import n_sequences, pack
 from .schedule import constant, warmup_cosine
@@ -12,6 +13,10 @@ from .sft import SFTConfig, SFTResult, collate, to_batch, train_sft
 
 __all__ = [
     "Batch",
+    "DPOConfig",
+    "DPOResult",
+    "DPOTrainer",
+    "Preference",
     "Hooks",
     "SFTConfig",
     "SFTResult",
@@ -20,6 +25,8 @@ __all__ = [
     "Trainer",
     "TrainableModel",
     "collate",
+    "reference_logratios",
+    "train_dpo",
     "constant",
     "n_sequences",
     "pack",
