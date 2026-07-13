@@ -212,6 +212,53 @@ LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens,
                              int32_t n_tokens, bool train, float * loss_out);
 
 // ---------------------------------------------------------------------------
+// Trainability preflight (S1-11)
+// ---------------------------------------------------------------------------
+//
+// Will this model train, and if not, what exactly stops it?
+//
+// Without this, the answer to "can I LoRA-tune Mixtral?" is: try it, and watch ggml abort inside
+// ggml_compute_backward with a message naming an op enum and nothing else -- not the tensor, not
+// the layer, not what to do about it. And that abort only comes on the first BACKWARD pass, i.e.
+// after the model has loaded, the data has tokenized, and the user has waited.
+//
+// So walk the forward graph first, work out which nodes the backward would actually REACH, and
+// check those against the ops ggml can differentiate. Nodes off the gradient path are never
+// blockers -- a model is full of ops with no backward rule that the backward never touches, and
+// reporting them would be noise that teaches people to ignore this.
+
+struct ggml_cgraph;
+struct ggml_tensor;
+
+#define LL_PREFLIGHT_OK 0
+#define LL_PREFLIGHT_BLOCKED 1 // the backward pass would abort here
+#define LL_PREFLIGHT_WARN 2    // it will train, but not the way you think
+
+struct ll_preflight_entry {
+    char node[128];   // the offending tensor's name
+    char op[32];      // its op (or its unary op, which is the one that actually matters)
+    int32_t status;   // LL_PREFLIGHT_*
+    char detail[256]; // what is wrong, and which ticket unblocks it
+};
+
+// The walker, as a pure function over a graph and a set of trainable tensors, so a test can feed it
+// a synthetic graph rather than a whole model.
+//
+// Returns the number of entries written to `out` (which may be less than the number of problems, if
+// max_entries is small), or a negative LL_ERR_*. `n_blocked` receives the TOTAL count regardless.
+LL_API int32_t ll_preflight_walk(struct ggml_cgraph * gf, struct ggml_tensor ** params, int32_t n_params,
+                                 struct ll_preflight_entry * out, int32_t max_entries, int32_t * n_blocked);
+
+// The same, on the real training graph of a context that ll_opt_init_lora has already prepared.
+//
+// Builds the graph for one batch of `n_tokens` and walks it. Also reports, as a WARNING, any adapter
+// tensor that appears in NO graph node -- which means its target projection never went through
+// build_lora_mm, so that tensor will sit at its initial value forever while the loss falls anyway.
+// That is the failure mode nothing else catches: the adapter trains, just not all of it.
+LL_API int32_t ll_preflight(struct llama_context * ctx, const int32_t * tokens, int32_t n_tokens,
+                            struct ll_preflight_entry * out, int32_t max_entries, int32_t * n_blocked);
+
+// ---------------------------------------------------------------------------
 // Optimizer-state checkpoint / resume (S1-09)
 // ---------------------------------------------------------------------------
 //

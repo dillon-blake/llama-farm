@@ -20,6 +20,7 @@ Typical use::
 from __future__ import annotations
 
 from .farm import LLError, check, ll_opt_params, opt_free, opt_init_lora
+from .ggml import ggml_init_params
 from .ggml_opt import (
     AdamWParams,
     BuildType,
@@ -78,6 +79,7 @@ __all__ = [
     "llama_context_params",
     "llama_model_params",
     "llama_opt_param_filter",
+    "ggml_init_params",
     "ll_opt_params",
     "opt_free",
     "opt_init_lora",

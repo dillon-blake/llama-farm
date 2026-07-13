@@ -15,7 +15,54 @@ import ctypes
 
 from .registry import Library, Symbol
 
+
+class ggml_init_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
+    """``struct ggml_init_params`` (ggml.h) — passed BY VALUE to ggml_init."""
+
+    _fields_ = [
+        ("mem_size", ctypes.c_size_t),
+        ("mem_buffer", ctypes.c_void_p),
+        ("no_alloc", ctypes.c_bool),
+    ]
+
+
 SYMBOLS = [
+    # Enough of ggml to BUILD a graph from Python, which exists for exactly one reason: the S1-11
+    # preflight walker is a pure function over (graph, params), and the only way to test it against
+    # an op it should REJECT is to hand it a graph containing one. Doing that with a real model
+    # would mean finding a model whose architecture is currently untrainable, which is a strange
+    # thing to require of a test — and would stop testing the walker the moment that op was
+    # implemented.
+    Symbol(Library.GGML_BASE, "ggml_init", [ggml_init_params], ctypes.c_void_p),
+    Symbol(Library.GGML_BASE, "ggml_free", [ctypes.c_void_p], None),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_new_tensor_2d",
+        [ctypes.c_void_p, ctypes.c_int, ctypes.c_int64, ctypes.c_int64],
+        ctypes.c_void_p,
+    ),
+    Symbol(Library.GGML_BASE, "ggml_set_param", [ctypes.c_void_p], None),
+    Symbol(Library.GGML_BASE, "ggml_set_name", [ctypes.c_void_p, ctypes.c_char_p], ctypes.c_void_p),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_mul_mat",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
+        ctypes.c_void_p,
+    ),
+    # CONCAT has no backward rule, which is what makes it the right op to test the walker with.
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_concat",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int],
+        ctypes.c_void_p,
+    ),
+    Symbol(Library.GGML_BASE, "ggml_new_graph", [ctypes.c_void_p], ctypes.c_void_p),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_build_forward_expand",
+        [ctypes.c_void_p, ctypes.c_void_p],
+        None,
+    ),
     # Raw pointer to a tensor's data. Used instead of mirroring `struct ggml_tensor` — that
     # struct is large, churns, and getting one field's offset wrong reads arbitrary memory.
     # Asking ggml for the pointer costs one call and cannot drift.

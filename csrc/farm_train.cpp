@@ -895,3 +895,141 @@ int32_t ll_opt_set_iter(llama_context * ctx, int64_t iter) {
 
     return LL_OK;
 }
+
+// ---------------------------------------------------------------------------
+// Trainability preflight (S1-11) -- the entry point; the walker is farm_preflight.cpp
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// What the preflight callback needs to get its results back out.
+struct preflight_ctx {
+    ll_train_state * state = nullptr;
+
+    ll_preflight_entry * out = nullptr;
+    int32_t max_entries = 0;
+
+    int32_t n_entries = 0;
+    int32_t n_blocked = 0;
+};
+
+// Runs at the exact moment the forward graph is complete and nothing has been executed.
+//
+// llama_context::opt_step_custom hands the loss builder the finished forward graph so it can append
+// a loss to it. That is also the only place anything outside the vendored tree ever SEES that graph
+// -- so it is where the walk happens. The loss returned is a throwaway scalar; with train=false no
+// backward is built and nothing is optimized.
+ggml_tensor * build_preflight(ggml_context * ctx_compute, ggml_cgraph * gf, ggml_tensor * logits, int32_t pos,
+                              int32_t n_ubatch, void * userdata) {
+    (void)pos;
+    (void)n_ubatch;
+
+    auto * pc = (preflight_ctx *)userdata;
+
+    if (pc->n_entries == 0 && pc->n_blocked == 0) { // first ubatch only; they are all the same shape
+        const int32_t written =
+            ll_preflight_walk(gf, pc->state->param_tensors.data(), (int32_t)pc->state->param_tensors.size(), pc->out,
+                              pc->max_entries, &pc->n_blocked);
+
+        pc->n_entries = written > 0 ? written : 0;
+
+        // The bypass warning, and it is the one nothing else catches.
+        //
+        // An adapter tensor that appears in NO node of the graph means its target projection never
+        // went through build_lora_mm -- the architecture builds that matmul some other way. The
+        // tensor is flagged trainable, ggml dutifully allocates a gradient for it, and the gradient
+        // is always zero. So it sits at its initial value forever while the loss falls perfectly
+        // well, because the OTHER adapter tensors are learning. Nothing fails. You just trained a
+        // smaller adapter than you asked for.
+        std::set<const ggml_tensor *> in_graph;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+            ggml_tensor * node = ggml_graph_node(gf, i);
+            in_graph.insert(node);
+            for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                if (node->src[s]) {
+                    in_graph.insert(node->src[s]);
+                }
+            }
+        }
+
+        for (ggml_tensor * t : pc->state->param_tensors) {
+            if (in_graph.count(t)) {
+                continue;
+            }
+
+            if (pc->out != nullptr && pc->n_entries < pc->max_entries) {
+                ll_preflight_entry & e = pc->out[pc->n_entries++];
+
+                std::snprintf(e.node, sizeof(e.node), "%s", ggml_get_name(t));
+                std::snprintf(e.op, sizeof(e.op), "%s", "LORA");
+                e.status = LL_PREFLIGHT_WARN;
+                std::snprintf(e.detail, sizeof(e.detail),
+                              "this adapter tensor is in no graph node: its target projection does "
+                              "not go through build_lora_mm on this architecture. Its gradient will "
+                              "be zero forever, and the loss will fall anyway -- on the other "
+                              "tensors. You would be training a smaller adapter than you asked for.");
+            }
+        }
+    }
+
+    // A throwaway scalar. With train=false nothing is differentiated, so it is never used for
+    // anything; ggml-opt just needs a loss node to exist.
+    ggml_tensor * loss = ggml_sum(ctx_compute, logits);
+    ggml_set_name(loss, "ll_preflight_loss");
+    ggml_build_forward_expand(gf, loss);
+
+    return loss;
+}
+
+void preflight_no_inputs(void * userdata) {
+    (void)userdata; // the preflight loss has no inputs to fill
+}
+
+} // namespace
+
+int32_t ll_preflight(llama_context * ctx, const int32_t * tokens, int32_t n_tokens, ll_preflight_entry * out,
+                     int32_t max_entries, int32_t * n_blocked) {
+    if (ctx == nullptr || tokens == nullptr || n_tokens <= 0 || n_blocked == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr) {
+        // The walk is seeded from the trainable tensors, so there has to be a set of them.
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+    batch.n_tokens = n_tokens;
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = true;
+    }
+
+    preflight_ctx pc;
+    pc.state = state;
+    pc.out = out;
+    pc.max_entries = max_entries;
+
+    ggml_opt_result_t result = ggml_opt_result_init();
+
+    // train=false: build the forward graph, run it, build no backward. The walk happens at build
+    // time, so the forward's result is discarded -- but running it does prove the graph is
+    // SCHEDULABLE, which a pure graph build would not.
+    const int32_t status = ctx->opt_step_custom(batch, state->opt_ctx, result, build_preflight, preflight_no_inputs,
+                                                &pc, /*train =*/false);
+
+    ggml_opt_result_free(result);
+    llama_batch_free(batch);
+
+    if (status != 0) {
+        return LL_ERR_STEP_FAILED;
+    }
+
+    *n_blocked = pc.n_blocked;
+
+    return pc.n_entries;
+}

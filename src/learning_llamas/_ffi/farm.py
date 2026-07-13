@@ -207,6 +207,37 @@ SYMBOLS = [
         ctypes.c_int64,
     ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-11: will this model train, and if not, what stops it?
+    #
+    # The entry struct is mirrored in preflight.py rather than here, because it is the only ctypes
+    # struct in the shim's ABI that a *caller* constructs rather than passes through, and it belongs
+    # next to the code that reads it.
+    Symbol(
+        Library.FARM,
+        "ll_preflight_walk",
+        [
+            ctypes.c_void_p,  # ggml_cgraph *
+            ctypes.POINTER(ctypes.c_void_p),  # ggml_tensor ** params
+            ctypes.c_int32,  # n_params
+            ctypes.c_void_p,  # ll_preflight_entry * out
+            ctypes.c_int32,  # max_entries
+            ctypes.POINTER(ctypes.c_int32),  # n_blocked
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_preflight",
+        [
+            ctypes.c_void_p,  # llama_context *
+            ctypes.POINTER(ctypes.c_int32),  # tokens
+            ctypes.c_int32,  # n_tokens
+            ctypes.c_void_p,  # ll_preflight_entry * out
+            ctypes.c_int32,  # max_entries
+            ctypes.POINTER(ctypes.c_int32),  # n_blocked
+        ],
+        ctypes.c_int32,
+    ),
     # S1-09: the AdamW moments and the iteration counter — what a resume needs.
     Symbol(Library.FARM, "ll_opt_state_count", [ctypes.c_void_p], ctypes.c_int32),
     Symbol(
