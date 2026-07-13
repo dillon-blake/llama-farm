@@ -74,6 +74,7 @@ bool op_has_backward(ggml_op op) {
     case GGML_OP_POOL_2D:
     case GGML_OP_WIN_PART:
     case GGML_OP_WIN_UNPART:
+    case GGML_OP_CONCAT: // S1-29
     case GGML_OP_UNARY:
     case GGML_OP_CLAMP:
     case GGML_OP_CROSS_ENTROPY_LOSS:
@@ -122,9 +123,6 @@ const char * blocker_detail(ggml_op op) {
         return "state-space convolution has no backward yet. Unblocked by S1-30.";
     case GGML_OP_SSM_SCAN:
         return "the state-space scan has no backward yet. Unblocked by S1-31.";
-    case GGML_OP_CONCAT:
-        return "CONCAT has no backward yet, and the SSM architectures need it. Unblocked by "
-               "S1-29.";
     case GGML_OP_ARGSORT:
     case GGML_OP_TOP_K:
     case GGML_OP_ARGMAX:

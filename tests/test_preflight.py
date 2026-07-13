@@ -61,9 +61,14 @@ class Graph:
         self.libs.ggml_base.ggml_set_name(t, name.encode())
         return t
 
-    def concat(self, a: int, b: int, name: str) -> int:
-        """CONCAT has no backward rule — which is exactly why it is here."""
-        t = self.libs.ggml_base.ggml_concat(self.ctx, a, b, 0)
+    def undifferentiable(self, a: int, name: str) -> int:
+        """PAD has no backward rule — which is exactly why it is here.
+
+        CONCAT used to play this part, and then S1-29 gave it a backward, at which point these tests
+        started failing. That is precisely what should happen: the preflight was telling the truth,
+        and the test that said otherwise was the one that was wrong.
+        """
+        t = self.libs.ggml_base.ggml_pad(self.ctx, a, 1, 0, 0, 0)
         self.libs.ggml_base.ggml_set_name(t, name.encode())
         return t
 
@@ -124,12 +129,12 @@ def test_a_differentiable_graph_is_clean(graph: Graph) -> None:
 
 
 def test_an_undifferentiable_op_on_the_gradient_path_is_blocked(graph: Graph) -> None:
-    """CONCAT has no backward rule, and it is downstream of the parameter — so it blocks."""
+    """PAD has no backward rule, and it is downstream of the parameter — so it blocks."""
     w = graph.param("w")
     x = graph.tensor("x")
 
     y = graph.mul_mat(w, x, "y")  # on the gradient path
-    z = graph.concat(y, y, "the_problem")  # ...and so is this
+    z = graph.undifferentiable(y, "the_problem")  # ...and so is this
 
     findings, n_blocked = graph.walk(graph.build(z), [w])
 
@@ -138,15 +143,15 @@ def test_an_undifferentiable_op_on_the_gradient_path_is_blocked(graph: Graph) ->
 
     node, op, status, detail = findings[0]
     assert node == "the_problem"
-    assert op == "CONCAT"
+    assert op == "PAD"
     assert status is Status.BLOCKED
-    assert "S1-29" in detail, f"the message must say what unblocks it, got: {detail}"
+    assert "no rule" in detail, f"the message must say what is wrong, got: {detail}"
 
 
 def test_an_undifferentiable_op_OFF_the_gradient_path_is_not_reported(graph: Graph) -> None:
     """The claim that makes this a check rather than a lint.
 
-    The same CONCAT, on tensors the parameter never reaches. The backward pass will never touch it,
+    The same PAD, on a tensor the parameter never reaches. The backward pass will never touch it,
     so it cannot block anything — and a preflight that reported it would be crying wolf about every
     ARGSORT and ARGMAX in the model, which is how a report gets ignored.
     """
@@ -156,8 +161,7 @@ def test_an_undifferentiable_op_OFF_the_gradient_path_is_not_reported(graph: Gra
     y = graph.mul_mat(w, x, "y")  # this IS on the gradient path
 
     a = graph.tensor("a")
-    b = graph.tensor("b")
-    unreachable = graph.concat(a, b, "not_my_problem")  # ...this is not
+    unreachable = graph.undifferentiable(a, "not_my_problem")  # ...this is not
 
     # Both are in the graph. Only one of them matters.
     gf = graph.build(y)
@@ -177,7 +181,7 @@ def test_the_gradient_path_propagates_through_several_hops(graph: Graph) -> None
     h = graph.mul_mat(h, graph.tensor("x2"), "h2")
     h = graph.mul_mat(h, graph.tensor("x3"), "h3")
 
-    blocked = graph.concat(h, h, "four_hops_downstream")
+    blocked = graph.undifferentiable(h, "four_hops_downstream")
 
     findings, n_blocked = graph.walk(graph.build(blocked), [w])
 
@@ -188,9 +192,8 @@ def test_the_gradient_path_propagates_through_several_hops(graph: Graph) -> None
 def test_a_graph_with_no_parameters_blocks_nothing(graph: Graph) -> None:
     """With nothing to differentiate, nothing is on the gradient path."""
     a = graph.tensor("a")
-    b = graph.tensor("b")
 
-    findings, n_blocked = graph.walk(graph.build(graph.concat(a, b, "c")), [])
+    findings, n_blocked = graph.walk(graph.build(graph.undifferentiable(a, "c")), [])
 
     assert n_blocked == 0
     assert findings == []

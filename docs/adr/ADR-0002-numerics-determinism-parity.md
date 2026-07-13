@@ -274,8 +274,32 @@ fail. The kernel was right all along: verified against a float64 finite differen
 > actually depends on its input. A weighted sum with unequal weights suffices. The fork adds that
 > hook; `grad_loss` defaults to `sum(out)`, which remains correct for everything else.
 >
-> The general rule: **before trusting a green MODE_GRAD case, check that the gradient it compared
-> was not identically zero.** Both known ways of checking nothing produce a green tick.
+### ...and a case is vacuous if the objective cannot distinguish a wrong answer
+
+*(Amended by S1-29.)*
+
+The third way, and it is the same disease as the second.
+
+`sum(out)` makes `dL/d(out)` **1 everywhere**. For an op that merely **routes** its input to its
+output — concat, view, permute, transpose, cpy — the gradient is "hand each source back its own slab
+of `dL/d(out)`", and **every slab of an all-ones tensor is all ones**. Swap the slabs, hand both
+sources the same one, offset them wrongly: the gradient is *identical*, and the case reports `OK`.
+
+Measured on `CONCAT`: with `sum(out)` and both sources flagged as parameters, deliberately setting
+the backward rule's `src1` offset to **zero** — a straightforwardly wrong gradient — still reported
+`Backend CPU: OK`. It only fails under a weighted objective.
+
+> **Normative:** the three known ways for a MODE_GRAD case to be green while checking nothing are:
+>
+> 1. it never calls `ggml_set_param` — nothing is a parameter *(S0-10)*;
+> 2. its tensors exceed `grad_nmax()` and the case is **skipped for speed**, which still prints `OK`
+>    *(S1-29)*;
+> 3. **the objective cannot distinguish a wrong answer** — because it conserves the output's sum
+>    *(S1-34)*, or because the op only routes and `sum(out)` gives every route the same gradient
+>    *(S1-29)*.
+>
+> A kernel PR must state which of these it ruled out, and the honest way to rule out (3) is to
+> **break the kernel on purpose and watch the test fail.** If it does not, the test is decoration.
 
 ## Consequences
 
