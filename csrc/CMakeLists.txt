@@ -61,3 +61,16 @@ set_target_properties(learningllamas PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
+
+# Fail at LINK time on an unresolved symbol, not at dlopen.
+#
+# ELF lets a shared library ship with dangling undefined symbols and hope they turn up at load. So
+# a shim that reaches for an internal llama.cpp never marked LLAMA_API_INTERNAL still *links* --
+# and then dies inside `import learning_llamas` with a mangled name and no hint of the cause. A
+# Windows linker would have refused it outright, which is the more useful behaviour, so ask for it.
+#
+# Together with the hidden visibility forced in the top-level CMakeLists, this is the guard: the
+# Linux build now rejects exactly what the Windows build would reject, at the same step.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(learningllamas PRIVATE "LINKER:--no-undefined")
+endif()

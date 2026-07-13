@@ -47,6 +47,22 @@ endif()
 # not an accident of static linking.
 set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 
+# Hide by default, everywhere -- so that "it builds on Linux" MEANS "it links on Windows".
+#
+# The shim links against llama.cpp's internal C++ classes on purpose (ADR-0001). ELF exports every
+# symbol of a shared library by default, so on Linux and macOS that costs nothing and nobody has to
+# think about it. A PE DLL exports nothing it did not declare, so on Windows each of those internals
+# must be marked LLAMA_API_INTERNAL -- and if one is not, the shim fails to link with an unresolved
+# external that reads like a broken build rather than a missing declaration.
+#
+# S1-33 found exactly that, the expensive way: eight internals, discovered by a Windows CI run,
+# after the Linux lane had been green for thirty PRs. Forcing hidden visibility here makes the two
+# platforms agree -- an unmarked internal is now a build failure on the machine the developer is
+# actually sitting at.
+set(CMAKE_C_VISIBILITY_PRESET     hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET   hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 # Stage 0 is CPU-only. Stages 2-4 flip these on behind their own CI lanes.
 set(GGML_METAL  OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA   OFF CACHE BOOL "" FORCE)
