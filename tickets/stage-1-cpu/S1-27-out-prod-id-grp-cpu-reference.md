@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S1-25", "S0-09"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/20
 ---
 
 # S1-27 — MoE: OUT_PROD_ID_GRP CPU reference (grouped expert outer product for LoRA A/B grads)

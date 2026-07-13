@@ -5,11 +5,34 @@ stage: 1
 track: kernels
 size: L
 deps: ["S1-21", "S1-22"]
-status: open
+status: deferred
 pr: null
 ---
 
 # S1-23 — FA3: CPU flash-attention backward (modernize legacy kernel — the GPU oracle)
+
+> **⏸️ DEFERRED OUT OF STAGE 1 — project decision, 2026-07.**
+>
+> This ticket does **not** change how learning-llamas trains. Flash attention is force-disabled for
+> training (`llama_context::set_training` logs *"disabling flash attention for training (no backward
+> pass)"*), and **none of S1-21 / S1-22 / S1-23 turns it back on** — all three place that explicitly
+> out of scope. Completing the whole family, ~6-8 weeks, would leave the training path byte-for-byte
+> identical.
+>
+> Its real product is a **CPU correctness oracle for GPU flash-attention backward kernels** (FA5/6/7,
+> stages 2-4). That payoff is entirely deferred on a CPU-only target, so this family moves to the
+> front of whichever stage first starts a GPU backend.
+>
+> The memory argument does not rescue it either: S1-17 (gradient checkpointing) already removed the
+> `x n_layers` factor, and **S1-24** — re-scoped as forward Q-chunking over S1-17's existing recompute
+> — removes the `n_ctx^2` factor within a layer, using ops that already have backward rules. S1-24
+> stays in stage 1; S1-21/22/23 do not.
+>
+> **A landmine for whoever picks this up.** The tiled FA forward path never updates `M[tq]` when a
+> sink raises the running max (`ggml-cpu/ops.cpp`, the tiled sink fold — compare the one-chunk path,
+> which does `M = s;`). Harmless today, because the forward normalizes by `S` and throws `M` away.
+> **Silently wrong the moment anyone computes `lse = M + log(S)`** — which is exactly what S1-21
+> exists to do. Fix it first, and test sinks x tiled, or the oracle ships wrong to every GPU backend.
 
 **One-line outcome:** a correct, deterministic CPU implementation of
 `ggml_flash_attn_ext_back` supporting arbitrary additive mask, op-param scale, ALiBi
