@@ -5,8 +5,8 @@ stage: 1
 track: docs
 size: S
 deps: ["S1-12"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/29
 ---
 
 # S1-32 — CPU throughput audit + published tok/s sizing (P4)
