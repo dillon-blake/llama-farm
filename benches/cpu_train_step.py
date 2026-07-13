@@ -20,7 +20,6 @@ Run:  python benches/cpu_train_step.py [--model PATH] [--threads 1,2,4,8] [--ste
 from __future__ import annotations
 
 import argparse
-import ctypes
 import os
 import pathlib
 import statistics
@@ -29,40 +28,8 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tests"))
 
-from learning_llamas import _ffi  # noqa: E402
-from learning_llamas.adapter import create_zero_adapter  # noqa: E402
+from learning_llamas import Model, create_zero_adapter, libraries  # noqa: E402
 from learning_llamas.train import Batch, TrainConfig, Trainer  # noqa: E402
-
-
-class Model:
-    """A trainable model, built the way the trainer needs it."""
-
-    def __init__(self, libs, path, n_ctx, n_ubatch, n_threads):
-        mp = libs.llama.llama_model_default_params()
-        mp.n_gpu_layers = 0
-        mp.use_extra_bufts = False  # the backward's OUT_PROD is unschedulable on repacked weights
-
-        self.model = libs.llama.llama_model_load_from_file(str(path).encode(), mp)
-        if not self.model:
-            raise RuntimeError(f"failed to load {path}")
-
-        cp = libs.llama.llama_context_default_params()
-        cp.n_ctx = cp.n_batch = n_ctx
-        cp.n_ubatch = n_ubatch
-        cp.n_threads = cp.n_threads_batch = n_threads
-
-        self.ctx = libs.llama.llama_init_from_model(self.model, cp)
-        self.adapter = None
-        self._libs = libs
-
-    def attach(self, path):
-        self.adapter = self._libs.llama.llama_adapter_lora_init(self.model, str(path).encode())
-        arr = (ctypes.c_void_p * 1)(self.adapter)
-        self._libs.llama.llama_set_adapters_lora(self.ctx, arr, 1, (ctypes.c_float * 1)(1.0))
-
-    def close(self):
-        self._libs.llama.llama_free(self.ctx)
-        self._libs.llama.llama_model_free(self.model)
 
 
 def _batch(n: int) -> Batch:
@@ -76,8 +43,10 @@ def _batch(n: int) -> Batch:
 
 def measure(libs, model_path, adapter_path, *, n_ctx, n_ubatch, threads, rank, steps, warmup):
     """Median seconds per step, forward-only and full, at one thread count."""
-    model = Model(libs, model_path, n_ctx, n_ubatch, threads)
-    model.attach(adapter_path)
+    model = Model(
+        model_path, libs=libs, n_ctx=n_ctx, n_ubatch=n_ubatch, training=True, n_threads=threads
+    )
+    model.attach_adapter(adapter_path)
 
     batch = _batch(n_ubatch)
 
@@ -120,8 +89,7 @@ def main() -> int:
         print("no model: pass --model, or run the test suite once to build the fixtures")
         return 1
 
-    libs = _ffi.load()
-    libs.llama.llama_backend_init()
+    libs = libraries()
 
     adapter = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "bench-adapter.gguf"
     create_zero_adapter(args.model, adapter, r=args.rank, seed=0)

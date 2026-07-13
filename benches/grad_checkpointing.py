@@ -26,18 +26,17 @@ import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from learning_llamas import _ffi  # noqa: E402
+from learning_llamas import Model, _ffi  # noqa: E402
 from learning_llamas.adapter import create_zero_adapter  # noqa: E402
 from learning_llamas.train import TrainConfig, Trainer  # noqa: E402
 from learning_llamas.train.loop import Batch  # noqa: E402
-from tests.conftest import Model  # noqa: E402
 from tests.fixtures import gen_tiny_llama  # noqa: E402
 from tests.fixtures.gen_tiny_llama import TinyLlamaHParams  # noqa: E402
 
 
 def _run(libs, base, adapter, batch, n_ctx, seq_len, segment_len, n_steps):
     """One run: its losses, its trained weights, its peak activation memory, its time per step."""
-    model = Model(libs, base, n_ctx=n_ctx, n_ubatch=seq_len, training=True)
+    model = Model(base, libs=libs, n_ctx=n_ctx, n_ubatch=seq_len, training=True)
     model.attach_adapter(adapter, scale=1.0)
 
     with Trainer(libs, model, TrainConfig(lr=1e-2)) as trainer:
