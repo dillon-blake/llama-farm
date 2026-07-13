@@ -22,6 +22,7 @@ llama_model_p = ctypes.c_void_p
 llama_context_p = ctypes.c_void_p
 llama_adapter_lora_p = ctypes.c_void_p
 llama_vocab_p = ctypes.c_void_p
+llama_sampler_p = ctypes.c_void_p
 llama_memory_p = ctypes.c_void_p
 
 llama_token = ctypes.c_int32
@@ -176,6 +177,17 @@ class llama_batch(ctypes.Structure):  # noqa: N801 — mirrors the C name
     ]
 
 
+class llama_sampler_chain_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
+    """``struct llama_sampler_chain_params`` (llama.h:435).
+
+    Passed **by value** to ``llama_sampler_chain_init``. One field today, and it is the third
+    struct in this module to cross the ABI by value — the layout has to be right or the chain is
+    initialized from whatever was on the stack.
+    """
+
+    _fields_ = [("no_perf", ctypes.c_bool)]
+
+
 # void (*)(enum ggml_log_level, const char * text, void * user_data) -- ggml.h.
 # Safe as a CFUNCTYPE: returns void.
 ggml_log_callback = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
@@ -234,6 +246,80 @@ SYMBOLS = [
     Symbol(Library.LLAMA, "llama_vocab_n_tokens", [llama_vocab_p], ctypes.c_int32),
     Symbol(Library.LLAMA, "llama_model_n_embd", [llama_model_p], ctypes.c_int32),
     Symbol(Library.LLAMA, "llama_get_model", [llama_context_p], llama_model_p),
+    # -------------------------------------------------------------------------------------------
+    # Generation (S1-15). Rollouts are ORDINARY llama.cpp inference -- KV cache, samplers, parallel
+    # sequences, adapter attached -- which is the whole reason GRPO needs no new native code on the
+    # generation side. All of this is public C API.
+    # -------------------------------------------------------------------------------------------
+    #
+    # llama_batch_get_one is not enough here: it drives a single sequence and leaves pos/seq_id/
+    # logits NULL. A rollout group is G sequences advancing together, each wanting its own logits
+    # row, so the batch has to be built by hand -- hence batch_init/free.
+    Symbol(
+        Library.LLAMA,
+        "llama_batch_init",
+        [ctypes.c_int32, ctypes.c_int32, ctypes.c_int32],  # n_tokens, embd, n_seq_max
+        llama_batch,  # BY VALUE
+    ),
+    Symbol(Library.LLAMA, "llama_batch_free", [llama_batch]),  # BY VALUE
+    #
+    # The KV-cache prompt share. Decode the prompt once on sequence 0, copy its KV to the other
+    # G-1 group members, and only then let them diverge. This is llama.cpp's native answer to
+    # prefix sharing, and it is the sanctioned replacement for unsloth's AGPL prefix-grouper
+    # (ROADMAP §13).
+    Symbol(
+        Library.LLAMA,
+        "llama_memory_seq_cp",
+        [ctypes.c_void_p, llama_seq_id, llama_seq_id, llama_pos, llama_pos],
+    ),
+    # Returns bool, not void -- false means the sequence could not be removed.
+    Symbol(
+        Library.LLAMA,
+        "llama_memory_seq_rm",
+        [ctypes.c_void_p, llama_seq_id, llama_pos, llama_pos],
+        ctypes.c_bool,
+    ),
+    Symbol(Library.LLAMA, "llama_n_seq_max", [llama_context_p], ctypes.c_uint32),
+    Symbol(Library.LLAMA, "llama_vocab_is_eog", [llama_vocab_p, llama_token], ctypes.c_bool),
+    #
+    # Samplers. One chain per sequence, so that G rollouts of one prompt are G independent draws.
+    #
+    # llama_sampler_sample SAMPLES AND ACCEPTS (llama.h:1488-1497). Do not call
+    # llama_sampler_accept after it: that advances the dist sampler's RNG a second time, and the
+    # rollouts quietly stop being reproducible -- while logp_old still claims to describe the
+    # policy that produced them.
+    #
+    # llama_sampler_chain_add TAKES OWNERSHIP of what it is given (llama.h:1308). Free the chain;
+    # never free its members.
+    Symbol(
+        Library.LLAMA,
+        "llama_sampler_chain_default_params",
+        [],
+        llama_sampler_chain_params,  # BY VALUE
+    ),
+    Symbol(
+        Library.LLAMA,
+        "llama_sampler_chain_init",
+        [llama_sampler_chain_params],  # BY VALUE
+        llama_sampler_p,
+    ),
+    Symbol(Library.LLAMA, "llama_sampler_chain_add", [llama_sampler_p, llama_sampler_p]),
+    Symbol(Library.LLAMA, "llama_sampler_init_greedy", [], llama_sampler_p),
+    Symbol(Library.LLAMA, "llama_sampler_init_dist", [ctypes.c_uint32], llama_sampler_p),
+    Symbol(Library.LLAMA, "llama_sampler_init_temp", [ctypes.c_float], llama_sampler_p),
+    Symbol(
+        Library.LLAMA,
+        "llama_sampler_init_top_p",
+        [ctypes.c_float, ctypes.c_size_t],
+        llama_sampler_p,
+    ),
+    Symbol(
+        Library.LLAMA,
+        "llama_sampler_sample",
+        [llama_sampler_p, llama_context_p, ctypes.c_int32],
+        llama_token,
+    ),
+    Symbol(Library.LLAMA, "llama_sampler_free", [llama_sampler_p]),
     Symbol(Library.LLAMA, "llama_n_ctx", [llama_context_p], ctypes.c_uint32),
     # Decode. llama_batch_get_one returns the batch BY VALUE and llama_decode takes it by
     # value; both are fine through ctypes (it is only *callbacks* returning structs that trap).
