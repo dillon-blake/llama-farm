@@ -110,6 +110,16 @@ class ggml_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
         ("loss_type", ctypes.c_int),
         ("build_type", ctypes.c_int),
         ("opt_period", ctypes.c_int32),
+        # S1-10's global-norm gradient clip. It sits in the MIDDLE of the struct, and this mirror
+        # went several releases without declaring it -- harmlessly, but only by accident: a float
+        # at offset 44 lands in the padding that was already there between an int32 at 40 and an
+        # 8-aligned pointer at 48, so every later field still landed correctly and sizeof still
+        # came to 72.
+        #
+        # The next field added anywhere before get_opt_pars would have shifted a FUNCTION POINTER
+        # by four bytes, and the failure mode of that is a call to a wrong address, not a wrong
+        # number. csrc/farm_internals.cpp pins the C offsets; the test below pins these.
+        ("grad_clip", ctypes.c_float),
         ("get_opt_pars", ctypes.c_void_p),
         ("get_opt_pars_ud", ctypes.c_void_p),
         ("optimizer", ctypes.c_int),

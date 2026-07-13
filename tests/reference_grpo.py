@@ -3,12 +3,16 @@
 The shim builds the PPO clip out of RELU identities, because that is what has a backward rule:
 
     clip(r, lo, hi) = lo + relu(r - lo) - relu(r - hi)
-    min(a, b)       = b - relu(b - a)
+    min(a, b)       = a - relu(a - b)
 
 Those identities are *exactly* true, which is the point — but "exactly true on paper" and "the graph
 I wrote computes them" are different claims, and only the second one matters. So this module
 computes the same loss the obvious way: `np.clip`, `np.minimum`, and `np.expm1`, in float64, with
 no relu anywhere. If the graph agrees with this, the composite is right.
+
+Note that this reference cannot catch the one bug that actually shipped here. `b - relu(b - a)` is
+the same *number* as `a - relu(a - b)` and a different *gradient* (see docs/dev/grpo.md), so a
+value-only reference agrees with both. That one needs a test that differentiates.
 
 Deliberately *not* a translation of the graph. A reference that shares the graph's structure shares
 its bugs.

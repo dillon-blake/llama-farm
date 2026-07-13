@@ -25,12 +25,25 @@ The importance ratio is `exp(logp_new − logp_old_const)` — the EXP backward 
 input from S1-15's sample-time capture. The PPO clip cannot use `ggml_clamp`: CLAMP has
 no backward case in `ggml_compute_backward` and falls into the op-level default abort
 (`vendor/llama.cpp/ggml/src/ggml.c:6904-6907`). Instead the clip is composed from RELU
-identities — `clip(r,lo,hi) = lo + relu(r−lo) − relu(r−hi)` and `min(a,b) = b −
-relu(b−a)` — using the existing RELU VJP (`vendor/llama.cpp/ggml/src/ggml.c:6847`) plus
+identities — `clip(r,lo,hi) = lo + relu(r−lo) − relu(r−hi)` and `min(a,b) = a −
+relu(a−b)` — using the existing RELU VJP (`vendor/llama.cpp/ggml/src/ggml.c:6847`) plus
 SUB/SCALE (`:6493`, `:6631`). A CLAMP VJP composite may land later (S1-19) and can
 simplify the graph, but the relu composite stays in-tree permanently as the reference
-form. The optional KL penalty uses the low-variance k3 estimator `exp(Δ) − Δ − 1` with
-`Δ = logp_ref − logp_new`, from precomputed ref logprobs (BLUEPRINT D6) via EXP/SUB.
+form.
+
+> **⚠️ Corrected during implementation.** This ticket and BLUEPRINT §6.3 originally said
+> `min(a,b) = b − relu(b−a)`. That form is the same *number* and a **different gradient**:
+> `ggml_step(0) == 0`, so at a tie — exactly *at* the clip bound — the relu contributes no
+> derivative and the gradient flows only through whichever argument sits outside it.
+> `b − relu(b−a)` puts the *clipped* objective there, whose derivative in `r` is zero, so the
+> gradient silently vanishes at precisely the point the clip starts to bind. Measured: 3 ulps
+> below the bound the adapter moves `5.0e-01`, exactly at it `0.0e+00`, 3 ulps above `5.0e-01`
+> — with an identical loss in all three. Use `a − relu(a−b)`. See `docs/dev/grpo.md`.
+
+The optional KL penalty uses the low-variance k3 estimator `exp(Δ) − Δ − 1` with
+`Δ = logp_ref − logp_new`, from precomputed ref logprobs (BLUEPRINT D6) via EXP/SUB —
+built as `expm1(Δ) − Δ`, and note that ggml's own `op_expm1` was `expf(x) - 1.0f` and had
+to be fixed in the fork before this was safe.
 
 The step shape is the three-pass pattern of BLUEPRINT §6.3: (1) generate with the
 adapter on (S1-15), (2) no-grad chunked logp passes for old/ref (S1-13; ref with the

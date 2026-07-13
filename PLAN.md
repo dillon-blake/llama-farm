@@ -17,7 +17,7 @@ agent-executable backlog:
   flash-attention backward, MoE and SSM ops), numerics/determinism policy,
   licensing audit of reusable unsloth ideas.
 
-The backlog itself lives in `tickets/` — **84 tickets, each scoped to one pull
+The backlog itself lives in `tickets/` — **88 tickets, each scoped to one pull
 request**, with `tickets/README.md` as the guide agents read before picking up
 work (ordering, claim protocol, definition of done, CI model).
 
@@ -28,7 +28,7 @@ the order Metal, then CUDA, then Vulkan. Each stage is developed and tested on a
 backend-appropriate VM, and GitHub Actions runs detailed per-backend suites on
 every PR (quick lane) plus nightly (full lane).
 
-### Stage 0 — Groundwork (9 tickets)
+### Stage 0 — Groundwork (10 tickets)
 
 Repo scaffolding and packaging (scikit-build-core), llama.cpp vendored as a
 pinned submodule (`4f37f51`) against a project fork with a patch queue, the CMake
@@ -40,7 +40,7 @@ two binding ADRs (numerics + determinism policy; fork lineage).
 **Exit:** CPU CI green; a zero-B adapter attached to a tiny model provably
 changes nothing (the no-op smoke test).
 
-### Stage 1 — CPU training core (34 tickets)
+### Stage 1 — CPU training core (37 tickets)
 
 Everything needed to train **correctly** end-to-end on CPU:
 

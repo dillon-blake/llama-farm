@@ -62,11 +62,38 @@ topology-stable, and it needs nothing that was not already there:
 
 ```
 clip(r, lo, hi) = lo + relu(r - lo) - relu(r - hi)
-min(a, b)       = b - relu(b - a)
+min(a, b)       = a - relu(a - b)
 ```
 
 Check the clip on its three regions: `r < lo` gives `lo + 0 - 0`; `lo ≤ r ≤ hi` gives
 `lo + (r - lo) - 0 = r`; `r > hi` gives `lo + (r - lo) - (r - hi) = hi`.
+
+### The `min` must be `a - relu(a - b)`. The other form vanishes at the bound.
+
+`min(a,b) = b - relu(b - a)` is the same *number* and a different *gradient*, and the BLUEPRINT
+prescribed it. It is wrong, because **`ggml_step(0) == 0`**.
+
+At a tie — `a == b`, which is exactly *at* the clip bound — the `relu` term contributes zero
+derivative. So the argument that sits **outside** the `relu` is the one the gradient flows through.
+Write it `b - relu(b - a)` and `b` is the clipped objective, whose derivative in `r` is zero: the
+gradient silently disappears at precisely the point PPO's clip is supposed to start biting.
+
+Measured on the real graph, with the old form, at `r == lo` exactly:
+
+| ratio | adapter moved |
+|---|---|
+| 3 ulps below `lo` | 5.0e-01 |
+| **exactly `lo`** | **0.0e+00** |
+| 3 ulps above `lo` | 5.0e-01 |
+
+— and **the loss is identical in all three**. That is what makes it invisible: the run trains, the
+loss is finite and correct, and a set of tokens quietly stops contributing gradient.
+
+`a - relu(a - b)` puts the *unclipped* objective outside the relu, so the tie routes into the live
+branch — which is the branch the surrogate is defined by anyway, since at `r == lo` the clipped and
+unclipped objectives are equal.
+
+`test_the_gradient_survives_a_ratio_landing_exactly_on_the_clip_bound` pins it.
 
 **The `min` is taken after multiplying by the advantage, and it has to be.** A negative advantage
 swaps the two arguments, so the clip binds from the *other* side — and PPO's entire asymmetry, between

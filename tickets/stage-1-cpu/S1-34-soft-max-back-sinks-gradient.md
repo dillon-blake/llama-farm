@@ -1,6 +1,6 @@
 ---
 id: S1-34
-title: "SOFT_MAX_BACK ignores attention sinks — the gradient is wrong for sink models"
+title: "SOFT_MAX's grad test never checked the gradient — and dL/d(sinks) is silently zero"
 stage: 1
 track: kernels
 size: M
@@ -9,7 +9,20 @@ status: pr-open
 pr: https://github.com/dillon-blake/llama-farm/pull/26
 ---
 
-# S1-34 — `SOFT_MAX_BACK` ignores attention sinks
+# S1-34 — `SOFT_MAX`'s grad test never checked the gradient
+
+> **⚠️ This ticket's premise below was wrong, and the PR says so.** It was written believing sinks
+> were a *missing term* in `SOFT_MAX_BACK` and that sink models trained on a wrong gradient.
+> **The gradient was correct the whole time.** MODE_GRAD's objective is `sum(out)`, and a softmax's
+> rows sum to one by construction — so `d(sum(out))/dx` is *exactly zero* and every `sinks=0` case
+> was comparing zero against zero and reporting `OK`. The test had never exercised `SOFT_MAX_BACK`
+> at all; the `sinks=1` cases were the only ones with a nonzero gradient, hence the only ones that
+> *could* fail, and they failed on the **finite difference**, not the kernel.
+>
+> What was genuinely broken is `dL/d(sinks)` — silently ignored, so a full fine-tune would have
+> trained its attention sinks **frozen** with nothing to say so. See PR #26 and
+> `docs/dev/backward-coverage.md`. The original text is kept below because the mistake is the
+> useful part: an op whose output sum is conserved is invisible to a `sum(out)` objective.
 
 **One-line outcome:** softmax-with-sinks has a correct backward, and `test-backend-ops grad -o
 SOFT_MAX` passes instead of failing every `sinks=1` case.

@@ -261,3 +261,42 @@ def test_optimizer_params_helper_wires_the_constant_callback(libs: loader.Librar
     # trip, which is exactly the mechanism an LR schedule relies on.
     returned = libs.ggml_base.ggml_opt_get_constant_optimizer_params(userdata)
     assert returned.adamw.alpha == pytest.approx(1e-4)
+
+
+def test_the_opt_params_mirror_matches_the_C_layout() -> None:
+    """``ggml_opt_params`` crosses the ABI by value and holds FUNCTION POINTERS.
+
+    A mirror that disagrees about the layout does not read a wrong number — it calls a wrong
+    address. And the disagreement is silent: ctypes will happily build a struct of the wrong
+    shape and pass it.
+
+    S1-10 inserted ``grad_clip`` into the middle of this struct (between ``opt_period`` and
+    ``get_opt_pars``) and the mirror did not declare it at all. That was harmless *by accident*:
+    a float at offset 44 lands in the padding already sitting between an int32 at 40 and an
+    8-aligned pointer at 48, so every later field still aligned and ``sizeof`` still came to 72.
+    The next field added anywhere before ``get_opt_pars`` would have shifted the callback pointer
+    by four bytes.
+
+    These numbers are pinned again in ``csrc/farm_internals.cpp`` with ``static_assert`` /
+    ``offsetof``, against the real C header. Break one side and the other complains.
+    """
+    params = ggml_opt.ggml_opt_params
+
+    assert ctypes.sizeof(params) == 72
+
+    expected = {
+        "backend_sched": 0,
+        "ctx_compute": 8,
+        "inputs": 16,
+        "outputs": 24,
+        "loss_type": 32,
+        "build_type": 36,
+        "opt_period": 40,
+        "grad_clip": 44,
+        "get_opt_pars": 48,
+        "get_opt_pars_ud": 56,
+        "optimizer": 64,
+    }
+
+    actual = {name: getattr(params, name).offset for name, _ in params._fields_}
+    assert actual == expected
