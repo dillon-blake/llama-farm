@@ -122,3 +122,32 @@ int64_t ll_adapter_get(llama_adapter_lora * adapter, int32_t index, bool is_b, f
 
     return n;
 }
+
+int64_t ll_adapter_set(llama_adapter_lora * adapter, int32_t index, bool is_b, const float * data, int64_t n) {
+    if (adapter == nullptr || data == nullptr || n < 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const std::vector<std::string> names = sorted_names(adapter);
+
+    if (index < 0 || (size_t)index >= names.size()) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const llama_adapter_lora_weight & weight = adapter->ab_map.at(names[(size_t)index]);
+    ggml_tensor * tensor = is_b ? weight.b : weight.a;
+
+    if (tensor == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    if (tensor->type != GGML_TYPE_F32) {
+        return LL_ERR_TENSOR_NOT_F32;
+    }
+    if (ggml_nelements(tensor) != n) {
+        return LL_ERR_SHAPE_MISMATCH;
+    }
+
+    ggml_backend_tensor_set(tensor, data, 0, n * sizeof(float));
+
+    return n;
+}

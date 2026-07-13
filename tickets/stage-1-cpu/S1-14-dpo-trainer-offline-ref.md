@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-05", "S1-13"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/28
 ---
 
 # S1-14 — DPO trainer

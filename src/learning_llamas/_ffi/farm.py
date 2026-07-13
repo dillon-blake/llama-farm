@@ -21,6 +21,7 @@ class LLError(IntEnum):
     BASE_BUFT_NO_BACKWARD = -7
     STEP_FAILED = -8
     SHAPE_MISMATCH = -9
+    SCHED_INVALIDATED = -10
 
 
 class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
@@ -207,6 +208,40 @@ SYMBOLS = [
         ctypes.c_int64,
     ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-14: DPO — the pairwise objective, and the reference log-ratio it needs.
+    Symbol(
+        Library.FARM,
+        "ll_train_step_dpo",
+        [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int32),  # tokens
+            ctypes.POINTER(ctypes.c_int32),  # targets
+            ctypes.POINTER(ctypes.c_float),  # weights: +1 chosen, -1 rejected, 0 elsewhere
+            ctypes.POINTER(ctypes.c_int32),  # seq_ids
+            ctypes.POINTER(ctypes.c_int32),  # positions
+            ctypes.c_int32,  # n_tokens
+            ctypes.c_float,  # beta
+            ctypes.c_float,  # ref_delta
+            ctypes.c_bool,  # train
+            ctypes.POINTER(ctypes.c_float),  # loss_out
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_logp_delta",
+        [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_float),
+        ],
+        ctypes.c_int32,
+    ),
     # S1-11: will this model train, and if not, what stops it?
     #
     # The entry struct is mirrored in preflight.py rather than here, because it is the only ctypes
@@ -293,6 +328,18 @@ SYMBOLS = [
             ctypes.POINTER(ctypes.c_int64),  # ne_b[4]
         ],
         ctypes.c_int32,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_adapter_set",
+        [
+            ctypes.c_void_p,
+            ctypes.c_int32,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
     ),
     Symbol(
         Library.FARM,
