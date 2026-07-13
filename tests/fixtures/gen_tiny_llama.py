@@ -158,7 +158,7 @@ def _load_vocab(n_vocab: int) -> tuple[list[bytes], list[float], list[int]]:
     return tokens, scores, types
 
 
-def _model_tensors(hp: TinyLlamaHParams, seed: int) -> dict[str, np.ndarray]:
+def _model_tensors(hp: TinyLlamaHParams, seed: int, tied: bool = False) -> dict[str, np.ndarray]:
     """Build every model tensor as F32 numpy, in GGUF's reversed-shape convention.
 
     A numpy array of shape ``(n_out, n_in)`` is written with ``ne = [n_in, n_out]``.
@@ -176,8 +176,13 @@ def _model_tensors(hp: TinyLlamaHParams, seed: int) -> dict[str, np.ndarray]:
     tensors: dict[str, np.ndarray] = {
         "token_embd.weight": weights(hp.n_vocab, hp.n_embd),
         "output_norm.weight": norm(hp.n_embd),
-        "output.weight": weights(hp.n_vocab, hp.n_embd),
     }
+
+    # A tied-embedding model has no `output.weight`: it projects with `token_embd.weight` instead.
+    # Real models do this (Gemma, Qwen, most small Llamas), and anything that reads the lm_head by
+    # name has to handle it -- so S1-13's chunked logprob path gets a fixture that forces it to.
+    if not tied:
+        tensors["output.weight"] = weights(hp.n_vocab, hp.n_embd)
 
     n_embd_head = hp.n_head * hp.head_dim
     for il in range(hp.n_layer):
@@ -229,9 +234,11 @@ def _quantize(data: np.ndarray, qtype: gguf.GGMLQuantizationType) -> np.ndarray:
     return np.frombuffer(dst.raw, dtype=np.uint8).reshape(nrows, row_bytes)
 
 
-def _write(path: pathlib.Path, hp: TinyLlamaHParams, variant: str, seed: int) -> None:
+def _write(
+    path: pathlib.Path, hp: TinyLlamaHParams, variant: str, seed: int, tied: bool = False
+) -> None:
     tokens, scores, types = _load_vocab(hp.n_vocab)
-    tensors = _model_tensors(hp, seed)
+    tensors = _model_tensors(hp, seed, tied)
 
     writer = gguf.GGUFWriter(str(path), arch="llama")
 
@@ -299,6 +306,7 @@ def build(
     cache_dir: pathlib.Path,
     hp: TinyLlamaHParams = HPARAMS,
     seed: int = 20260712,
+    tied: bool = False,
 ) -> tuple[pathlib.Path, bool]:
     """Return the path to a fixture model, generating it only if it is not already cached.
 
@@ -307,6 +315,7 @@ def build(
         cache_dir: Directory to cache generated fixtures in. Gitignored; never committed.
         hp: The model's hyperparameters.
         seed: Seed for the weight RNG. Fixed, so fixtures are deterministic.
+        tied: Omit ``output.weight``, so the model projects with ``token_embd.weight``.
 
     Returns:
         A ``(path, generated)`` pair. ``generated`` is False on a cache hit.
@@ -321,7 +330,7 @@ def build(
 
     out_dir = cache_dir / cache_key(hp)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"tiny-llama-{variant}.gguf"
+    path = out_dir / f"tiny-llama-{variant}{'-tied' if tied else ''}.gguf"
 
     if path.exists():
         return path, False
@@ -329,7 +338,7 @@ def build(
     # Write to a temporary name and rename, so a crash mid-write cannot leave a truncated file
     # that the next run mistakes for a cache hit.
     tmp = path.with_suffix(".gguf.partial")
-    _write(tmp, hp, variant, seed)
+    _write(tmp, hp, variant, seed, tied)
     tmp.rename(path)
 
     return path, True

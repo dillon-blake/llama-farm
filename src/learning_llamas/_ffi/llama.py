@@ -233,6 +233,7 @@ SYMBOLS = [
     Symbol(Library.LLAMA, "llama_model_get_vocab", [llama_model_p], llama_vocab_p),
     Symbol(Library.LLAMA, "llama_vocab_n_tokens", [llama_vocab_p], ctypes.c_int32),
     Symbol(Library.LLAMA, "llama_model_n_embd", [llama_model_p], ctypes.c_int32),
+    Symbol(Library.LLAMA, "llama_get_model", [llama_context_p], llama_model_p),
     Symbol(Library.LLAMA, "llama_n_ctx", [llama_context_p], ctypes.c_uint32),
     # Decode. llama_batch_get_one returns the batch BY VALUE and llama_decode takes it by
     # value; both are fine through ctypes (it is only *callbacks* returning structs that trap).
@@ -251,6 +252,23 @@ SYMBOLS = [
     ),
     Symbol(Library.LLAMA, "llama_get_memory", [llama_context_p], ctypes.c_void_p),
     Symbol(Library.LLAMA, "llama_memory_clear", [ctypes.c_void_p, ctypes.c_bool]),
+    # Hidden states instead of logits (S1-13).
+    #
+    # With embeddings output on, a decode stops one op short: it hands back the post-final-norm
+    # hidden states [n_embd, n_tokens] and never runs the lm_head. That is the whole trick — the
+    # [n_tokens, n_vocab] tensor the chunked path exists to avoid is a tensor llama.cpp now never
+    # builds, rather than one we build and throw away.
+    #
+    # `llama_get_embeddings_ith` and not `llama_get_embeddings`: the latter indexes the output
+    # buffer, whose row order is the order tokens were *marked for output*, not batch order. The
+    # _ith form applies ctx->output_ids, so a batch position means what the caller thinks it means.
+    Symbol(Library.LLAMA, "llama_set_embeddings", [llama_context_p, ctypes.c_bool]),
+    Symbol(
+        Library.LLAMA,
+        "llama_get_embeddings_ith",
+        [llama_context_p, ctypes.c_int32],
+        ctypes.POINTER(ctypes.c_float),
+    ),
     # Tokenizer and chat template (S1-06).
     Symbol(
         Library.LLAMA,
