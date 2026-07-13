@@ -6,7 +6,7 @@
 |---|---|
 | Linux | a C++17 compiler (GCC ≥ 11 or Clang ≥ 14), CMake ≥ 3.21, Python ≥ 3.10, git |
 | macOS | Xcode command-line tools (`xcode-select --install`), CMake ≥ 3.21, Python ≥ 3.10 |
-| Windows | **not yet supported** — S1-33 owns the MSVC build and the `ci-windows` lane |
+| Windows | MSVC 2022, via the `ci-windows` lane (S1-33). See [below](#windows--msvc-s1-33). |
 
 `ccache` (or `sccache`) is picked up automatically if it is on `PATH`, and is never required.
 On a first build it saves nothing; on every subsequent one it saves most of the wall time.
@@ -143,3 +143,60 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Debug" pip install -e . --no-build-isolation
 Debug ggml is *slow* — 10-30× on the kernels. Use it to attach a debugger to a specific failure,
 not to run the suite. For a middle ground, `RelWithDebInfo` keeps the optimizations and the
 symbols.
+
+
+## Windows / MSVC (S1-33)
+
+```
+pip install scikit-build-core cmake ninja       # --no-build-isolation will not fetch these for you
+pip install -e . --no-build-isolation
+pip install -e vendor/llama.cpp/gguf-py
+```
+
+Three things are genuinely different on Windows. The first one decides whether the project builds at
+all, and it is the reason a Linux-only developer can break the Windows build without touching a line
+of Windows-specific code.
+
+**Symbol export.** ELF exports every symbol of a shared library by default. PE exports **nothing**
+it was not explicitly told to. The shim links against llama.cpp's *internal* C++ classes on purpose
+(ADR-0001 §2a) — so on Linux those internals resolve for free, and on Windows every one of them is
+an unresolved external:
+
+```
+farm_train.obj : error LNK2019: unresolved external symbol
+  "public: void __cdecl llama_context::set_training(bool)"
+```
+
+Each internal the shim uses is marked `LLAMA_API_INTERNAL` in the fork. **You do not have to
+remember this**, and that is the point: the top-level CMakeLists forces hidden visibility on every
+platform and links the shim with `--no-undefined`, so reaching for an unmarked internal is a link
+error on Linux too — at your desk, in the build you already run, rather than on a Windows runner
+three PRs later.
+
+To see the Windows link model on a Linux box, that is all it is:
+
+```bash
+cmake -S . -B build/pe-model -DCMAKE_CXX_VISIBILITY_PRESET=hidden
+```
+
+**Dependency resolution.** Windows resolves a DLL's imports through the process's DLL search path,
+and **since Python 3.8 that path no longer includes the directory the DLL was loaded from**. So
+`learningllamas.dll` — which imports `llama.dll`, which imports `ggml.dll`, all of them sitting in
+the same folder — fails on the very first load. And the error names the *dependency*, not the file
+you actually asked for.
+
+`_ffi.loader` handles this with `os.add_dll_directory`, held for the life of the process (ggml's
+backend registry can load a backend DLL lazily, long after the initial load). It does **not** edit
+`PATH`: that is process-wide, order-dependent, and shared with everything else in the interpreter.
+
+**`GGML_NATIVE=OFF` in CI.** With it on, ggml compiles for whatever the runner happens to be — and a
+cached object file from one runner generation crashes on another. Reproducibility beats the few
+percent.
+
+The last two both fail at *import*, not at build, which is why `ci-windows` runs a bare
+`import learning_llamas` as its own step before pytest: a failure there is unambiguous.
+
+`ci-windows.yml` is a separate workflow rather than a matrix entry on `ci-cpu`, because almost
+nothing is shared: a different compiler, a different linker, a different DLL model, a different cache
+tool. Folding it in would mean an `if: runner.os == 'Windows'` on every step — a matrix in a trench
+coat.

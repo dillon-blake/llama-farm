@@ -28,14 +28,28 @@ message(STATUS "learning-llamas: version ${LL_VERSION}, vendored llama.cpp ${LL_
 
 configure_file(farm_version.h.in "${CMAKE_CURRENT_BINARY_DIR}/farm_version.h" @ONLY)
 
-# The Python half of the version lock (S0-04). Generated into the *source* tree rather than the
-# install tree on purpose: under an editable install `learning_llamas._ffi` resolves out of
-# src/, so a copy installed into site-packages would either be invisible or -- worse -- shadow
-# the whole subpackage. It is gitignored and rewritten on every configure.
+# The Python half of the version lock (S0-04).
+#
+# Generated into the *source* tree, because that is where an editable install resolves
+# `learning_llamas._ffi` from -- a copy that existed only in the install tree would be invisible to
+# every developer and every test.
+#
+# ...and then ALSO installed, because the source-tree copy is gitignored, and scikit-build-core
+# honours gitignore when it packs `wheel.packages`. So the wheel shipped the *template* and not the
+# generated file, and `import learning_llamas` raised ModuleNotFoundError on `._ffi._version_lock`
+# for anyone who installed one. Every lane was green throughout: the editable installs the tests run
+# under read the file straight out of src/, and nothing ever installed a wheel and imported it from
+# somewhere else. `ci-windows` does now, and so does `ci-cpu` (S1-33).
+#
+# One configure_file, two destinations, so the two copies cannot disagree.
 configure_file(
     "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py.in"
     "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py"
     @ONLY)
+
+install(FILES "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py"
+        COMPONENT learningllamas
+        DESTINATION "learning_llamas/_ffi")
 
 add_library(learningllamas
     farm_api.h
@@ -61,3 +75,16 @@ set_target_properties(learningllamas PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
+
+# Fail at LINK time on an unresolved symbol, not at dlopen.
+#
+# ELF lets a shared library ship with dangling undefined symbols and hope they turn up at load. So
+# a shim that reaches for an internal llama.cpp never marked LLAMA_API_INTERNAL still *links* --
+# and then dies inside `import learning_llamas` with a mangled name and no hint of the cause. A
+# Windows linker would have refused it outright, which is the more useful behaviour, so ask for it.
+#
+# Together with the hidden visibility forced in the top-level CMakeLists, this is the guard: the
+# Linux build now rejects exactly what the Windows build would reject, at the same step.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(learningllamas PRIVATE "LINKER:--no-undefined")
+endif()

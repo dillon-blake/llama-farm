@@ -97,13 +97,39 @@ notes as its *upstreaming disposition*:
 |---|---|---|
 | **upstream-early** | Generally useful, small, no learning-llamas-specific semantics. PR to `ggml-org/llama.cpp` mainline *first*; carry on `learning-llamas-base` only until it merges. | Small VJPs (TANH/SIGMOID/CLAMP, S1-19), CUDA `OUT_PROD` (S3-02), the `SOFT_MAX_BACK` ALiBi lift (S1-20) |
 | **in-fork-first** | Needed now, upstream shape not yet settled, or too large to land as one upstream PR. Lives on `learning-llamas-base`; upstreamed later in digestible pieces. | Sparse CE (S1-04), flash-attention backward (S1-23), `OUT_PROD_ID` (S1-26) |
-| **fork-local** | learning-llamas-specific; never upstreamed. | The training-graph KV-cache bypass (S1-00) in its project-specific form |
+| **fork-local** | learning-llamas-specific; never upstreamed. | The training-graph KV-cache bypass (S1-00) in its project-specific form; the `LLAMA_API_INTERNAL` exports (S1-33) |
 
 To keep the carried diff rebasable, fork-local changes follow two rules: **new op enums are
 appended at the tail of their table**, never inserted in the middle (an insert renumbers every
 op after it and turns every rebase into a merge conflict across the whole backend matrix); and
 new functionality goes in **new files** wherever it plausibly can, rather than as hunks inside
 files upstream is actively editing.
+
+### 2a. `LLAMA_API_INTERNAL` is the coupling surface, written down
+
+The shim links against llama.cpp's **internal C++ classes** — that is the point of it (§1 of the
+blueprint): it owns its own `ggml_opt` context so it can choose the loss, and the public C API
+neither does nor should allow that. The cost is a dependency on llama.cpp internals, and the danger
+is that this dependency is **invisible on Linux**: ELF exports every symbol of a shared library by
+default, so the shim resolves `llama_context::get_sched()` without anyone declaring anything, and
+the coupling never has to be acknowledged.
+
+A PE DLL exports nothing it was not told to. So on Windows the same source does not link, and
+S1-33 found this the expensive way — after thirty green PRs — as eight `LNK2019`s.
+
+Each internal the shim reaches for is therefore marked `LLAMA_API_INTERNAL` in the fork. It expands
+to `LLAMA_API`, so it is a no-op on ELF; the reason it is a distinct name is that it is a **list**:
+
+```bash
+grep -rn LLAMA_API_INTERNAL vendor/llama.cpp/src/
+```
+
+is the complete inventory of what learning-llamas depends on beyond llama.cpp's public API. These
+symbols carry **no stability promise** — upstream may rename or delete any of them without warning,
+and that is upstream's right. So a submodule bump (§4) re-checks this list, and the build enforces
+it: the top-level CMakeLists forces hidden visibility on all platforms and links the shim with
+`--no-undefined`, which makes an unmarked internal a **link error on Linux** rather than a surprise
+on Windows.
 
 ### 3. Rebase cadence
 

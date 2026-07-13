@@ -128,8 +128,7 @@ def main() -> int:
 
     print(f"model      {args.model}")
     print(
-        f"n_ubatch   {args.n_ubatch}   rank {args.rank}   "
-        f"steps {args.steps} (warmup {args.warmup})"
+        f"n_ubatch   {args.n_ubatch}   rank {args.rank}   steps {args.steps} (warmup {args.warmup})"
     )
     print()
     print(
