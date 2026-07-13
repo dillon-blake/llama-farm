@@ -42,6 +42,7 @@ add_library(learningllamas
     farm_probe.cpp
     farm_train.cpp
     farm_adapter.cpp
+    farm_preflight.cpp
     farm_internals.cpp)
 
 target_include_directories(learningllamas

@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: M
 deps: ["S1-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/25
 ---
 
 # S1-11 — Trainability preflight: graph walk vs supported-backward op set + arch report
