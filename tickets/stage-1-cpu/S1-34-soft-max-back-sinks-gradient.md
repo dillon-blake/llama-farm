@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S0-10", "S0-09"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/26
 ---
 
 # S1-34 — `SOFT_MAX_BACK` ignores attention sinks

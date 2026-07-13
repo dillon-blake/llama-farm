@@ -247,6 +247,36 @@ one kernel; what breaks it is the *dispatch*, not the batching.
 > masking bug (a graded pad, a denominator that counts pads) breaks by a **factor**, not by parts in
 > ten thousand. See `tests/test_sft.py::test_padding_does_not_change_the_loss`.
 
+### A MODE_GRAD case is also vacuous if the objective conserves the output's sum
+
+*(Amended by S1-34, which found it the hard way.)*
+
+S0-10 recorded one way for a MODE_GRAD case to check nothing: never calling `ggml_set_param`. There
+is a second, and it is subtler, because the case *is* a parameter and the harness *does* compare a
+gradient.
+
+**MODE_GRAD differentiates `sum(out)`.** For an op whose output has a **conserved sum**, that
+objective has no gradient at all. A softmax is the obvious one: its rows sum to one by construction,
+so `sum(out)` is identically 1 whatever the input, and `d(sum(out))/dx` is *exactly zero*. The
+analytic gradient is zero, the finite difference is zero, they agree, and the case reports `OK`.
+
+`test-backend-ops grad -o SOFT_MAX` had been reporting `OK` on every case without an attention sink,
+and every one of them was comparing zero against zero. It had never exercised `SOFT_MAX_BACK`.
+
+(It was *failing* on the sink cases — and only those — because a sink takes part in the
+normalization but produces no output, so the rows sum to `1 - p_sink`, which does depend on the
+input. Those were the only cases in the test with a nonzero gradient, hence the only ones that could
+fail. The kernel was right all along: verified against a float64 finite difference to an MAA of
+2.1e-7, against a harness bound of 1e-4.)
+
+> **Normative:** a kernel whose output has a conserved sum — a softmax, a normalization, anything
+> that divides by its own total — must override `test_case::grad_loss` with an objective that
+> actually depends on its input. A weighted sum with unequal weights suffices. The fork adds that
+> hook; `grad_loss` defaults to `sum(out)`, which remains correct for everything else.
+>
+> The general rule: **before trusting a green MODE_GRAD case, check that the gradient it compared
+> was not identically zero.** Both known ways of checking nothing produce a green tick.
+
 ## Consequences
 
 **Every kernel ticket must include:**
