@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .. import _ffi
+from ..logprobs import LmHead, sequence_logprobs
 from .loop import TrainConfig, Trainer
 from .rollout import RewardFn, RolloutBatch, RolloutEngine
 
@@ -184,6 +185,15 @@ def collate(rollouts: RolloutBatch, seq_len: int) -> GRPOBatch:
         base = r * seq_len
         full = rollout.prompt_tokens + rollout.completion_tokens
 
+        # A rollout with no prompt would make the first graded index `n_prompt - 1 + 0` = -1, and
+        # numpy would happily write it -- into the LAST slot of the PREVIOUS rollout, corrupting a
+        # different sequence's padding with this one's advantage. Nothing would fail.
+        if not rollout.prompt_tokens:
+            raise ValueError(
+                f"rollout {r} has an empty prompt. Position i predicts token i+1, so there has to "
+                f"be at least one prompt token for the first completion token to be predicted BY."
+            )
+
         if len(full) > seq_len:
             log.warning(
                 "rollout %d is %d tokens but seq_len is %d: the tail carries no gradient",
@@ -213,12 +223,21 @@ def collate(rollouts: RolloutBatch, seq_len: int) -> GRPOBatch:
 
     n_completion = int(mask.sum())
 
+    # Zero graded tokens is not an empty batch -- it is a batch that will run, cost a forward and a
+    # backward, produce a loss of exactly 0, and report success. It happens when every prompt is
+    # longer than seq_len, which is a configuration error rather than an unlucky round.
+    if n_completion == 0:
+        raise ValueError(
+            f"not one token in this batch is graded: seq_len={seq_len} leaves no room for a "
+            f"completion after the prompt. The step would run, cost a full forward and backward, "
+            f"return a loss of 0, and train on nothing."
+        )
+
     # Normalize by the completion tokens actually graded, so the update does not get quietly
     # stronger just because the model generated longer answers this round. Folded into the
     # advantages rather than the weights: the weights ARE the mask that ce_sparse multiplies
     # logp_new by, and scaling them would scale the log-probability inside the importance ratio.
-    if n_completion > 0:
-        adv = adv / n_completion
+    adv = adv / n_completion
 
     return GRPOBatch(
         tokens=tokens,
@@ -295,6 +314,13 @@ class GRPOTrainer(Trainer):
         kl_w = None
         ref = None
         if self.grpo.kl_coef > 0.0 and logp_ref is not None:
+            # The C struct borrows a bare pointer with no length. A short array is not an error over
+            # there; it is an out-of-bounds read, and what it reads is whatever is next in the heap.
+            if len(logp_ref) != n:
+                raise ValueError(
+                    f"logp_ref has {len(logp_ref)} entries but the batch has {n} tokens. The shim "
+                    f"borrows this as a bare pointer and would read off the end of it."
+                )
             ref = np.ascontiguousarray(logp_ref, dtype=np.float32)
             scale = self.grpo.kl_coef / max(batch.n_completion_tokens, 1)
             kl_w = np.ascontiguousarray(batch.mask * scale, dtype=np.float32)
@@ -343,6 +369,54 @@ class GRPOTrainer(Trainer):
         )
 
 
+def reference_logprobs(
+    libs: _ffi.Libraries,
+    engine: RolloutEngine,
+    lm_head: LmHead,
+    batch: GRPOBatch,
+) -> np.ndarray:
+    """The reference policy's logprob of every token in the batch.
+
+    The reference is **this model with the adapter off** — never a second model, never a second set
+    of weights (BLUEPRINT D6). And it is scored on the ROLLOUT context, because that is the one
+    without an optimizer holding its scheduler: a decode on the training context would free it.
+
+    The adapter is detached with ``llama_set_adapters_lora(ctx, NULL, 0, NULL)`` and re-attached
+    afterwards. Note what is *not* done here: DPO's ``_zero_b`` trick zeroes the adapter's B tensors
+    in place, and that adapter is the one the optimizer is training. Doing it mid-run would zero the
+    policy.
+
+    Args:
+        libs: The loaded native libraries.
+        engine: The rollout engine, for its inference context and its adapter handle.
+        lm_head: The base model's output projection (S1-13).
+        batch: The collated rollouts.
+
+    Returns:
+        ``[n_tokens]`` F32, zero wherever the batch is masked.
+    """
+    detached = False
+    try:
+        libs.llama.llama_set_adapters_lora(engine.ctx, None, 0, None)
+        detached = True
+
+        return sequence_logprobs(
+            libs,
+            engine.ctx,
+            lm_head,
+            batch.tokens,
+            batch.targets,
+            batch.mask.tolist(),
+            batch.seq_ids,
+            batch.positions,
+        )
+    finally:
+        if detached and engine.adapter is not None:
+            adapters = (ctypes.c_void_p * 1)(engine.adapter)
+            scales = (ctypes.c_float * 1)(1.0)
+            libs.llama.llama_set_adapters_lora(engine.ctx, adapters, 1, scales)
+
+
 def train_grpo(
     libs: _ffi.Libraries,
     policy,  # noqa: ANN001 - the TRAINING context, adapter attached
@@ -350,6 +424,7 @@ def train_grpo(
     prompts: Sequence[str],
     reward_fn: RewardFn,
     config: GRPOConfig,
+    lm_head: LmHead | None = None,
 ) -> GRPOResult:
     """Generate, score, update — ``config.iterations`` times.
 
@@ -363,10 +438,27 @@ def train_grpo(
         prompts: What to generate answers to.
         reward_fn: How good was an answer.
         config: The run.
+        lm_head: The base model's output projection
+            (:func:`~learning_llamas.logprobs.load_lm_head`). **Required when
+            ``config.kl_coef > 0``**: the KL is measured against a reference pass that needs it.
+            A ``kl_coef`` that quietly did nothing would be the worst of both worlds — a knob
+            that reads as if it regularizes and does not.
 
     Returns:
         One :class:`GRPOMetrics` per iteration.
+
+    Raises:
+        ValueError: If the engine and the policy are using different adapters, if the training
+            context is too small, or if ``kl_coef > 0`` with no ``lm_head``.
     """
+    if config.kl_coef > 0.0 and lm_head is None:
+        raise ValueError(
+            f"kl_coef={config.kl_coef} needs a reference to measure against, and the reference "
+            f"pass needs the base model's lm_head. Pass lm_head=load_lm_head(base_gguf), or set "
+            f"kl_coef=0.0 to train without a KL penalty. (Silently ignoring it would leave you "
+            f"with a knob that reads as if it regularizes and does not.)"
+        )
+
     # The engine and the policy must be sampling and training THE SAME WEIGHTS.
     #
     # Two contexts, yes -- but one llama_adapter_lora between them. Loading the adapter file twice
@@ -414,7 +506,16 @@ def train_grpo(
             rollouts = engine.generate(prompts, reward_fn)
             batch = collate(rollouts, config.seq_len)
 
-            metrics = trainer.grpo_step(batch, mean_reward=rollouts.mean_reward())
+            # The reference does not move, but the TOKENS do -- these are new rollouts every round,
+            # so the reference has to score them afresh. It is a no-grad pass on the rollout context
+            # with the adapter off.
+            logp_ref = None
+            if config.kl_coef > 0.0:
+                logp_ref = reference_logprobs(libs, engine, lm_head, batch)
+
+            metrics = trainer.grpo_step(
+                batch, mean_reward=rollouts.mean_reward(), logp_ref=logp_ref
+            )
             result.steps.append(metrics)
 
     return result

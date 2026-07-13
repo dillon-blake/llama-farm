@@ -74,12 +74,32 @@ having made a good token likelier and having made a bad token likelier, lives in
 implementation that clipped the ratio and *then* applied the sign would be wrong on half the tokens,
 while still training, still converging, and still looking fine.
 
-### The k3 KL is `expm1(d) − d`
+### The k3 KL is `expm1(d) − d` — and ggml's `expm1` was a lie
 
-Not `exp(d) − d − 1`. Same number, one node fewer, and — the reason — **exact near `d = 0`**, which is
-exactly where a GRPO run starts. `exp(d) − 1` in float32 at `d ≈ 1e-4` loses every significant digit
-to cancellation, and a KL penalty that is *noise* at the start of a run pushes the policy in a random
-direction.
+k3 is `exp(d) − d − 1`, and it is **non-negative by construction**. That is the entire reason to
+prefer it over the naive estimator, which is unbiased but can go negative on a single sample and then
+*rewards* divergence from the reference.
+
+Written as `expm1(d) − d` it is the same number, one node fewer, and — the reason — **exact near
+`d = 0`**, which is exactly where a GRPO run lives: `d = logp_ref − logp_new` is approximately zero on
+every on-policy step *by design*.
+
+Except that ggml's `GGML_UNARY_OP_EXPM1` was implemented as `expf(x) - 1.0f` — precisely the
+cancellation the op exists to avoid, and precisely what the paragraph above claims it avoids. Measured
+against the true value (`d²/2`):
+
+| d | ggml's k3 | true | |
+|---|---|---|---|
+| 1e-5 | 1.36e-8 | 5.0e-11 | 271× too large |
+| 1e-6 | 7.29e-8 | 5.0e-13 | 145,000× too large |
+| 5e-5 | **−5.13e-8** | +1.25e-9 | **negative** |
+
+A KL penalty that goes negative does not penalize divergence; it **pays for it**. Fixed in the fork
+(`op_expm1` → `expm1f`, which was already used twice in the same file). `test_the_k3_kl_is_accurate_
+and_non_negative_near_zero` pins it: put the old form back and it fails immediately.
+
+This was found by an adversarial review, not by the tests — every test passed, because no test looked
+at the KL in the regime the KL actually operates in.
 
 ### Masked tokens are zeroed by the shim, not by the caller
 
@@ -102,6 +122,17 @@ the run would just optimize something else. The shim rejects it.
 
 Every normalization GRPO needs belongs in the advantages and the KL weights, where it scales the loss
 without touching the logprob.
+
+### The reference pass
+
+`kl_coef > 0` needs something to be a KL *to*, and the reference is **this model with the adapter
+off** — never a second model, never a second set of weights (BLUEPRINT D6). It is scored on the
+**rollout** context, because that is the one without an optimizer holding its scheduler.
+
+`train_grpo(..., lm_head=load_lm_head(base_gguf))` is required when `kl_coef > 0`, and refused
+otherwise. The first version of this code accepted `kl_coef` and then never ran a reference pass at
+all — the KL term was multiplied by a zero weight and contributed exactly nothing. The run *looked*
+regularized. A knob that reads as if it regularizes and does not is worse than no knob.
 
 ## Self-verification
 

@@ -16,6 +16,7 @@
 #ifndef LEARNING_LLAMAS_FARM_API_H
 #define LEARNING_LLAMAS_FARM_API_H
 
+#include <stdbool.h> // this header declares `bool` parameters; a C consumer needs the typedef
 #include <stddef.h>
 #include <stdint.h>
 

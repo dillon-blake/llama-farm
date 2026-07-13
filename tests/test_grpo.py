@@ -28,6 +28,7 @@ import pytest
 
 from learning_llamas import _ffi
 from learning_llamas.adapter import create_zero_adapter
+from learning_llamas.logprobs import load_lm_head
 from learning_llamas.train import TrainConfig, Trainer
 from learning_llamas.train.grpo import GRPOConfig, GRPOTrainer, collate, train_grpo
 from learning_llamas.train.rollout import (
@@ -187,10 +188,30 @@ def test_the_relu_composite_is_the_clip_in_every_region(policy, libs, fixed_batc
         live = mask > 0
         n_live = int(live.sum())
 
-        # Below the clip, inside it, exactly on both bounds, and above it.
-        ratios = np.array([0.5, 0.8, 0.9, 1.0, 1.1, 1.2, 2.0, 0.3, 1.5, 0.95][:n_live])
-        # ...crossed with advantages of both signs, and zero.
-        advantages = np.array([1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 1.0, 0.0, -1.5, 1.5][:n_live])
+        # The pairs matter more than the values, and this is the trap the first version of this
+        # test fell into.
+        #
+        # The clip only ever BINDS on one side at a time, and which side depends on the SIGN of the
+        # advantage:
+        #
+        #   A > 0, r > hi  ->  min(rA, hiA) = hiA   -- the UPPER bound binds
+        #   A > 0, r < lo  ->  min(rA, loA) = rA    -- the unclipped branch wins; lo is never read
+        #   A < 0, r < lo  ->  min(rA, loA) = loA   -- the LOWER bound binds
+        #   A < 0, r > hi  ->  min(rA, hiA) = rA    -- the unclipped branch wins; hi is never read
+        #
+        # So a test with r = 0.5 and A = +1 does NOT exercise the lower bound: the loss is the same
+        # whether `lo + relu(r - lo)` is there or not. The first version of this test had exactly
+        # that, and no (r < lo, A < 0) pair anywhere -- so the entire lower half of the clip could
+        # have been deleted and it would still have passed.
+        #
+        # Every one of the four rows above is present below, twice.
+        ratios = np.array([0.5, 0.3, 2.0, 1.5, 0.8, 1.2, 1.0, 0.9, 1.1, 0.95][:n_live])
+        advantages = np.array([-1.0, -2.0, 1.0, 2.0, -1.5, 1.5, -0.5, 0.5, -1.0, 0.0][:n_live])
+
+        assert n_live >= 4, "the four clip x sign combinations need at least four graded tokens"
+        # r < lo with A < 0 -> the LOWER bound binds. r > hi with A > 0 -> the UPPER bound binds.
+        assert ((ratios < 0.8) & (advantages < 0)).any(), "the lower clip bound is never exercised"
+        assert ((ratios > 1.2) & (advantages > 0)).any(), "the upper clip bound is never exercised"
 
         adv = np.zeros(N)
         adv[live] = advantages
@@ -401,6 +422,57 @@ def test_no_reference_means_no_kl_rather_than_infinity(policy, libs, fixed_batch
         f"with no reference the KL should be exactly zero, got {loss}. A NULL logp_ref is being "
         f"read as zeros rather than as logp_old."
     )
+
+
+def test_the_k3_kl_is_accurate_and_non_negative_near_zero(policy, libs, fixed_batch) -> None:
+    """The regime GRPO actually lives in, and the one ggml got wrong.
+
+    k3 is ``exp(d) - d - 1``, and it is **non-negative by construction** — that is the entire reason
+    to prefer it over the naive estimator, which is unbiased but can go negative on a single sample
+    and then *rewards* divergence from the reference.
+
+    ggml's ``GGML_UNARY_OP_EXPM1`` was implemented as ``expf(x) - 1.0f``, which is precisely the
+    catastrophic cancellation the op exists to avoid. Measured, against the true ``d²/2``:
+
+        d = 1e-5:   1.36e-8  vs   5.0e-11    (271x too large)
+        d = 1e-6:   7.29e-8  vs   5.0e-13    (145,000x too large)
+        d = 5e-5:  -5.13e-8  vs   1.25e-9    (NEGATIVE)
+
+    And ``d = logp_ref - logp_new`` is ~0 on every GRPO step **by design** — an on-policy run lives
+    exactly there. So the KL penalty was noise, and sometimes noise with the wrong sign. Fixed
+    upstream in the fork (op_expm1 -> expm1f); this pins it.
+    """
+    tokens, targets, mask = fixed_batch
+    live = mask > 0
+    n_live = int(live.sum())
+
+    with Trainer(libs, policy, TrainConfig(lr=1e-3)):
+        logp_new = _logp_new(libs, policy, tokens, targets, mask)
+
+        logp_old = np.zeros(N)
+        logp_old[live] = logp_new[live]
+
+        adv = np.zeros(N)  # no policy term: the loss IS the KL
+
+        for delta in (1e-3, 1e-4, 1e-5):
+            logp_ref = np.zeros(N)
+            logp_ref[live] = logp_new[live] + delta  # d = logp_ref - logp_new = +delta
+
+            got = _grpo_loss(
+                libs, policy, tokens, targets, mask, adv, logp_old, kl_coef=1.0, logp_ref=logp_ref
+            )
+
+            # k3(d) ~= d^2/2 for small d, summed over the graded tokens.
+            want = n_live * (delta**2 / 2)
+
+            assert got >= 0.0, (
+                f"the KL went NEGATIVE at d={delta:.0e}: {got:.3e}. k3 is non-negative by "
+                f"construction — a negative KL rewards divergence from the reference."
+            )
+            assert got == pytest.approx(want, rel=0.05), (
+                f"k3 at d={delta:.0e} is {got:.3e}, expected ~{want:.3e} (n*d^2/2). This is the "
+                f"expf(x)-1 cancellation: the answer is smaller than the rounding error."
+            )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -787,3 +859,90 @@ def test_two_contexts_with_two_adapters_are_refused(tiny_q4_k, tmp_path, load_mo
             reward_fn=token_reward({1, 2}),
             config=GRPOConfig(lr=1e-3, seq_len=32, iterations=1),
         )
+
+
+def test_a_kl_coefficient_without_a_reference_is_refused(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """A knob that reads as if it regularizes and does not is worse than no knob.
+
+    `train_grpo` used to accept `kl_coef > 0` and then never run a reference pass or pass logp_ref
+    to the shim — so the KL term was multiplied by a zero weight and contributed exactly nothing.
+    The run looked regularized. It was not.
+    """
+    adapter = tmp_path / "nokl.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    G = 2
+    rollout_model = load_model(tiny_q4_k, n_ctx=128, n_seq_max=G)
+    rollout_model.attach_adapter(adapter, scale=1.0)
+
+    train_model = load_model(tiny_q4_k, n_ctx=64, n_ubatch=64, n_seq_max=2, training=True)
+    train_model.attach_adapter(adapter, scale=1.0, adapter=rollout_model.adapter)
+
+    engine = RolloutEngine(
+        libs,
+        rollout_model.ctx,
+        rollout_model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=0.0, max_new_tokens=4),
+        adapter=rollout_model.adapter,
+    )
+
+    with pytest.raises(ValueError, match="needs a reference"):
+        train_grpo(
+            libs,
+            train_model,
+            engine,
+            prompts=["hi"],
+            reward_fn=token_reward({1, 2}),
+            config=GRPOConfig(lr=1e-3, seq_len=32, iterations=1, kl_coef=0.1),
+            lm_head=None,
+        )
+
+
+def test_the_kl_actually_reaches_the_loss(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """With a reference and a large coefficient, the loss must MOVE.
+
+    The reference is the base model with the adapter off (BLUEPRINT D6), scored on the ROLLOUT
+    context — the one without an optimizer holding its scheduler.
+    """
+    adapter = tmp_path / "kl.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    G = 2
+    SEQ = 32
+    n_seq = 1 * G
+    n_tok = n_seq * SEQ
+
+    rollout_model = load_model(tiny_q4_k, n_ctx=128, n_seq_max=G)
+    rollout_model.attach_adapter(adapter, scale=1.0)
+
+    train_model = load_model(tiny_q4_k, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    train_model.attach_adapter(adapter, scale=1.0, adapter=rollout_model.adapter)
+
+    engine = RolloutEngine(
+        libs,
+        rollout_model.ctx,
+        rollout_model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=1.0, seed=3, max_new_tokens=8),
+        adapter=rollout_model.adapter,
+    )
+
+    lm_head = load_lm_head(tiny_q4_k)
+
+    result = train_grpo(
+        libs,
+        train_model,
+        engine,
+        prompts=["hello"],
+        reward_fn=token_reward(set(range(100))),
+        config=GRPOConfig(lr=1e-3, seq_len=SEQ, iterations=2, kl_coef=1.0),
+        lm_head=lm_head,
+    )
+
+    assert len(result.steps) == 2
+    assert all(math.isfinite(m.loss) for m in result.steps), (
+        f"the KL path produced a non-finite loss: {[m.loss for m in result.steps]}"
+    )

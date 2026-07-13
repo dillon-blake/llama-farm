@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-15", "S1-13"]
-status: open
-pr: null
+status: done
+pr: 34
 ---
 
 # S1-16 — GRPO training step: clip-via-relu graph, k3 KL, self-verification harness
