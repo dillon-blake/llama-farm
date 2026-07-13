@@ -86,6 +86,26 @@ bool op_has_backward(ggml_op op) {
     }
 }
 
+// GLU is a family, not an op, and only ONE member of it has a backward.
+//
+// ggml_compute_backward's GLU case implements split SWIGLU and nothing else: a fused SWIGLU trips
+// `GGML_ASSERT(src1 && "backward pass only implemented for split swiglu")`, and REGLU / GEGLU /
+// GEGLU_ERF / GEGLU_QUICK / SWIGLU_OAI hit `GGML_ABORT("unsupported glu op for backward pass")`.
+//
+// Saying `case GGML_OP_GLU: return true;` therefore told every Gemma (GEGLU) and gpt-oss
+// (SWIGLU_OAI) user that their model trains -- and then aborted in the backward build, which is
+// exactly the outcome this preflight exists to predict. The whole point of the report is that it
+// is believed. S1-28 adds the missing VJPs and flips these on.
+bool glu_has_backward(const ggml_tensor * node) {
+    if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU) {
+        return false;
+    }
+
+    // Split form only: src1 is the up-projection half. Fused SWIGLU packs both halves into src0
+    // and has no backward.
+    return node->src[1] != nullptr;
+}
+
 // The unary sub-switch has its own coverage, and its default aborts just like the outer one.
 bool unary_has_backward(ggml_unary_op op) {
     switch (op) {
@@ -116,7 +136,11 @@ const char * blocker_detail(ggml_op op) {
                "Unblocked by S1-21..S1-24.";
     case GGML_OP_MUL_MAT_ID:
     case GGML_OP_ADD_ID:
-        return "MoE expert routing has no backward yet. Unblocked by S1-25.";
+        return "MoE expert routing has no backward yet. Unblocked by S1-25 (wiring) plus S1-26 "
+               "and S1-27 (the OUT_PROD_ID kernels).";
+    case GGML_OP_GLU:
+        return "only SPLIT SwiGLU has a backward. Fused SwiGLU, and the GEGLU / REGLU / "
+               "SWIGLU_OAI variants (Gemma, gpt-oss), have none. Unblocked by S1-28.";
     case GGML_OP_OUT_PROD:
         return "OUT_PROD is a backward-only op; seeing it on the forward graph is unexpected.";
     case GGML_OP_SSM_CONV:
@@ -181,8 +205,9 @@ int32_t ll_preflight_walk(ggml_cgraph * gf, ggml_tensor ** params, int32_t n_par
             needs_grad.insert(node);
         }
 
-        const bool supported =
-            op_has_backward(node->op) && (node->op != GGML_OP_UNARY || unary_has_backward(ggml_get_unary_op(node)));
+        const bool supported = op_has_backward(node->op) &&
+                               (node->op != GGML_OP_UNARY || unary_has_backward(ggml_get_unary_op(node))) &&
+                               (node->op != GGML_OP_GLU || glu_has_backward(node));
 
         if (supported) {
             continue;
