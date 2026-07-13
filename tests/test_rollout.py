@@ -1,0 +1,349 @@
+"""S1-15: GRPO rollouts — generate G answers per prompt and let the group be its own baseline.
+
+Two claims here are load-bearing, and both are the kind that would produce a *plausible* wrong
+answer rather than a crash:
+
+**The KV-cache prefix share must not change what is generated.** The prompt is decoded once and its
+KV copied to the other G−1 group members, instead of being decoded G times. That is the whole reason
+a group of 8 is affordable. If `llama_memory_seq_cp` copied the wrong range, or the positions were
+off by one, generation would still *work* — it would just be conditioning on a subtly different
+prompt. So the test is not "does it generate": it is that greedy rollouts through the share are
+**token-for-token identical** to greedy rollouts decoded from scratch, one sequence at a time.
+
+**`logp_old` must be the policy's logprob, not the sampler's.** The importance ratio GRPO trains
+on is `exp(logp_new − logp_old)`. Temperature and top-p change what gets *drawn*; they do not change
+the distribution the ratio is defined against. Capturing after the sampler had warped the row would
+give a ratio against the wrong policy — and every loss would still be finite, every gradient would
+still flow, and the model would learn the wrong thing. So `logp_old` is cross-checked against an
+independent full-logits recompute (S1-13) of the same rollouts.
+"""
+
+import numpy as np
+import pytest
+
+from learning_llamas import _ffi
+from learning_llamas.logprobs import load_lm_head, sequence_logprobs
+from learning_llamas.train.rollout import (
+    RolloutEngine,
+    SamplerConfig,
+    group_advantages,
+    length_reward,
+    substring_reward,
+)
+
+G = 4
+N_CTX = 256
+MAX_NEW = 10
+
+PROMPTS = ["hello", "world"]
+
+
+@pytest.fixture
+def engine(tiny_q4_k, load_model, libs: _ffi.Libraries):
+    """An INFERENCE context — never a training one. Generation on a training context segfaults."""
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    return RolloutEngine(
+        libs,
+        model.ctx,
+        model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=1.0, seed=7, max_new_tokens=MAX_NEW),
+    ), model
+
+
+def _greedy_engine(libs, model, seed: int = 0) -> RolloutEngine:
+    return RolloutEngine(
+        libs,
+        model.ctx,
+        model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=0.0, seed=seed, max_new_tokens=MAX_NEW),
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# THE test: the prefix share must be invisible.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_kv_prefix_share_does_not_change_what_is_generated(tiny_q4_k, load_model, libs) -> None:
+    """Greedy rollouts through `llama_memory_seq_cp` must equal rollouts decoded from scratch.
+
+    The prompt is decoded ONCE and its KV copied to the other G−1 sequences — that is what makes a
+    group of G cost one prompt forward instead of G. But a wrong copy range, or an off-by-one in the
+    positions, does not fail: it conditions the group on a subtly different prompt and generates
+    fluent, plausible, wrong text.
+
+    Greedy, because greedy is a function of the KV alone: if the share is faithful, the tokens are
+    identical, and if it is not, they diverge on the first one that matters.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    with_share = _greedy_engine(libs, model).generate(PROMPTS, length_reward(10))
+
+    # The reference: **sequence 0 only**, which decoded the prompt itself and never received a copy.
+    #
+    # That distinction is the entire test. Comparing the group's first member against this would
+    # prove nothing at all — sequence 0 is the one that never uses the share, so it agrees whatever
+    # the copy does. Every member from 1 upward is generating from KV it did not compute, and those
+    # are the ones that have to match.
+    solo_model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=2)
+    solo = RolloutEngine(
+        libs,
+        solo_model.ctx,
+        solo_model.model,
+        n_rollouts=2,
+        sampler=SamplerConfig(temperature=0.0, seed=0, max_new_tokens=MAX_NEW),
+    )
+    reference = solo.generate(PROMPTS, length_reward(10))
+
+    for group in range(len(PROMPTS)):
+        want = next(r for r in reference.rollouts if r.group == group).completion_tokens
+        members = [r for r in with_share.rollouts if r.group == group]
+
+        for seq, rollout in enumerate(members):
+            assert rollout.completion_tokens == want, (
+                f"group {group}, sequence {seq}: the KV prefix share changed what was generated.\n"
+                f"  from the copied KV: {rollout.completion_tokens}\n"
+                f"  decoded directly:   {want}\n"
+                "The copy is conditioning this sequence on a different prompt."
+            )
+
+    assert with_share.stats.kv_reuse_hits == len(PROMPTS) * (G - 1)
+
+
+def test_greedy_members_of_a_group_agree(tiny_q4_k, load_model, libs) -> None:
+    """At temperature 0 the G members are G copies of the same argmax walk.
+
+    Which is worth asserting because it is what makes the test above a comparison of *generation*
+    rather than of *seeding* — and because if the sequences were somehow sharing a KV slot rather
+    than each having their own, they would drift apart here.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    batch = _greedy_engine(libs, model).generate(["hello"], length_reward(10))
+
+    completions = [r.completion_tokens for r in batch.rollouts]
+    assert all(c == completions[0] for c in completions), (
+        f"greedy rollouts of one prompt diverged: {completions}"
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# logp_old is the POLICY's logprob.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_logp_old_matches_an_independent_recompute(tiny_q4_k, load_model, libs) -> None:
+    """Sample-time capture vs a full-logits recompute of the same tokens.
+
+    `logp_old` is the denominator of an exponentiated ratio, so an error in it is *multiplied*, not
+    added. And nothing about a wrong one looks wrong: the loss stays finite, the gradients still
+    flow, and the model trains against the wrong policy.
+
+    The recompute (S1-13) shares nothing with the capture: a different decode, all positions at
+    once rather than one at a time, and the log-softmax done by a different code path. They are not
+    bitwise equal and should not be — llama.cpp is deterministic per *shape* (ADR-0002), and a
+    one-token incremental decode is a different shape from a full forward. They must agree
+    numerically.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    engine = _greedy_engine(libs, model)
+
+    batch = engine.generate(["hello"], length_reward(10))
+    rollout = batch.rollouts[0]
+
+    lm_head = load_lm_head(tiny_q4_k)
+
+    # position i predicts token i+1, so the completion's logprobs live at
+    # [n_prompt-1 .. n_prompt+len(completion)-2] of the concatenated sequence.
+    full = rollout.prompt_tokens + rollout.completion_tokens
+    n_prompt = len(rollout.prompt_tokens)
+    n_comp = len(rollout.completion_tokens)
+
+    tokens = full[:-1]
+    targets = full[1:]
+    weights = [0.0] * len(tokens)
+    for t in range(n_comp - 1 + 1):
+        idx = n_prompt - 1 + t
+        if idx < len(tokens):
+            weights[idx] = 1.0
+
+    recomputed = sequence_logprobs(libs, model.ctx, lm_head, tokens, targets, weights)
+
+    captured = rollout.logp_old[: n_comp - 1] if n_comp > 1 else rollout.logp_old
+    against = np.array(
+        [recomputed[n_prompt - 1 + t] for t in range(len(captured))], dtype=np.float32
+    )
+
+    np.testing.assert_allclose(captured, against, atol=5e-3, rtol=0)
+
+    # ...and they are real logprobs, not zeros that would trivially agree.
+    assert (captured < 0.0).all()
+    assert np.isfinite(captured).all()
+
+
+def test_logp_old_is_one_per_generated_token(engine) -> None:
+    eng, _ = engine
+    batch = eng.generate(PROMPTS, length_reward(10))
+
+    for rollout in batch.rollouts:
+        assert len(rollout.logp_old) == len(rollout.completion_tokens)
+        assert rollout.logp_old.dtype == np.float32
+        assert (rollout.logp_old <= 0.0).all(), "a logprob is never positive"
+
+
+# ---------------------------------------------------------------------------------------------
+# Determinism.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_same_seed_reproduces_the_run_bitwise(tiny_q4_k, load_model, libs) -> None:
+    """Same seed, same tokens, and `logp_old` equal to the bit.
+
+    Reproducibility is not a nicety in RL: `logp_old` is recorded at sample time and *reused* by
+    the training step. A run that cannot be replayed cannot be debugged, and a `logp_old` that
+    drifts from the policy that produced it silently biases every ratio.
+    """
+    first = None
+    for _ in range(2):
+        model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+        engine = RolloutEngine(
+            libs,
+            model.ctx,
+            model.model,
+            n_rollouts=G,
+            sampler=SamplerConfig(temperature=1.0, seed=99, max_new_tokens=MAX_NEW),
+        )
+        batch = engine.generate(PROMPTS, length_reward(10))
+        run = [(r.completion_tokens, r.logp_old) for r in batch.rollouts]
+
+        if first is None:
+            first = run
+            continue
+
+        for (tokens_a, logp_a), (tokens_b, logp_b) in zip(first, run, strict=True):
+            assert tokens_a == tokens_b, "same seed produced different tokens"
+            assert np.array_equal(logp_a, logp_b), "same seed produced different logp_old"
+
+
+def test_different_seeds_explore_differently(tiny_q4_k, load_model, libs) -> None:
+    """The G members of a group must not be G copies of each other when sampling.
+
+    A group whose members all drew the same completion has zero variance, so zero advantage, so
+    zero gradient — GRPO would run happily and learn nothing at all. That is the failure mode of
+    seeding every chain identically, and it is silent.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    engine = RolloutEngine(
+        libs,
+        model.ctx,
+        model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=1.0, seed=3, max_new_tokens=MAX_NEW),
+    )
+
+    batch = engine.generate(["hello"], length_reward(10))
+    completions = [tuple(r.completion_tokens) for r in batch.rollouts]
+
+    assert len(set(completions)) > 1, (
+        "every rollout in the group is identical — the sampler chains share a seed, so the group "
+        "has no variance, so no advantage, so no gradient."
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Advantages.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_advantages_are_group_normalized() -> None:
+    rng = np.random.default_rng(0)
+    rewards = rng.normal(5.0, 2.0, size=16).astype(np.float32)
+
+    advantages = group_advantages(rewards)
+
+    assert abs(float(advantages.mean())) < 1e-5
+    assert abs(float(advantages.std()) - 1.0) < 1e-2
+
+
+def test_a_degenerate_group_gets_zero_advantage() -> None:
+    """Every rollout earned the same reward, so the group says nothing about which is better.
+
+    Not an edge case — it is *common*. An all-or-nothing reward ("did it contain the answer") makes
+    whole groups succeed or fail together, and a group that all failed must not be pushed anywhere.
+    Dividing by a near-zero std would push it very hard indeed, in an arbitrary direction.
+    """
+    assert np.array_equal(
+        group_advantages(np.array([5.0, 5.0, 5.0, 5.0], dtype=np.float32)),
+        np.zeros(4, dtype=np.float32),
+    )
+    assert np.array_equal(
+        group_advantages(np.zeros(4, dtype=np.float32)), np.zeros(4, dtype=np.float32)
+    )
+
+
+def test_advantages_are_computed_per_group_not_across_the_batch(engine) -> None:
+    """Two prompts, and each is normalized against its OWN siblings.
+
+    Normalizing across the whole batch would compare a completion to answers for a *different*
+    question — which is exactly the baseline GRPO is designed not to need.
+    """
+    eng, _ = engine
+    batch = eng.generate(PROMPTS, length_reward(10))
+
+    advantages = batch.advantages()
+    for group in range(len(PROMPTS)):
+        members = advantages[group * G : (group + 1) * G]
+        assert abs(float(members.sum())) < 1e-4, (
+            f"group {group}'s advantages do not sum to zero: {members}. They are being normalized "
+            f"across the batch rather than within the group."
+        )
+
+
+# ---------------------------------------------------------------------------------------------
+# Throughput, and the contract.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_counters_are_populated(engine) -> None:
+    """Rollout throughput is GRPO's bottleneck, so it is counted rather than guessed at."""
+    eng, _ = engine
+    batch = eng.generate(PROMPTS, length_reward(10))
+    stats = batch.stats
+
+    assert stats.decode_calls > 0
+    assert stats.prompt_tokens > 0
+    assert stats.generated_tokens > 0
+    assert stats.tokens_per_second > 0.0
+
+    # The prefix share: G-1 prompt forward passes skipped, per prompt.
+    assert stats.kv_reuse_hits == len(PROMPTS) * (G - 1)
+
+    # One decode for the prompt, then one per token step -- for the WHOLE group, not per sequence.
+    # If this were per-sequence the count would be G times larger, and the batching would be a lie.
+    assert stats.decode_calls <= len(PROMPTS) * MAX_NEW
+
+
+def test_a_group_of_one_is_refused(tiny_q4_k, load_model, libs) -> None:
+    """It has no baseline: every advantage would be exactly zero, and nothing would ever train."""
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+
+    with pytest.raises(ValueError, match="at least 2"):
+        RolloutEngine(libs, model.ctx, model.model, n_rollouts=1)
+
+
+def test_a_group_bigger_than_the_context_allows_is_refused(tiny_q4_k, load_model, libs) -> None:
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=2)
+
+    with pytest.raises(ValueError, match="n_seq_max"):
+        RolloutEngine(libs, model.ctx, model.model, n_rollouts=8)
+
+
+def test_the_builtin_rewards(engine) -> None:
+    length = length_reward(target=10)
+    assert length("p", "x" * 10) == 0.0
+    assert length("p", "x" * 5) < 0.0
+    assert length("p", "x" * 10) > length("p", "x" * 3)
+
+    contains = substring_reward("yes")
+    assert contains("p", "oh yes indeed") == 1.0
+    assert contains("p", "no") == 0.0

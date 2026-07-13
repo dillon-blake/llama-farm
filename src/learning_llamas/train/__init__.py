@@ -8,6 +8,16 @@ accumulate, or how the learning rate moves. That common part lives in :mod:`.loo
 from .dpo import DPOConfig, DPOResult, DPOTrainer, Preference, reference_logratios, train_dpo
 from .loop import Batch, Hooks, StepMetrics, TrainableModel, TrainConfig, Trainer, run
 from .packing import n_sequences, pack
+from .rollout import (
+    Rollout,
+    RolloutBatch,
+    RolloutEngine,
+    RolloutStats,
+    SamplerConfig,
+    group_advantages,
+    length_reward,
+    substring_reward,
+)
 from .schedule import constant, warmup_cosine
 from .sft import SFTConfig, SFTResult, collate, to_batch, train_sft
 
@@ -15,6 +25,7 @@ __all__ = [
     "Batch",
     "DPOConfig",
     "DPOResult",
+    "Rollout",
     "DPOTrainer",
     "Preference",
     "Hooks",
@@ -34,4 +45,12 @@ __all__ = [
     "to_batch",
     "train_sft",
     "warmup_cosine",
+    "Rollout",
+    "RolloutBatch",
+    "RolloutEngine",
+    "RolloutStats",
+    "SamplerConfig",
+    "group_advantages",
+    "length_reward",
+    "substring_reward",
 ]

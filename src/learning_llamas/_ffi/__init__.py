@@ -44,6 +44,8 @@ from .llama import (
     llama_opt_param_filter,
     llama_opt_params,
     llama_pos,
+    llama_sampler_chain_params,
+    llama_sampler_p,
     llama_seq_id,
     llama_token,
 )
@@ -75,6 +77,8 @@ __all__ = [
     "library_filename",
     "llama_batch",
     "llama_pos",
+    "llama_sampler_chain_params",
+    "llama_sampler_p",
     "llama_seq_id",
     "llama_context_params",
     "llama_model_params",
