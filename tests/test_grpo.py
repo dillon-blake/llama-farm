@@ -533,6 +533,121 @@ def test_a_real_advantage_does_move_the_policy(policy, libs, fixed_batch) -> Non
     assert not np.array_equal(before, after), "a nonzero advantage did not move the adapter at all"
 
 
+def test_the_gradient_survives_a_ratio_landing_exactly_on_the_clip_bound(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """`min(a, b) = a - relu(a - b)`, and NOT the equally-true `b - relu(b - a)`.
+
+    They give the same forward value. They differ in where the gradient goes **at a tie**, and that
+    turns out to matter.
+
+    ``ggml_step(0) == 0``. So when the ratio lands exactly on ``lo``, ``relu(r - lo)`` is fed exactly
+    zero, its backward is zero, and ``d(clipped)/dr`` is zero. But ``clipped`` *evaluates* to
+    ``lo == r``, so the two branches of the ``min`` are bitwise equal — a tie. And ``b - relu(b - a)``
+    routes a tie's entire gradient into ``b``: the branch whose derivative was just computed as zero.
+
+    The token's policy gradient disappears. And for a POSITIVE advantage that is not a subgradient
+    choice at a kink — there is no kink. ``min(rA, clip(r)A)`` equals ``rA`` on *both* sides of
+    ``lo`` when ``A > 0``, because the clip does not bind from below there. The objective is smooth,
+    with slope ``A``, and the graph returned 0.
+
+    Measured, with one graded token and a positive advantage — the loss is identical in all three,
+    only the derivative differs:
+
+        3 ulps below lo:  adapter moved 5.0e-01
+        r == lo exactly:  adapter moved 0.0e+00     <- with b - relu(b - a)
+        3 ulps above lo:  adapter moved 5.0e-01
+
+    So the tie is routed into ``a``, the unclipped branch, whose derivative *is* ``A``. Correct at
+    ``lo``, and still a legal subgradient at ``hi`` (which is a genuine kink).
+    """
+    adapter = tmp_path / "tie.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    live = 5  # exactly ONE graded position, so the batch's whole gradient is this token's
+    mask = np.zeros(N, dtype=np.float32)
+    mask[live] = 1.0
+
+    rng = np.random.default_rng(4)
+    tokens = [int(x) for x in rng.integers(1, 400, size=N)]
+    targets = tokens[1:] + [tokens[0]]
+
+    def logp_new_at(model) -> np.float32:
+        weights = np.zeros(N, dtype=np.float32)
+        weights[live] = 1.0
+        value = ctypes.c_float()
+        _ffi.check(
+            libs.farm.ll_logp_delta(
+                model.ctx,
+                _arr_i32(tokens),
+                _arr_i32(targets),
+                _arr_f32(weights),
+                _arr_i32([0] * N),
+                _arr_i32(range(N)),
+                N,
+                ctypes.byref(value),
+            ),
+            "ll_logp_delta",
+        )
+        return np.float32(value.value)
+
+    probe = load_model(tiny_q4_k, n_ctx=32, n_ubatch=N, training=True)
+    probe.attach_adapter(adapter, scale=1.0)
+    with Trainer(libs, probe, TrainConfig(lr=0.0)):
+        logp_new = logp_new_at(probe)
+
+    # The ratio lives on a coarse float grid, too coarse to land on 0.8f exactly. So move `lo` onto
+    # an ACHIEVABLE r instead of the other way round: pick clip_eps with f32(1 - eps) bitwise equal
+    # to the r this token actually reaches. Same tie, and reachable.
+    f32 = np.float32
+
+    def ulp(x: float, n: int) -> float:
+        import struct  # noqa: PLC0415
+
+        bits = struct.unpack("<I", struct.pack("<f", x))[0] + n
+        return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+    guess = float(logp_new) - math.log(0.8)
+    tie_logp_old = None
+    eps = 0.2
+    for k in range(-200, 200):
+        cand = f32(ulp(guess, k))
+        r = f32(np.exp(f32(logp_new - cand)))
+        e = f32(f32(1.0) - r)
+        if f32(f32(1.0) - e) == r and 0.0 < float(e) < 1.0:
+            tie_logp_old, eps = float(cand), float(e)
+            break
+
+    assert tie_logp_old is not None, "could not align the clip bound with an achievable ratio"
+
+    def moved(logp_old_value: float) -> float:
+        model = load_model(tiny_q4_k, n_ctx=32, n_ubatch=N, training=True)
+        model.attach_adapter(adapter, scale=1.0)
+        before = _adapter_weights(libs, model)
+
+        logp_old = np.zeros(N)
+        logp_old[live] = logp_old_value
+        adv = np.zeros(N)
+        adv[live] = 1.0  # POSITIVE: the clip must not bind from below
+
+        with Trainer(libs, model, TrainConfig(lr=0.5)):
+            _grpo_loss(libs, model, tokens, targets, mask, adv, logp_old, eps=eps, train=True)
+
+        return float(np.abs(_adapter_weights(libs, model) - before).max())
+
+    below = moved(ulp(tie_logp_old, -3))
+    at_bound = moved(tie_logp_old)
+    above = moved(ulp(tie_logp_old, +3))
+
+    assert below > 0.0 and above > 0.0, "the neighbours of the bound carry no gradient either"
+    assert at_bound > 0.0, (
+        "the gradient VANISHED at a ratio exactly on the clip's lower bound, while both of its "
+        "float neighbours — the same objective, since the clip does not bind below for a positive "
+        "advantage — carry one. The min composite is routing the tie into the clipped branch, "
+        "whose derivative is zero there. Use min(a, b) = a - relu(a - b)."
+    )
+
+
 def _adapter_weights(libs, model) -> np.ndarray:
     out = []
     for i in range(libs.farm.ll_adapter_n_tensors(model.adapter)):

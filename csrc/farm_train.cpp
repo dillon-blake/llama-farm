@@ -567,9 +567,30 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
         ggml_tensor * unclipped_obj = ggml_mul(ctx_compute, ratio, lc->grpo_adv);
         ggml_tensor * clipped_obj = ggml_mul(ctx_compute, clipped, lc->grpo_adv);
 
-        // min(a, b) = b - relu(b - a)
-        ggml_tensor * surrogate = ggml_sub(ctx_compute, clipped_obj,
-                                           ggml_relu(ctx_compute, ggml_sub(ctx_compute, clipped_obj, unclipped_obj)));
+        // min(a, b) = a - relu(a - b), and NOT the equally-true b - relu(b - a).
+        //
+        // The two are algebraically identical and give the same forward value. They differ in where
+        // the gradient goes AT A TIE, and that is not a nicety.
+        //
+        // ggml_step(0) == 0. So when r lands exactly on lo, relu(r - lo) is fed exactly zero, its
+        // backward is step(0) = 0, and d(clipped)/dr is 0. But clipped *evaluates* to lo == r, so
+        // clipped_obj == unclipped_obj bit for bit -- a tie. And `b - relu(b - a)` at a tie routes
+        // the whole gradient into b, which is the branch whose derivative was just computed as zero.
+        //
+        // Net: dL/dr = 0. For a POSITIVE advantage that is simply wrong. min(rA, clip(r)A) equals rA
+        // on BOTH sides of lo -- the clip does not bind from below when A > 0 -- so the objective is
+        // smooth there, with slope A. There is no kink to pick a subgradient at. The token's entire
+        // policy gradient is dropped. Measured on the fixture:
+        //
+        //   r a few ulps below lo:  max|dL/dB| = 6.465078e-02
+        //   r == lo exactly:        max|dL/dB| = 0            <-- and its neighbours agree with each
+        //   r a few ulps above lo:  max|dL/dB| = 6.465083e-02     other, so it is not a kink
+        //
+        // `a - relu(a - b)` routes a tie into `a`, the UNCLIPPED branch, whose derivative is A. That
+        // is correct at r == lo, and still a legal subgradient at r == hi (a genuine kink, where
+        // either 0 or A is defensible). Same forward, same node count, right derivative.
+        ggml_tensor * surrogate = ggml_sub(ctx_compute, unclipped_obj,
+                                           ggml_relu(ctx_compute, ggml_sub(ctx_compute, unclipped_obj, clipped_obj)));
         ggml_set_name(surrogate, "ll_grpo_surrogate");
 
         // The k3 KL estimator: exp(d) - d - 1, with d = logp_ref - logp_new. Written as
