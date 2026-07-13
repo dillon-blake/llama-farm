@@ -11,6 +11,20 @@ pr: null
 
 # S1-27 — MoE: OUT_PROD_ID_GRP CPU reference (grouped expert outer product for LoRA A/B grads)
 
+> **⚠️ Under a `sum(out)` objective this op's grad test is VACUOUS. `grad_loss` is mandatory.**
+>
+> `d_as[i,j,e] = sum_{(s,t): ids=e} b[i,s'] * grad[j,s,t]`. With MODE_GRAD's default objective the
+> incoming grad is all-ones, so the result is **independent of `j`** — the dst is constant along the
+> entire output axis, and **a kernel that ignores `grad` entirely and just sums b-columns per expert
+> passes.** Use `test_case::grad_loss` with a weighted sum (the pattern is `test_soft_max::grad_loss`,
+> added by S1-34 for exactly this class of bug).
+>
+> Then prove it: **zero out the `grad` operand inside the kernel and watch the test go red.** Under
+> `sum(out)` it will stay green — that is the whole point. See `docs/dev/backward-coverage.md`.
+>
+> Recommended: **land this BEFORE S1-26.** `OUT_PROD_ID_GRP` is the simpler kernel (pure F32
+> segmented GEMM, no dequant path) and it is the one that makes MoE **LoRA** possible at all.
+
 **One-line outcome:** the new op `OUT_PROD_ID_GRP(b, grad, ids, n_expert) → dAs`
 executes on CPU — F32-only grouped per-expert weight gradients with deterministic
 segmented accumulation — giving expert LoRA A/B tensors their gradients.

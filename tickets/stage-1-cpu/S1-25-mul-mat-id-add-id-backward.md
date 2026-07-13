@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S0-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/37
 ---
 
 # S1-25 — MoE: MUL_MAT_ID + ADD_ID backward wiring (E1/E4)

@@ -11,6 +11,27 @@ pr: null
 
 # S1-28 — MoE: GLU-family backward (SWIGLU_OAI, GEGLU exact/tanh, REGLU) + tiny-MoE e2e
 
+> **⚠️ A blocker this ticket does not mention: the GELU F16 lookup table.**
+>
+> `GGML_GELU_FP16` (`ggml/src/ggml-cpu/vec.h`) makes the **F32** GEGLU forward compute gelu by
+> quantizing x to F16 and reading `ggml_table_gelu_f16`. MODE_GRAD differentiates the *forward*, so
+> the finite difference would differentiate an F16-precision step function while `GLU_BACK` computes
+> the exact F32 derivative. Estimated relative asymmetry **1e-2 … 1e-3, against a `max_maa_err` of
+> 1e-4 — 10-100x over.** GEGLU MODE_GRAD will **not** pass as this ticket assumes.
+>
+> Only GEGLU (tanh) and GEGLU_QUICK are affected: `ggml_silu_f32` is exact (which is why split-SwiGLU
+> passes today) and `geglu_erf` uses `erff` directly. The preferred fix is to route the F32 GEGLU
+> forward to the exact `ggml_gelu_f32` — the non-table branch already exists. This is the same class
+> of finding as the `EXPM1` bug: an F16-precision approximation sitting on a training path. **Measure
+> it first, before planning around an assumption.**
+>
+> Note `test_glu_split` and `test_swiglu_oai` **already** call `ggml_set_param` — only fused
+> `test_glu` does not. Step 5 is half done. Also narrow the `[-150, 150]` init for grad runs, or the
+> FD sits in the saturated tail rather than the curved region.
+>
+> **The preflight GLU over-claim is already fixed** (S1-25, `csrc/farm_preflight.cpp`): it used to
+> report *every* GLU trainable. Flip `glu_has_backward()` on as each VJP lands.
+
 **One-line outcome:** backward coverage for the gated-MLP variants MoE architectures
 use — SWIGLU_OAI (GPT-OSS), GEGLU exact and tanh-approx (Gemma-family), REGLU — closing
 the last CPU MoE gap, proven by a tiny-MoE SFT run whose loss falls on CPU.

@@ -65,6 +65,14 @@ them found incidentally. ADR-0001's own rule is *"PR to mainline **first**"*, an
 followed **zero times**. That is real value sitting in a private fork, and it is permanent rebase
 cost paid monthly for defects that are not this project's to own.
 
+> ⚠️ **Upstreaming has a constraint ADR-0001 does not account for.** llama.cpp's `AGENTS.md` states:
+> *"This project does **not** accept pull requests that are fully or predominantly AI-generated."*
+> Contributors must understand their code fully and be able to explain any change to a reviewer
+> without AI assistance. **Private forks are explicitly exempt**, so everything on
+> `learning-llamas-base` is fine as-is — but an upstream PR is a human commitment, not a
+> cherry-pick. Budget for that, and start with `c47889b9c` (`op_expm1` → `expm1f`): it is one hunk,
+> its correctness argument fits in a paragraph, and it is a plain numerical bug fix.
+
 ## Where a rebase will hurt
 
 Risk is upstream churn (commits touching the file in the last 12 months) against the fork's
