@@ -176,12 +176,24 @@ jobs:
           key: ci-cpu-ops-${{ matrix.os }}
           max-size: 500M
 
+      # GGML_NATIVE=OFF here too, and it matters MORE here than anywhere else.
+      #
+      # This job is the correctness ORACLE (ADR-0002): every GPU kernel is later accepted by
+      # matching what this CPU build produces. An oracle that is compiled differently on different
+      # days is not an oracle. With GGML_NATIVE on, ggml builds for whatever runner it lands on, so
+      # a finite-difference check sitting near its tolerance passes on AVX2 and fails on AVX-512 --
+      # because the accumulation order changed, not because the gradient did.
+      #
+      # That is not hypothetical: SOFT_MAX's grad check (MAA 0.0197 vs a 0.005 tolerance) failed on
+      # one runner and passed on another, on identical ggml. The env-level CMAKE_ARGS does not reach
+      # this step, because scikit-build-core reads it and raw cmake does not.
       - name: Build test-backend-ops
         run: |
           cmake -S vendor/llama.cpp -B build/vendor-tests \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLAMA_BUILD_TESTS=ON \
             -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_NATIVE=OFF \
             -DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/vendor-tests --target test-backend-ops -j 4
