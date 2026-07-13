@@ -95,11 +95,22 @@ jobs:
       # the source tree and gitignored, scikit-build-core honours gitignore when packing, and so
       # every wheel this project ever built raised ModuleNotFoundError on first import. Nothing
       # noticed, because nothing had ever installed one (S1-33).
+      #
+      # Installed WITH its dependencies, and exercised through the PUBLIC api -- not `_ffi`. Both
+      # details are load-bearing. `pip install --no-deps` plus a private import is a weaker test
+      # than it looks: it proves the shared libraries shipped, and nothing about whether a stranger
+      # can use the package. It passed for as long as `import learning_llamas` bound no names, and
+      # went on passing while four modules imported `gguf` -- which was not a declared dependency
+      # (S1-35).
       - name: The wheel installs and imports
         run: |
-          pip install --no-deps dist/*.whl
+          pip install dist/*.whl
           cd "$RUNNER_TEMP"
-          python -c "from learning_llamas import _ffi; _ffi.load(); print('the wheel imports')"
+          python -c "
+          import learning_llamas
+          learning_llamas.libraries()
+          print('the wheel imports:', len(learning_llamas.__all__), 'public names')
+          "
 
       - uses: actions/upload-artifact@v4
         with:
