@@ -46,8 +46,7 @@ static_assert(sizeof(ggml_opt_optimizer_params) == 7 * sizeof(float),
 // These numbers are mirrored in src/learning_llamas/_ffi/ggml_opt.py, and pinned again there by
 // test_the_opt_params_mirror_matches_the_C_layout. Change one, and the other breaks -- which is
 // the point.
-static_assert(sizeof(ggml_opt_params) == 72,
-              "ggml_opt_params size changed -- update the _ffi mirror");
+static_assert(sizeof(ggml_opt_params) == 72, "ggml_opt_params size changed -- update the _ffi mirror");
 static_assert(offsetof(ggml_opt_params, opt_period) == 40, "ggml_opt_params layout changed");
 static_assert(offsetof(ggml_opt_params, grad_clip) == 44, "ggml_opt_params layout changed");
 static_assert(offsetof(ggml_opt_params, get_opt_pars) == 48, "ggml_opt_params layout changed");
