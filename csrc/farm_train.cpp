@@ -411,6 +411,7 @@ enum ll_loss_kind {
     LL_LOSS_SFT = 0,  // masked mean cross-entropy, normalized by the weight actually carried
     LL_LOSS_DPO = 1,  // -log sigmoid(beta * (logratio - ref_logratio))
     LL_LOSS_LOGP = 2, // sum_i w_i * logp_i, unnormalized -- for precomputing reference logratios
+    LL_LOSS_GRPO = 3, // clipped importance-ratio surrogate + k3 KL, weighted by per-token advantage
 };
 
 struct loss_ctx {
@@ -424,6 +425,10 @@ struct loss_ctx {
     float beta = 0.1f;
     float ref_delta = 0.0f;
 
+    // GRPO only. Caller-owned arrays, [n_tokens], indexed exactly like `weights`.
+    const ll_grpo_inputs * grpo = nullptr;
+    float clip_eps = 0.2f;
+
     const int32_t * targets = nullptr; // [n_tokens] target id per position
     const float * weights = nullptr;   // [n_tokens] loss weight per position; 0 masks out
     int32_t n_tokens = 0;
@@ -432,7 +437,14 @@ struct loss_ctx {
     ggml_tensor * labels = nullptr;     // I32 [n_ubatch] -- the target token of each position
     ggml_tensor * ce_weights = nullptr; // F32 [n_ubatch] -- its loss weight, pre-normalized
     ggml_tensor * dpo_ref = nullptr;    // F32 [1] -- beta * ref_delta, a constant (DPO only)
-    int32_t pos = 0;                    // this ubatch's offset within the batch
+
+    // GRPO only. All F32 [n_ubatch], all constants: none of them carries a gradient.
+    ggml_tensor * grpo_adv = nullptr;      // advantage_i * mask_i * norm
+    ggml_tensor * grpo_logp_old = nullptr; // the behaviour policy's logp of target_i
+    ggml_tensor * grpo_logp_ref = nullptr; // the reference policy's logp of target_i
+    ggml_tensor * grpo_kl_w = nullptr;     // kl_coef * mask_i * norm
+
+    int32_t pos = 0; // this ubatch's offset within the batch
     int32_t n_ubatch = 0;
     int64_t n_vocab = 0;
 };
@@ -479,6 +491,26 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
     ggml_set_input(lc->ce_weights);
     ggml_set_name(lc->ce_weights, "ll_ce_weights");
 
+    if (lc->kind == LL_LOSS_GRPO) {
+        // Four constants, one per token. None of them is differentiated: ggml only propagates
+        // gradients from tensors flagged PARAM or LOSS, so a pure input never gets an accumulator.
+        lc->grpo_adv = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, n_ubatch);
+        ggml_set_input(lc->grpo_adv);
+        ggml_set_name(lc->grpo_adv, "ll_grpo_adv");
+
+        lc->grpo_logp_old = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, n_ubatch);
+        ggml_set_input(lc->grpo_logp_old);
+        ggml_set_name(lc->grpo_logp_old, "ll_grpo_logp_old");
+
+        lc->grpo_logp_ref = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, n_ubatch);
+        ggml_set_input(lc->grpo_logp_ref);
+        ggml_set_name(lc->grpo_logp_ref, "ll_grpo_logp_ref");
+
+        lc->grpo_kl_w = ggml_new_tensor_1d(ctx_compute, GGML_TYPE_F32, n_ubatch);
+        ggml_set_input(lc->grpo_kl_w);
+        ggml_set_name(lc->grpo_kl_w, "ll_grpo_kl_w");
+    }
+
     // logit_scale = 1.0 (off), softcap = 0.0 (off): a plain llama arch applies neither. Gemma-2
     // and friends do, and S1-11 wires them through -- the op already takes them.
     ggml_tensor * per_token =
@@ -489,6 +521,74 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
     // Summing it is therefore  -sum_i w_i * logp_i  -- the negative weighted log-probability.
     ggml_tensor * loss = ggml_sum(ctx_compute, per_token);
     ggml_set_name(loss, "ll_ce_loss");
+
+    if (lc->kind == LL_LOSS_GRPO) {
+        // GRPO. The clipped importance-ratio surrogate, weighted by each token's group advantage.
+        //
+        //     logp_new = -per_token                      (ce_sparse already carries the mask)
+        //     r        = exp(logp_new - logp_old)        the importance ratio
+        //     L_i      = min( r_i * A_i , clip(r_i, 1-eps, 1+eps) * A_i )
+        //     loss     = -sum_i L_i  +  sum_i kl_w_i * k3_i
+        //
+        // logp_old and the advantages are CONSTANTS -- named inputs, no gradient path. The gradient
+        // is the policy's alone, which is what makes this an off-policy correction rather than a
+        // second model.
+        //
+        // THE CLIP IS BUILT FROM RELU, and that is the interesting part. The obvious ggml_clamp
+        // does now have a backward rule, but the relu composite is the reference form the ticket
+        // pins, it is topology-stable, and it needs nothing that was not already there:
+        //
+        //     clip(r, lo, hi) = lo + relu(r - lo) - relu(r - hi)
+        //     min(a, b)       = b - relu(b - a)
+        //
+        // Check the clip on its three regions: r < lo gives lo + 0 - 0; lo <= r <= hi gives
+        // lo + (r - lo) - 0 = r; r > hi gives lo + (r - lo) - (r - hi) = hi. And min is exact
+        // whichever way round a and b fall -- which matters, because a NEGATIVE advantage swaps
+        // them, and PPO's asymmetry between "made a good token likelier" and "made a bad token
+        // likelier" lives entirely in that swap.
+        const float lo = 1.0f - lc->clip_eps;
+        const float hi = 1.0f + lc->clip_eps;
+
+        ggml_tensor * logp_new = ggml_scale(ctx_compute, per_token, -1.0f);
+        ggml_set_name(logp_new, "ll_grpo_logp_new");
+
+        ggml_tensor * ratio = ggml_exp(ctx_compute, ggml_sub(ctx_compute, logp_new, lc->grpo_logp_old));
+        ggml_set_name(ratio, "ll_grpo_ratio");
+
+        // clip(r, lo, hi), from relu identities. ggml_scale_bias(x, 1, -lo) is x - lo in one node,
+        // and its backward correctly ignores the bias (d/dx of s*x + b is s).
+        ggml_tensor * clipped = ggml_scale_bias(
+            ctx_compute,
+            ggml_sub(ctx_compute, ggml_relu(ctx_compute, ggml_scale_bias(ctx_compute, ratio, 1.0f, -lo)),
+                     ggml_relu(ctx_compute, ggml_scale_bias(ctx_compute, ratio, 1.0f, -hi))),
+            1.0f, lo);
+        ggml_set_name(clipped, "ll_grpo_clipped");
+
+        ggml_tensor * unclipped_obj = ggml_mul(ctx_compute, ratio, lc->grpo_adv);
+        ggml_tensor * clipped_obj = ggml_mul(ctx_compute, clipped, lc->grpo_adv);
+
+        // min(a, b) = b - relu(b - a)
+        ggml_tensor * surrogate = ggml_sub(ctx_compute, clipped_obj,
+                                           ggml_relu(ctx_compute, ggml_sub(ctx_compute, clipped_obj, unclipped_obj)));
+        ggml_set_name(surrogate, "ll_grpo_surrogate");
+
+        // The k3 KL estimator: exp(d) - d - 1, with d = logp_ref - logp_new. Written as
+        // expm1(d) - d, which is the same number and one node fewer -- and, crucially, EXACT near
+        // d = 0, which is exactly where a GRPO run starts. exp(d) - 1 in F32 at d ~ 1e-4 loses
+        // every significant digit to cancellation; expm1 does not lose any.
+        //
+        // The KL nodes are built even when the KL is off, and the coefficient is folded into kl_w
+        // host-side. Building them conditionally would change the graph's node COUNT between runs,
+        // and ggml-opt indexes its optimizer state by node index off the first graph it sees.
+        ggml_tensor * d_ref = ggml_sub(ctx_compute, lc->grpo_logp_ref, logp_new);
+        ggml_tensor * k3 = ggml_sub(ctx_compute, ggml_expm1(ctx_compute, d_ref), d_ref);
+        ggml_tensor * kl = ggml_mul(ctx_compute, k3, lc->grpo_kl_w);
+        ggml_set_name(kl, "ll_grpo_kl");
+
+        loss = ggml_add(ctx_compute, ggml_scale(ctx_compute, ggml_sum(ctx_compute, surrogate), -1.0f),
+                        ggml_sum(ctx_compute, kl));
+        ggml_set_name(loss, "ll_grpo_loss");
+    }
 
     if (lc->kind == LL_LOSS_DPO) {
         // DPO. With weights of +1 on the chosen completion's tokens and -1 on the rejected's,
@@ -580,6 +680,42 @@ void upload_masked_ce(void * userdata) {
         const float value = lc->beta * lc->ref_delta;
         ggml_backend_tensor_set(lc->dpo_ref, &value, 0, sizeof(float));
     }
+
+    if (lc->kind == LL_LOSS_GRPO) {
+        const ll_grpo_inputs * g = lc->grpo;
+
+        std::vector<float> adv(n_ubatch);
+        std::vector<float> logp_old(n_ubatch);
+        std::vector<float> logp_ref(n_ubatch);
+        std::vector<float> kl_w(n_ubatch);
+
+        for (int32_t i = 0; i < n_ubatch; ++i) {
+            const int32_t j = lc->pos + i;
+
+            // A masked position gets zeros in EVERY array, and the shim enforces that rather than
+            // trusting the caller -- because getting it wrong produces NaN, not an error.
+            //
+            // On a masked token ce_sparse multiplies by w = 0, so logp_new is exactly 0. A nonzero
+            // logp_ref there would then make d = logp_ref - 0 a large number, expm1(d) would be
+            // +inf, and inf * kl_w = inf * 0 = NaN. One stray value in a padding slot would take
+            // the whole batch's loss and every gradient with it, in silence.
+            //
+            // With zeros: logp_new = 0, logp_old = 0, so the ratio is exp(0) = 1; the advantage is
+            // 0, so the surrogate is 0; d = 0, so k3 = expm1(0) - 0 = 0. The token contributes
+            // nothing to the loss and nothing to the gradient, which is what "masked" means.
+            const bool live = weights[i] != 0.0f;
+
+            adv[i] = live ? g->adv[j] : 0.0f;
+            logp_old[i] = live ? g->logp_old[j] : 0.0f;
+            logp_ref[i] = live ? (g->logp_ref ? g->logp_ref[j] : g->logp_old[j]) : 0.0f;
+            kl_w[i] = live && g->kl_w ? g->kl_w[j] : 0.0f;
+        }
+
+        ggml_backend_tensor_set(lc->grpo_adv, adv.data(), 0, adv.size() * sizeof(float));
+        ggml_backend_tensor_set(lc->grpo_logp_old, logp_old.data(), 0, logp_old.size() * sizeof(float));
+        ggml_backend_tensor_set(lc->grpo_logp_ref, logp_ref.data(), 0, logp_ref.size() * sizeof(float));
+        ggml_backend_tensor_set(lc->grpo_kl_w, kl_w.data(), 0, kl_w.size() * sizeof(float));
+    }
 }
 
 } // namespace
@@ -590,7 +726,7 @@ namespace {
 // both this; ll_logp_delta is this with train=false and no reduction.
 int32_t train_step_impl(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
                         const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, ll_loss_kind kind,
-                        float beta, float ref_delta, bool train, float * loss_out) {
+                        float beta, float ref_delta, const ll_grpo_inputs * grpo, bool train, float * loss_out) {
     if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || n_tokens <= 0) {
         return LL_ERR_INVALID_ARG;
     }
@@ -732,6 +868,8 @@ int32_t train_step_impl(llama_context * ctx, const int32_t * tokens, const int32
     lc.kind = kind;
     lc.beta = beta;
     lc.ref_delta = ref_delta;
+    lc.grpo = grpo;
+    lc.clip_eps = grpo != nullptr ? grpo->clip_eps : 0.2f;
     lc.targets = targets;
     lc.weights = weights;
     lc.n_tokens = n_tokens;
@@ -759,7 +897,7 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
                       const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, bool train,
                       float * loss_out) {
     return train_step_impl(ctx, tokens, targets, weights, seq_ids, positions, n_tokens, LL_LOSS_SFT,
-                           /*beta =*/0.0f, /*ref_delta =*/0.0f, train, loss_out);
+                           /*beta =*/0.0f, /*ref_delta =*/0.0f, /*grpo =*/nullptr, train, loss_out);
 }
 
 int32_t ll_train_step_dpo(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
@@ -770,7 +908,39 @@ int32_t ll_train_step_dpo(llama_context * ctx, const int32_t * tokens, const int
     }
 
     return train_step_impl(ctx, tokens, targets, weights, seq_ids, positions, n_tokens, LL_LOSS_DPO, beta, ref_delta,
-                           train, loss_out);
+                           /*grpo =*/nullptr, train, loss_out);
+}
+
+int32_t ll_train_step_grpo(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,
+                           const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens,
+                           const ll_grpo_inputs * grpo, bool train, float * loss_out) {
+    if (grpo == nullptr || grpo->adv == nullptr || grpo->logp_old == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // An epsilon outside (0, 1) is not a clip. At 0 the clipped branch is the constant 1 and the
+    // ratio's gradient vanishes; at 1 the lower bound is 0 and the clip never binds below.
+    if (grpo->clip_eps <= 0.0f || grpo->clip_eps >= 1.0f) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // The weights ARE the completion mask, and they have to be exactly 0 or 1.
+    //
+    // This is not fastidiousness. logp_new is -ce_sparse(...), and ce_sparse multiplies by w_i --
+    // so a weight of 0.5 does not down-weight this token's contribution, it HALVES the log
+    // probability that goes into the importance ratio. exp(0.5*logp - logp_old) is not a ratio of
+    // anything. Nothing would fail; the run would just optimize a different objective.
+    //
+    // Every normalization GRPO needs belongs in `adv` and `kl_w`, where it scales the loss without
+    // touching the logprob.
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        if (weights[i] != 0.0f && weights[i] != 1.0f) {
+            return LL_ERR_INVALID_ARG;
+        }
+    }
+
+    return train_step_impl(ctx, tokens, targets, weights, seq_ids, positions, n_tokens, LL_LOSS_GRPO,
+                           /*beta =*/0.0f, /*ref_delta =*/0.0f, grpo, train, loss_out);
 }
 
 int32_t ll_logp_delta(llama_context * ctx, const int32_t * tokens, const int32_t * targets, const float * weights,

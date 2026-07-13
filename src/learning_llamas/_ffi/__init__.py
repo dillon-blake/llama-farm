@@ -19,7 +19,7 @@ Typical use::
 
 from __future__ import annotations
 
-from .farm import LLError, check, ll_opt_params, opt_free, opt_init_lora
+from .farm import LLError, check, ll_grpo_inputs, ll_opt_params, opt_free, opt_init_lora
 from .ggml import ggml_init_params
 from .ggml_opt import (
     AdamWParams,
@@ -70,6 +70,7 @@ __all__ = [
     "SplitMode",
     "Symbol",
     "check",
+    "ll_grpo_inputs",
     "ggml_log_callback",
     "ggml_opt_optimizer_params",
     "ggml_opt_params",

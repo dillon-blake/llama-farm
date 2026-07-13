@@ -205,9 +205,20 @@ class Model:
             raise RuntimeError("llama_get_logits_ith returned NULL")
         return [out[i] for i in range(self.n_vocab)]
 
-    def attach_adapter(self, path: pathlib.Path, scale: float = 1.0) -> None:
+    def attach_adapter(
+        self, path: pathlib.Path, scale: float = 1.0, adapter: int | None = None
+    ) -> None:
+        """Attach an adapter to this context.
+
+        Pass `adapter` to attach one that is ALREADY LOADED, instead of loading the file again.
+        That is what lets two contexts share a single set of A/B tensors -- GRPO needs it, because a
+        training step must mutate the very weights the rollout context is sampling from. Calling
+        this with a path twice would load the file twice and give you two independent adapters that
+        happen to start equal, and then quietly diverge.
+        """
         libs = self._libs
-        adapter = libs.llama.llama_adapter_lora_init(self.model, str(path).encode())
+        if adapter is None:
+            adapter = libs.llama.llama_adapter_lora_init(self.model, str(path).encode())
         if not adapter:
             raise RuntimeError(f"failed to load adapter {path}")
 

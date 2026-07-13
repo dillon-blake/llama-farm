@@ -24,11 +24,13 @@ import pytest
 from learning_llamas import _ffi
 from learning_llamas.logprobs import load_lm_head, sequence_logprobs
 from learning_llamas.train.rollout import (
+    Rollout,
     RolloutEngine,
     SamplerConfig,
     group_advantages,
     length_reward,
     substring_reward,
+    token_reward,
 )
 
 G = 4
@@ -338,12 +340,30 @@ def test_a_group_bigger_than_the_context_allows_is_refused(tiny_q4_k, load_model
         RolloutEngine(libs, model.ctx, model.model, n_rollouts=8)
 
 
-def test_the_builtin_rewards(engine) -> None:
+def _rollout(text: str = "", tokens: list[int] | None = None) -> Rollout:
+    return Rollout(
+        group=0,
+        prompt_tokens=[1],
+        completion_tokens=tokens or [1],
+        logp_old=np.zeros(1, dtype=np.float32),
+        text=text,
+    )
+
+
+def test_the_builtin_rewards() -> None:
     length = length_reward(target=10)
-    assert length("p", "x" * 10) == 0.0
-    assert length("p", "x" * 5) < 0.0
-    assert length("p", "x" * 10) > length("p", "x" * 3)
+    assert length("p", _rollout("x" * 10)) == 0.0
+    assert length("p", _rollout("x" * 5)) < 0.0
+    assert length("p", _rollout("x" * 10)) > length("p", _rollout("x" * 3))
 
     contains = substring_reward("yes")
-    assert contains("p", "oh yes indeed") == 1.0
-    assert contains("p", "no") == 0.0
+    assert contains("p", _rollout("oh yes indeed")) == 1.0
+    assert contains("p", _rollout("no")) == 0.0
+
+    # The one the toy task uses: how much of the completion came from a wanted set of tokens. It is
+    # the most direct thing a policy gradient can act on -- the update literally raises the logprob
+    # of the tokens in a high-advantage completion.
+    wanted = token_reward({7, 8})
+    assert wanted("p", _rollout(tokens=[7, 8, 7, 8])) == 1.0
+    assert wanted("p", _rollout(tokens=[7, 9, 7, 9])) == 0.5
+    assert wanted("p", _rollout(tokens=[1, 2, 3])) == 0.0

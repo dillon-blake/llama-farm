@@ -43,8 +43,11 @@ import numpy as np
 
 from .. import _ffi
 
-#: A reward function: given the prompt and the text the model produced, how good was it?
-RewardFn = Callable[[str, str], float]
+#: A reward function: given the prompt and the whole rollout, how good was it?
+#:
+#: The rollout, and not just the text, because a reward often needs to see the *tokens* — and
+#: because the tokens are what the policy gradient can actually act on.
+RewardFn = Callable[[str, "Rollout"], float]
 
 
 @dataclass(frozen=True)
@@ -195,8 +198,8 @@ def length_reward(target: int) -> RewardFn:
     against. A real reward would not be.
     """
 
-    def reward(_prompt: str, completion: str) -> float:
-        return -abs(len(completion) - target) / max(target, 1)
+    def reward(_prompt: str, rollout: Rollout) -> float:
+        return -abs(len(rollout.text) - target) / max(target, 1)
 
     return reward
 
@@ -208,8 +211,31 @@ def substring_reward(needle: str) -> RewardFn:
     :func:`group_advantages` has to handle them.
     """
 
-    def reward(_prompt: str, completion: str) -> float:
-        return 1.0 if needle in completion else 0.0
+    def reward(_prompt: str, rollout: Rollout) -> float:
+        return 1.0 if needle in rollout.text else 0.0
+
+    return reward
+
+
+def token_reward(wanted: set[int]) -> RewardFn:
+    """Reward a completion for how much of it is drawn from ``wanted``.
+
+    The most direct test of a GRPO update there is. The update pushes up the log-probability of the
+    tokens in high-advantage completions — so a reward that says *use more of these tokens* is
+    precisely the thing the gradient can act on, with nothing in between. A policy that cannot learn
+    this has not learned anything, and the failure is in the update rather than in the task.
+
+    Which is why it is the toy task: a reward like "produce text of about this length" is a fine
+    thing to want, but it asks a two-layer random model to control the *decoded character count* of
+    its own samples, and the signal is buried under the sampling noise long before it reaches the
+    weights.
+    """
+
+    def reward(_prompt: str, rollout: Rollout) -> float:
+        if not rollout.completion_tokens:
+            return 0.0
+        hits = sum(1 for t in rollout.completion_tokens if t in wanted)
+        return hits / len(rollout.completion_tokens)
 
     return reward
 
@@ -243,6 +269,7 @@ class RolloutEngine:
         model: int,
         n_rollouts: int = 4,
         sampler: SamplerConfig | None = None,
+        adapter: int | None = None,
     ) -> None:
         if n_rollouts < 2:
             raise ValueError(
@@ -263,6 +290,12 @@ class RolloutEngine:
         self.n_rollouts = n_rollouts
         self.sampler = sampler or SamplerConfig()
 
+        # The `llama_adapter_lora *` this context is sampling through, if the caller said. GRPO
+        # checks it against the training context's: they must be the SAME OBJECT, not two adapters
+        # loaded from the same file, or the trainer updates one set of weights and the engine keeps
+        # sampling from the other -- and nothing fails, the reward simply never moves.
+        self.adapter = adapter
+
         self.vocab = libs.llama.llama_model_get_vocab(model)
         self.n_vocab = int(libs.llama.llama_vocab_n_tokens(self.vocab))
         self.memory = libs.llama.llama_get_memory(ctx)
@@ -281,7 +314,7 @@ class RolloutEngine:
 
         for rollout in rollouts:
             rollout.text = self._detokenize(rollout.completion_tokens)
-            rollout.reward = float(reward_fn(prompts[rollout.group], rollout.text))
+            rollout.reward = float(reward_fn(prompts[rollout.group], rollout))
 
         # Advantages are per-group: the group IS the baseline.
         for group in range(len(prompts)):

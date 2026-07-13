@@ -280,6 +280,7 @@ SYMBOLS = [
         ctypes.c_bool,
     ),
     Symbol(Library.LLAMA, "llama_n_seq_max", [llama_context_p], ctypes.c_uint32),
+    Symbol(Library.LLAMA, "llama_n_ubatch", [llama_context_p], ctypes.c_uint32),
     Symbol(Library.LLAMA, "llama_vocab_is_eog", [llama_vocab_p, llama_token], ctypes.c_bool),
     #
     # Samplers. One chain per sequence, so that G rollouts of one prompt are G independent draws.
