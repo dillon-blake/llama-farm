@@ -47,6 +47,10 @@ struct ll_train_state {
     // optimizer state.
     std::vector<ggml_tensor *> param_tensors;
 
+    // Layers per gradient-checkpointing segment; 0 = off (S1-17). Mirrored here only so that
+    // ll_set_grad_checkpointing can refuse a mid-run change.
+    int32_t grad_ckpt_segment = 0;
+
     // The gradient accumulator of each param tensor, keyed by the tensor's name.
     //
     // Captured once, from inside the first training step, because that is the only window in
@@ -312,6 +316,49 @@ int32_t ll_opt_n_params(llama_context * ctx) {
         return LL_ERR_NOT_INITIALIZED;
     }
     return (int32_t)it->second->param_tensors.size();
+}
+
+int64_t ll_compute_buffer_bytes(llama_context * ctx) {
+    if (ctx == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_sched_t sched = ctx->get_sched();
+    if (sched == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    size_t total = 0;
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        total += ggml_backend_sched_get_buffer_size(sched, ggml_backend_sched_get_backend(sched, i));
+    }
+
+    return (int64_t)total;
+}
+
+int32_t ll_set_grad_checkpointing(llama_context * ctx, int32_t segment_len) {
+    if (ctx == nullptr || segment_len < 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const auto it = train_states().find(ctx);
+    if (it == train_states().end()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    // ggml-opt sizes its gradient accumulators and AdamW momenta from the FIRST graph it is shown
+    // and indexes them by node index forever after (BLUEPRINT D1). Checkpointing does not disturb
+    // that -- it changes only the backward graph, and the forward prefix is preserved for exactly
+    // this reason -- but it does change the step's memory and speed profile completely, and a run
+    // whose steps are not comparable is not a run. So: before the first step, or not at all.
+    if (it->second->n_tokens_seen > 0) {
+        return LL_ERR_ALREADY_INIT;
+    }
+
+    ctx->set_grad_checkpointing((uint32_t)segment_len);
+    it->second->grad_ckpt_segment = segment_len;
+
+    return LL_OK;
 }
 
 // ---------------------------------------------------------------------------

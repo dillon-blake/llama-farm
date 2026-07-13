@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: L
 deps: ["S1-02"]
-status: open
-pr: null
+status: done
+pr: 32
 ---
 
 # S1-17 — Gradient checkpointing: layer-segmented recompute (+ optional CPU-offloaded boundaries)
