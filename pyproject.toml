@@ -89,3 +89,6 @@ convention = "google"
 # Tests document themselves through their names; module/function docstrings are
 # still encouraged but not enforced.
 "tests/*" = ["D100", "D101", "D102", "D103", "D104"]
+# Benchmarks are scripts, not library code. Their module docstring is the --help text and their
+# helpers are local plumbing; docstring rules on those buy nothing.
+"benches/*" = ["D101", "D102", "D103", "D415"]
