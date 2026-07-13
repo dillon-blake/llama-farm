@@ -208,6 +208,15 @@ SYMBOLS = [
         ctypes.c_int64,
     ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-17: the activation high-water mark -- the number checkpointing exists to move.
+    Symbol(Library.FARM, "ll_compute_buffer_bytes", [ctypes.c_void_p], ctypes.c_int64),
+    # S1-17: layers per gradient-checkpointing segment; 0 = off. Before the first step, or never.
+    Symbol(
+        Library.FARM,
+        "ll_set_grad_checkpointing",
+        [ctypes.c_void_p, ctypes.c_int32],
+        ctypes.c_int32,
+    ),
     # S1-14: DPO — the pairwise objective, and the reference log-ratio it needs.
     Symbol(
         Library.FARM,

@@ -172,6 +172,35 @@ LL_API int32_t ll_opt_free(struct llama_context * ctx);
 // The number of tensors ll_opt_init_lora flagged, or LL_ERR_NOT_INITIALIZED.
 LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 
+// Gradient checkpointing (S1-17): keep only every `segment_len`-th layer boundary alive across the
+// backward pass, and recompute the layers between them on demand.
+//
+// The backward pass reads the forward pass's activations, so ordinarily every one of them stays
+// live from where it is produced to where its gradient is taken -- for the first layer, that is the
+// whole graph. At long context it is activations, not weights, that run a machine out of memory.
+// Checkpointing trades one extra forward pass of arithmetic for an activation footprint that stops
+// growing with depth.
+//
+// The gradients are unchanged: BIT-FOR-BIT, not merely close. Only which tensor each backward node
+// reads changes -- the original activation, or a recomputed stand-in holding the same numbers.
+//
+//   segment_len: layers per segment. 0 turns it off (the default, and the byte-identical path).
+//                1 checkpoints every layer boundary, which saves the most memory and recomputes
+//                the most. Larger segments recompute less and keep more.
+//
+// Must be called before the first training step. Changing it mid-run is LL_ERR_ALREADY_INIT: it
+// silently rewrites the graph's memory and speed characteristics, and a run whose steps are not
+// alike is not a run.
+LL_API int32_t ll_set_grad_checkpointing(struct llama_context * ctx, int32_t segment_len);
+
+// Bytes the scheduler has allocated for compute -- i.e. the activation high-water mark, summed over
+// every backend (S1-17).
+//
+// This is the number gradient checkpointing exists to move, so it is the number the tests assert
+// on. Read it AFTER at least one training step: the scheduler sizes its buffers from the graphs it
+// has actually been shown, and a context that has not trained yet has only ever seen a reserve.
+LL_API int64_t ll_compute_buffer_bytes(struct llama_context * ctx);
+
 // ---------------------------------------------------------------------------
 // Training step (S1-02)
 // ---------------------------------------------------------------------------
