@@ -5,11 +5,17 @@ locally, on llama.cpp's ggml backend — CPU, Metal, CUDA, and Vulkan — with t
 training step GPU-resident when a GPU is available. Trained adapters load
 directly in stock llama.cpp, llama-server, and ollama.
 
-**Status: stage 1 (CPU training core), 25 of 36 tickets landed or in review.**
+**Status: stage 1 (CPU training core), 27 of 37 tickets landed or in review.**
 SFT, DPO and GRPO all train today on CPU, on quantized bases, with gradient
-checkpointing and a chunked lm_head. The 11 open tickets are the remaining kernel
-families — flash-attention backward, MoE, and SSM — plus the convergence gate.
-Stages 2–4 (Metal, CUDA, Vulkan) have not started.
+checkpointing and a chunked lm_head. What remains is MoE (S1-26, S1-28), SSM
+(S1-30, S1-31), the convergence gate (S1-12), and chunked attention (S1-24).
+
+The **flash-attention backward** family (S1-21/22/23) is **deferred out of stage 1**:
+flash attention is force-disabled during training and none of those tickets turns it
+back on, so the whole family — six to eight weeks — would leave the training path
+unchanged. Its real product is a CPU oracle for *GPU* flash-attention kernels, which
+belongs with whichever stage first starts a GPU backend. See the tickets for the
+reasoning. Stages 2–4 (Metal, CUDA, Vulkan) have not started.
 
 ## Getting started
 
