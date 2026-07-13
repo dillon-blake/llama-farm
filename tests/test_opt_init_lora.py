@@ -38,7 +38,9 @@ def _default_opt_params() -> _ffi.ll_opt_params:
 def _init_lora(libs: _ffi.Libraries, model, params: _ffi.ll_opt_params) -> int:
     """Call ll_opt_init_lora with the model's single attached adapter."""
     adapters = (ctypes.c_void_p * 1)(model.adapter)
-    return libs.farm.ll_opt_init_lora(model.ctx, model.model, adapters, 1, ctypes.byref(params), 1)
+    return libs.farm.ll_opt_init_lora(
+        model.ctx, model.model, adapters, 1, ctypes.byref(params), 1, 0.0
+    )
 
 
 def test_the_binding_layer_owns_the_params_lifetime(tiny_q4_k, tmp_path, load_model, libs) -> None:
@@ -216,7 +218,7 @@ def test_zero_adapters_is_rejected(adapted, libs: _ffi.Libraries) -> None:
     adapters = (ctypes.c_void_p * 1)(model.adapter)
 
     result = libs.farm.ll_opt_init_lora(
-        model.ctx, model.model, adapters, 0, ctypes.byref(params), 1
+        model.ctx, model.model, adapters, 0, ctypes.byref(params), 1, 0.0
     )
     assert result == _ffi.LLError.NO_ADAPTERS
 
@@ -227,11 +229,11 @@ def test_null_arguments_are_rejected(adapted, libs: _ffi.Libraries) -> None:
     adapters = (ctypes.c_void_p * 1)(model.adapter)
 
     assert (
-        libs.farm.ll_opt_init_lora(None, model.model, adapters, 1, ctypes.byref(params), 1)
+        libs.farm.ll_opt_init_lora(None, model.model, adapters, 1, ctypes.byref(params), 1, 0.0)
         == _ffi.LLError.INVALID_ARG
     )
     assert (
-        libs.farm.ll_opt_init_lora(model.ctx, model.model, adapters, 1, None, 1)
+        libs.farm.ll_opt_init_lora(model.ctx, model.model, adapters, 1, None, 1, 0.0)
         == _ffi.LLError.INVALID_ARG
     )
 

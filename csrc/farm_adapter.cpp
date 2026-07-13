@@ -49,24 +49,24 @@ int32_t ll_adapter_n_tensors(llama_adapter_lora * adapter) {
         return LL_ERR_INVALID_ARG;
     }
 
-    return (int32_t) adapter->ab_map.size();
+    return (int32_t)adapter->ab_map.size();
 }
 
-int32_t ll_adapter_tensor_info(llama_adapter_lora * adapter, int32_t index, char * name_out,
-                               int32_t name_capacity, int64_t * ne_a, int64_t * ne_b) {
+int32_t ll_adapter_tensor_info(llama_adapter_lora * adapter, int32_t index, char * name_out, int32_t name_capacity,
+                               int64_t * ne_a, int64_t * ne_b) {
     if (adapter == nullptr || name_out == nullptr || ne_a == nullptr || ne_b == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
 
     const std::vector<std::string> names = sorted_names(adapter);
 
-    if (index < 0 || (size_t) index >= names.size()) {
+    if (index < 0 || (size_t)index >= names.size()) {
         return LL_ERR_INVALID_ARG;
     }
 
-    const std::string & name = names[(size_t) index];
+    const std::string & name = names[(size_t)index];
 
-    if ((int32_t) name.size() + 1 > name_capacity) {
+    if ((int32_t)name.size() + 1 > name_capacity) {
         return LL_ERR_INVALID_ARG;
     }
 
@@ -84,19 +84,18 @@ int32_t ll_adapter_tensor_info(llama_adapter_lora * adapter, int32_t index, char
 
 // out may be NULL with n_max == 0, which asks only "how many elements?" -- the same two-call
 // convention llama_tokenize uses, so a caller can size its buffer without guessing.
-int64_t ll_adapter_get(llama_adapter_lora * adapter, int32_t index, bool is_b, float * out,
-                       int64_t n_max) {
+int64_t ll_adapter_get(llama_adapter_lora * adapter, int32_t index, bool is_b, float * out, int64_t n_max) {
     if (adapter == nullptr || n_max < 0 || (out == nullptr && n_max != 0)) {
         return LL_ERR_INVALID_ARG;
     }
 
     const std::vector<std::string> names = sorted_names(adapter);
 
-    if (index < 0 || (size_t) index >= names.size()) {
+    if (index < 0 || (size_t)index >= names.size()) {
         return LL_ERR_INVALID_ARG;
     }
 
-    const llama_adapter_lora_weight & weight = adapter->ab_map.at(names[(size_t) index]);
+    const llama_adapter_lora_weight & weight = adapter->ab_map.at(names[(size_t)index]);
     ggml_tensor * tensor = is_b ? weight.b : weight.a;
 
     if (tensor == nullptr) {

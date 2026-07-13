@@ -125,6 +125,13 @@ struct ll_opt_params {
 //   opt_period: how many ll_train_step calls make one optimizer step. 1 = step every call.
 //               Anything greater accumulates gradients across that many calls and steps on the
 //               last -- which is what gradient accumulation IS. Must be >= 1.
+//   grad_clip:  clip the gradients to this GLOBAL norm before every optimizer step. 0 disables it.
+//               Global, i.e. one norm over every trainable tensor jointly -- which bounds the
+//               length of the update without rotating it.
+//
+//               Applied as nodes in the graph, because it cannot be applied anywhere else: the
+//               optimizer step is fused into the backward graph, so by the time this shim regains
+//               control the weights have already moved.
 //   params:     AdamW hyperparameters.
 //
 //               THE SHIM STORES THIS POINTER AND RE-READS THE STRUCT ON EVERY STEP. That is the
@@ -145,8 +152,8 @@ struct ll_opt_params {
 // Returns the number of tensors flagged (2 x the number of adapted base tensors), or a negative
 // LL_ERR_* code.
 LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model * model,
-                                struct llama_adapter_lora ** adapters, size_t n_adapters,
-                                struct ll_opt_params * params, int32_t opt_period);
+                                struct llama_adapter_lora ** adapters, size_t n_adapters, struct ll_opt_params * params,
+                                int32_t opt_period, float grad_clip);
 
 // Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
 LL_API int32_t ll_opt_free(struct llama_context * ctx);
@@ -228,17 +235,16 @@ LL_API int32_t ll_adapter_n_tensors(struct llama_adapter_lora * adapter);
 //   name_out:      receives the base tensor name, NUL-terminated.
 //   name_capacity: its size. LL_ERR_INVALID_ARG if the name does not fit.
 //   ne_a, ne_b:    receive GGML_MAX_DIMS (4) elements each.
-LL_API int32_t ll_adapter_tensor_info(struct llama_adapter_lora * adapter, int32_t index,
-                                      char * name_out, int32_t name_capacity,
-                                      int64_t * ne_a, int64_t * ne_b);
+LL_API int32_t ll_adapter_tensor_info(struct llama_adapter_lora * adapter, int32_t index, char * name_out,
+                                      int32_t name_capacity, int64_t * ne_a, int64_t * ne_b);
 
 // Copy the index-th pair's A (is_b=false) or B (is_b=true) out. Returns the element count, or
 // a negative LL_ERR_* code.
 //
 // Pass out=NULL with n_max=0 to ask only how many elements there are, then call again with a buffer
 // -- the same two-call convention as llama_tokenize.
-LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index, bool is_b,
-                              float * out, int64_t n_max);
+LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index, bool is_b, float * out,
+                              int64_t n_max);
 
 // ---------------------------------------------------------------------------
 // Debug accessors (S1-03)
@@ -256,19 +262,18 @@ LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index
 LL_API int64_t ll_debug_n_elements(struct llama_context * ctx, const char * base_name, bool is_b);
 
 // Copy an adapter tensor's values out. Returns the number of elements written, or LL_ERR_*.
-LL_API int64_t ll_debug_get_tensor(struct llama_context * ctx, const char * base_name, bool is_b,
-                                   float * out, int64_t n_max);
+LL_API int64_t ll_debug_get_tensor(struct llama_context * ctx, const char * base_name, bool is_b, float * out,
+                                   int64_t n_max);
 
 // Overwrite an adapter tensor's values. Returns the number of elements written, or LL_ERR_*.
-LL_API int64_t ll_debug_set_tensor(struct llama_context * ctx, const char * base_name, bool is_b,
-                                   const float * data, int64_t n);
+LL_API int64_t ll_debug_set_tensor(struct llama_context * ctx, const char * base_name, bool is_b, const float * data,
+                                   int64_t n);
 
 // Copy an adapter tensor's GRADIENT out, from ggml-opt's accumulator.
 //
 // Only valid after a training step has built the backward graph; before that there is no
 // accumulator and this returns LL_ERR_NOT_INITIALIZED.
-LL_API int64_t ll_debug_grad(struct llama_context * ctx, const char * base_name, bool is_b,
-                             float * out, int64_t n_max);
+LL_API int64_t ll_debug_grad(struct llama_context * ctx, const char * base_name, bool is_b, float * out, int64_t n_max);
 
 #ifdef __cplusplus
 }

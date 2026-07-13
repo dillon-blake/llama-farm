@@ -50,3 +50,18 @@ it cannot round-trip a K-quant at all. See `learning_llamas/quant.py`.
 The IQ quants are refused rather than approximated: they require an importance matrix computed from
 calibration data, and there is nothing honest to substitute for one. Export to F16 and run
 `llama-quantize` yourself with your own imatrix.
+
+
+## Before you push
+
+Both of these run in CI, and both are cheap to run first:
+
+```
+ruff format src/ tests/ && ruff check src/ tests/
+clang-format -i csrc/*.cpp csrc/*.h
+pytest -q
+```
+
+`clang-format` is **pinned to 19.1.7** in both `pyproject.toml`'s dev extra and
+`.pre-commit-config.yaml`. Its output changes between major versions, so formatting `csrc/` with
+whatever your distro ships will produce a diff CI rejects. `pip install -e .[dev]` gets the right one.

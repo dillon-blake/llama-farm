@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: S
 deps: ["S1-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/23
 ---
 
 # S1-10 — Gradient clipping
