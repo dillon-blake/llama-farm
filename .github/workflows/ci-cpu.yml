@@ -192,13 +192,19 @@ jobs:
       #
       #   SOFT_MAX is NOT here because it genuinely FAILS: every failing case has sinks=1,
       #   and ggml_soft_max_ext_back takes no sinks argument at all. That is a real
-      #   gradient gap, tracked as S1-34, not a flaky bound.
+      #   SOFT_MAX is here as of S1-34, and it is worth saying what that ticket found. It was
+      #   FAILING on every sinks=1 case, and PASSING on every other -- because MODE_GRAD's
+      #   objective is sum(out), and a softmax's rows sum to one BY CONSTRUCTION. So sum(out)
+      #   is identically 1, its gradient is exactly zero, and the non-sink cases were comparing
+      #   zero against zero. The test had never exercised SOFT_MAX_BACK at all. The kernel was
+      #   right the whole time (verified to 2.1e-7 MAA against a float64 finite difference); the
+      #   objective was degenerate. It now uses a weighted sum, so it finally checks something.
       #
       # What is left is what is both genuinely grad-checked and green.
       - name: test-backend-ops — grad (targeted, MODE_GRAD)
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
-          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,CROSS_ENTROPY_LOSS_SPARSE,RMS_NORM,TANH,SIGMOID,CLAMP
+          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,CROSS_ENTROPY_LOSS_SPARSE,RMS_NORM,TANH,SIGMOID,CLAMP,SOFT_MAX
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
