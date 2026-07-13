@@ -34,6 +34,9 @@ SYMBOLS = [
     # thing to require of a test — and would stop testing the walker the moment that op was
     # implemented.
     Symbol(Library.GGML_BASE, "ggml_init", [ggml_init_params], ctypes.c_void_p),
+    # ...and, since S1-13, to RUN one. The chunked-logprob pass builds a two-op graph of its own
+    # (mul_mat -> ce_sparse) outside any llama_context, so it needs the ops and a way to execute
+    # them. The compute half of that lives in ggml_backend.py.
     Symbol(Library.GGML_BASE, "ggml_free", [ctypes.c_void_p], None),
     Symbol(
         Library.GGML_BASE,
@@ -92,5 +95,39 @@ SYMBOLS = [
             ctypes.POINTER(ctypes.c_float),  # imatrix (may be NULL)
         ],
         ctypes.c_size_t,
+    ),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_new_tensor_1d",
+        [ctypes.c_void_p, ctypes.c_int, ctypes.c_int64],  # ctx, enum ggml_type, ne0
+        ctypes.c_void_p,
+    ),
+    # loss_i = w_i * (logsumexp_j(z_ij) - z_i[label_i]), unreduced -- so the negation of this IS
+    # the per-token logprob of the realized token, with the caller's mask already applied (S1-04,
+    # ADR-0003). logit_scale and softcap are handled inside the kernel, in stable-lse math.
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_cross_entropy_loss_sparse",
+        [
+            ctypes.c_void_p,  # ctx
+            ctypes.c_void_p,  # logits  [n_vocab, n_tokens]
+            ctypes.c_void_p,  # labels  I32 [n_tokens]
+            ctypes.c_void_p,  # weights F32 [n_tokens]
+            ctypes.c_float,  # logit_scale (1.0 = off)
+            ctypes.c_float,  # softcap     (0.0 = off)
+        ],
+        ctypes.c_void_p,
+    ),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_scale",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_float],
+        ctypes.c_void_p,
+    ),
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_add",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
+        ctypes.c_void_p,
     ),
 ]

@@ -3,6 +3,9 @@
 import ctypes
 import math
 import pkgutil
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -47,6 +50,50 @@ def test_every_declared_symbol_resolves(libs: loader.Libraries) -> None:
     }
     for symbol in _ffi.SYMBOLS:
         assert getattr(handles[symbol.library], symbol.name) is not None
+
+
+@pytest.mark.skipif(
+    shutil.which("nm") is None, reason="needs binutils' nm to read the symbol table"
+)
+@pytest.mark.skipif(sys.platform != "linux", reason="ELF-specific: reads .so dynamic symbol tables")
+def test_every_symbol_is_declared_in_the_library_that_DEFINES_it() -> None:
+    """Declaring a symbol against the wrong library is silent, and then it segfaults.
+
+    The test above cannot catch this, and that is not a gap in it — it is how dlopen works.
+    ``libggml`` links ``libggml-base``, so ``getattr(libs.ggml, "ggml_scale")`` *succeeds*: the
+    dynamic linker walks the dependency chain and finds it. ctypes then hangs the declared
+    ``argtypes``/``restype`` on a function object obtained from the wrong handle, the call goes out
+    through an unconfigured path, and a returned 64-bit pointer comes back truncated to 32 bits.
+    What you see is a segfault, several calls later, somewhere else entirely.
+
+    This has now cost two debugging sessions — once on a base symbol read through ``libs.ggml``,
+    once on ``ggml_backend_cpu_buffer_from_ptr`` in S1-13. So it gets a test: a symbol must be
+    declared against the library whose own symbol table *defines* it, not merely one that can
+    resolve it.
+    """
+    lib_dir = loader.library_dir()
+
+    defined: dict[registry.Library, set[str]] = {}
+    for library in registry.Library:
+        path = lib_dir / loader.library_filename(library.value)
+        out = subprocess.run(  # noqa: S603
+            ["nm", "-D", "--defined-only", str(path)],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        defined[library] = {line.split()[-1] for line in out.splitlines() if line.strip()}
+
+    misplaced = []
+    for symbol in _ffi.SYMBOLS:
+        if symbol.name in defined[symbol.library]:
+            continue
+        actual = [lib.value for lib, names in defined.items() if symbol.name in names]
+        misplaced.append(f"{symbol.name}: declared in {symbol.library.value}, defined in {actual}")
+
+    assert not misplaced, "symbols declared against a library that does not define them:\n  " + (
+        "\n  ".join(misplaced)
+    )
 
 
 @pytest.mark.parametrize(
