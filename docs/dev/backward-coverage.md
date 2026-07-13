@@ -122,6 +122,40 @@ fork (`op_expm1` → `expm1f`, which was already used twice in the same file —
 Dismissing an op as "low priority, not on the training path" is a claim about the *whole* library,
 including the parts not written yet. This table now says what was checked, not what was assumed.
 
+## ⚠️ `grad -o <op>` reporting OK does not mean the op has a backward
+
+`test-backend-ops grad` only checks a gradient if the test class asks for one, by calling
+`ggml_set_param`. If it never does, MODE_GRAD builds a graph with no parameters, requests no
+gradients, compares nothing, and prints **`Backend CPU: OK`**.
+
+Measured today, on the ops stage 1 still has to implement:
+
+| test class | `ggml_set_param` calls | `grad -o` says | has a backward in `ggml.c`? |
+|---|---|---|---|
+| `test_mul_mat_id` | **0** | `OK` — 16829 tests passed | **no** |
+| `test_add_id` | **0** | `OK` | **no** |
+| `test_ssm_conv` | **0** | `OK` | **no** |
+| `test_ssm_scan` | **0** | `OK` | **no** |
+| `test_flash_attn_ext` | **0** | `OK` | **no** — and `ggml_flash_attn_back` is a stub whose *first statement* is `GGML_ABORT("TODO: adapt to ggml_flash_attn_ext() changes")` |
+| `test_out_prod` | **0** | `OK` | n/a (it *is* a backward) |
+| `test_glu` | **0** | `OK` | partially — SWIGLU only |
+
+Every one of those ops falls through `ggml_compute_backward`'s `default:` case, which is a
+`GGML_ABORT`. **Every one of them reports `OK` under `grad`.**
+
+This matters beyond bookkeeping, because the remaining stage-1 kernel tickets (S1-21 … S1-31) each
+name *"`test-backend-ops grad -o <op>` green"* as an acceptance criterion — **and that criterion
+passes right now, with nothing implemented.** It cannot fail. A ticket closed against it would ship
+a backward that had never once been differentiated.
+
+So a kernel PR here is **not** done when the VJP is written. It is done when:
+
+1. the test class calls `ggml_set_param` on the inputs whose gradients the VJP produces, **and**
+2. the objective actually depends on those inputs — see the SOFT_MAX entry above; an op whose
+   output sum is conserved needs `test_case::grad_loss`, or it is checking zero against zero, **and**
+3. `grad -o <op>` is green *after* (1) and (2), which is the first point at which its greenness
+   means anything.
+
 ## The allowlist: what the vendor-bump gate runs today
 
 Genuinely grad-checked (the test class calls `ggml_set_param`) **and** green:
