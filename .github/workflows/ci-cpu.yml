@@ -40,7 +40,16 @@ env:
   # than decorative: GGML_METAL defaults ON for Apple builds
   # (vendor/llama.cpp/ggml/CMakeLists.txt:239), so a macOS build that says nothing about
   # Metal *gets* Metal, and the lane would silently stop being CPU-only.
-  CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF"
+  # GGML_NATIVE=OFF is not a performance choice, it is a correctness one. With it on, ggml compiles
+  # for whatever CPU the runner happens to have -- and ccache is keyed by OS, not by runner
+  # generation, so an object built on a machine with AVX-512 gets reused on one without it and the
+  # process dies with SIGILL inside llama_backend_init, before a line of test code runs. ci-windows
+  # got this right from the start (S1-33); ci-cpu did not, and it surfaced as a random illegal
+  # instruction the moment a source change reshuffled which objects were cache hits.
+  #
+  # It is also what ADR-0002's determinism story rests on: an oracle that is compiled differently on
+  # different days is not an oracle.
+  CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF"
 
 jobs:
   build:
