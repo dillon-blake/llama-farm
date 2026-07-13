@@ -217,6 +217,36 @@ A backward that dequantized the wrong way, or transposed, has no reason to be th
 magnitude tighter at 8 bits than at 4. That ordering is the assertion; see
 `tests/test_p0_gradient.py::test_the_quantized_backward_tracks_the_f32_backward`.
 
+### Determinism is per-shape: a BLAS build changes kernel at 32 tokens
+
+*(Amended by S1-07/S1-05, found by CI: a test passed on Linux and failed on macOS.)*
+
+ggml dispatches `MUL_MAT` to a BLAS backend **only when the ubatch has at least 32 tokens** —
+`min_batch = 32` in `ggml/src/ggml-blas/ggml-blas.cpp`. macOS enables Accelerate by default, so on
+that build a 16-token batch and a 32-token batch run **different matmul kernels**, and the *same
+token's* logits come out slightly differently.
+
+Measured: the per-valid-token loss of one sample, evaluated at two paddings.
+
+```
+                seq_len 16     seq_len 32     relative
+  macOS/BLAS    6.259182       6.258213       1.5e-4
+  Linux/no BLAS   bit-identical across 16, 24, 32, 48, 64
+```
+
+Neither number is wrong. The invariance being violated is exact in real arithmetic and exact within
+one kernel; what breaks it is the *dispatch*, not the batching.
+
+> **Normative:** the determinism guarantee of Decision 3 is **per shape**. Two runs of the same data
+> at the same ubatch size are bit-identical; two runs at different ubatch sizes are not comparable
+> bit-for-bit on a build with BLAS, and a test that compares across a batch size of 32 is measuring
+> kernel selection rather than whatever it meant to measure.
+>
+> A test that must compare across paddings therefore keeps both lengths on the **same side of 32**,
+> which lets it assert *exact equality* — a far stronger claim than a tolerance, and one that a real
+> masking bug (a graded pad, a denominator that counts pads) breaks by a **factor**, not by parts in
+> ten thousand. See `tests/test_sft.py::test_padding_does_not_change_the_loss`.
+
 ## Consequences
 
 **Every kernel ticket must include:**

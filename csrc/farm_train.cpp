@@ -334,9 +334,9 @@ struct loss_ctx {
     int32_t n_tokens = 0;
 
     // Set by build_masked_ce, filled by upload_masked_ce once ggml_opt_alloc has given it memory.
-    ggml_tensor * labels = nullptr;    // I32 [n_ubatch] -- the target token of each position
+    ggml_tensor * labels = nullptr;     // I32 [n_ubatch] -- the target token of each position
     ggml_tensor * ce_weights = nullptr; // F32 [n_ubatch] -- its loss weight, pre-normalized
-    int32_t pos = 0;                   // this ubatch's offset within the batch
+    int32_t pos = 0;                    // this ubatch's offset within the batch
     int32_t n_ubatch = 0;
     int64_t n_vocab = 0;
 };
@@ -456,7 +456,7 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
     // One ubatch per step -- see the opt_period comment in ll_opt_init_lora. A batch that spans
     // several ubatches would take several optimizer steps, which is not what "one training step"
     // means.
-    if ((uint32_t) n_tokens > ctx->n_ubatch()) {
+    if ((uint32_t)n_tokens > ctx->n_ubatch()) {
         LLAMA_LOG_ERROR("%s: n_tokens (%d) exceeds n_ubatch (%u): a training step must fit in one "
                         "ubatch. Accumulate gradients across steps instead.\n",
                         __func__, n_tokens, ctx->n_ubatch());
@@ -514,7 +514,7 @@ int32_t ll_train_step(llama_context * ctx, const int32_t * tokens, const int32_t
             return LL_ERR_INVALID_ARG;
         }
 
-        const int32_t n_seq_max = (int32_t) ctx->n_seq_max();
+        const int32_t n_seq_max = (int32_t)ctx->n_seq_max();
         for (int32_t i = 0; i < n_tokens; ++i) {
             if (seq_ids[i] < 0 || seq_ids[i] >= n_seq_max) {
                 LLAMA_LOG_ERROR("%s: seq_id %d at position %d is outside n_seq_max (%d). Create the "
@@ -616,8 +616,7 @@ int64_t ll_debug_n_elements(llama_context * ctx, const char * base_name, bool is
     return ggml_nelements(t);
 }
 
-int64_t ll_debug_get_tensor(llama_context * ctx, const char * base_name, bool is_b, float * out,
-                            int64_t n_max) {
+int64_t ll_debug_get_tensor(llama_context * ctx, const char * base_name, bool is_b, float * out, int64_t n_max) {
     if (ctx == nullptr || base_name == nullptr || out == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
@@ -636,12 +635,11 @@ int64_t ll_debug_get_tensor(llama_context * ctx, const char * base_name, bool is
         return LL_ERR_INVALID_ARG;
     }
 
-    ggml_backend_tensor_get(t, out, 0, n*sizeof(float));
+    ggml_backend_tensor_get(t, out, 0, n * sizeof(float));
     return n;
 }
 
-int64_t ll_debug_set_tensor(llama_context * ctx, const char * base_name, bool is_b,
-                            const float * data, int64_t n) {
+int64_t ll_debug_set_tensor(llama_context * ctx, const char * base_name, bool is_b, const float * data, int64_t n) {
     if (ctx == nullptr || base_name == nullptr || data == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
@@ -655,12 +653,11 @@ int64_t ll_debug_set_tensor(llama_context * ctx, const char * base_name, bool is
         return LL_ERR_INVALID_ARG;
     }
 
-    ggml_backend_tensor_set(t, data, 0, n*sizeof(float));
+    ggml_backend_tensor_set(t, data, 0, n * sizeof(float));
     return n;
 }
 
-int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, float * out,
-                      int64_t n_max) {
+int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, float * out, int64_t n_max) {
     if (ctx == nullptr || base_name == nullptr || out == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
@@ -698,6 +695,6 @@ int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, fl
         return LL_ERR_INVALID_ARG;
     }
 
-    ggml_backend_tensor_get(grad, out, 0, n*sizeof(float));
+    ggml_backend_tensor_get(grad, out, 0, n * sizeof(float));
     return n;
 }

@@ -200,25 +200,51 @@ def test_the_loss_matches_an_independent_numpy_reference(trainable, libs: _ffi.L
     )
 
 
-def test_padding_does_not_change_the_loss(trainable, libs: _ffi.Libraries) -> None:
-    """The per-valid-token loss is invariant to how much a batch was padded.
+# The two sequence lengths the pad-invariance test compares, and why they are both >= 32.
+#
+# ggml dispatches MUL_MAT to a BLAS backend only when the ubatch has at least 32 tokens
+# (`min_batch = 32`, ggml/src/ggml-blas/ggml-blas.cpp). So on any build with BLAS -- macOS enables
+# Accelerate by default -- a 16-token batch and a 32-token batch run *different matmul kernels*, and
+# the same token's logits come out slightly differently. Measured on CI: 6.259182 at seq_len 16
+# versus 6.258213 at 32, a relative difference of 1.5e-4, on macOS only. On Linux (no BLAS) the two
+# are bit-identical.
+#
+# That is a fact about kernel dispatch, not about padding, and a pad-invariance test that straddled
+# the threshold would be measuring it instead. Both lengths therefore sit on the same side of 32 --
+# which lets the assertion be EXACT EQUALITY rather than a tolerance, and an exact assertion is
+# worth far more here: a graded pad, or a denominator that counted pads, would move the loss by a
+# factor, not by parts in ten thousand.
+PAD_INVARIANCE_LENGTHS = (32, 64)
+
+
+def test_padding_does_not_change_the_loss(
+    tiny_q4_k, tmp_path, load_model, libs: _ffi.Libraries
+) -> None:
+    """The per-valid-token loss is invariant to how much a batch was padded — exactly.
 
     It has to be, and for a reason worth stating: pads sit at the end, attention is causal, and
-    their weight is zero — so a pad can neither be graded nor influence any position that is. If
-    this ever fails, either the normalization is dividing by the wrong count or a pad is leaking
-    into the loss.
+    their weight is zero — so a pad can neither be graded nor influence any position that is. Not
+    "approximately": with the same matmul kernel on both sides, the arithmetic on the valid tokens
+    is the *same arithmetic*, so the loss is bit-identical. If this ever fails, either the
+    normalization is dividing by the wrong count or a pad is leaking into the loss.
 
-    The two batches below are the same sample at two different sequence lengths, so this also pins
-    that the fixed-shape requirement costs nothing in correctness.
+    See PAD_INVARIANCE_LENGTHS for why the two lengths are what they are.
     """
-    model = trainable
+    short_len, long_len = PAD_INVARIANCE_LENGTHS
+
+    # Its own model: the shared fixture's ubatch is SEQ_LEN, and the longer batch here is bigger.
+    adapter_path = tmp_path / "pad.gguf"
+    create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+    model = load_model(tiny_q4_k, n_ctx=2 * long_len, n_ubatch=long_len, training=True)
+    model.attach_adapter(adapter_path, scale=1.0)
+
     sample = _sample(n_prompt=6, n_completion=5)
 
-    short = to_batch(sample, seq_len=16, pad_id=0)
-    long = to_batch(sample, seq_len=SEQ_LEN, pad_id=0)
+    short = to_batch(sample, seq_len=short_len, pad_id=0)
+    long = to_batch(sample, seq_len=long_len, pad_id=0)
 
     assert short.n_valid == long.n_valid == 5
-    assert len(short.tokens) != len(long.tokens)
+    assert len(long.tokens) == 2 * len(short.tokens), "the padding must actually differ"
 
     # Through the TRAINER, not through a numpy re-derivation: comparing two references against each
     # other would only prove llama's forward pass is pad-invariant, which was never in doubt. What
@@ -233,9 +259,10 @@ def test_padding_does_not_change_the_loss(trainable, libs: _ffi.Libraries) -> No
 
     assert loss_short > 1.0, "implausibly small; this test would prove nothing"
 
-    assert loss_short == pytest.approx(loss_long, rel=1e-4), (
-        f"padding changed the loss: {loss_short:.6f} at seq_len=16 vs {loss_long:.6f} at "
-        f"seq_len={SEQ_LEN}. A pad is being graded, or the denominator counts pads."
+    assert loss_short == loss_long, (
+        f"padding changed the loss: {loss_short:.9f} at seq_len={short_len} vs "
+        f"{loss_long:.9f} at seq_len={long_len}. A pad is being graded, or the denominator "
+        f"counts pads."
     )
 
 
