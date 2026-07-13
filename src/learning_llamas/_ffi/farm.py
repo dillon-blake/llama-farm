@@ -24,6 +24,27 @@ class LLError(IntEnum):
     SCHED_INVALIDATED = -10
 
 
+class ll_grpo_inputs(ctypes.Structure):  # noqa: N801 — mirrors the C name
+    """``struct ll_grpo_inputs`` (farm_api.h) — everything GRPO needs beyond a batch.
+
+    Every array is ``[n_tokens]`` and is indexed exactly like ``weights``. All of them are
+    **constants**: ggml only propagates a gradient from tensors flagged PARAM or LOSS, so a named
+    input never gets an accumulator. GRPO's gradient is the policy's alone, which is what makes the
+    importance ratio an off-policy correction rather than a second model to train.
+
+    The buffers are borrowed, not copied. Keep the numpy arrays they point at alive across the
+    call — ``arr.ctypes.data_as(...)`` on a temporary is a use-after-free.
+    """
+
+    _fields_ = [
+        ("adv", ctypes.POINTER(ctypes.c_float)),
+        ("logp_old", ctypes.POINTER(ctypes.c_float)),
+        ("logp_ref", ctypes.POINTER(ctypes.c_float)),
+        ("kl_w", ctypes.POINTER(ctypes.c_float)),
+        ("clip_eps", ctypes.c_float),
+    ]
+
+
 class ll_opt_params(ctypes.Structure):  # noqa: N801 — mirrors the C name
     """``struct ll_opt_params`` (farm_api.h) — AdamW hyperparameters.
 
@@ -210,6 +231,26 @@ SYMBOLS = [
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
     # S1-17: the activation high-water mark -- the number checkpointing exists to move.
     Symbol(Library.FARM, "ll_compute_buffer_bytes", [ctypes.c_void_p], ctypes.c_int64),
+    # S1-16: one GRPO step. `weights` is the completion mask and must be exactly 0.0 or 1.0 --
+    # ce_sparse multiplies logp_new by it, so a fractional weight corrupts the importance ratio
+    # rather than down-weighting the token. The shim rejects it.
+    Symbol(
+        Library.FARM,
+        "ll_train_step_grpo",
+        [
+            ctypes.c_void_p,  # ctx
+            ctypes.POINTER(ctypes.c_int32),  # tokens
+            ctypes.POINTER(ctypes.c_int32),  # targets
+            ctypes.POINTER(ctypes.c_float),  # weights (the mask)
+            ctypes.POINTER(ctypes.c_int32),  # seq_ids
+            ctypes.POINTER(ctypes.c_int32),  # positions
+            ctypes.c_int32,  # n_tokens
+            ctypes.POINTER(ll_grpo_inputs),
+            ctypes.c_bool,  # train
+            ctypes.POINTER(ctypes.c_float),  # loss_out
+        ],
+        ctypes.c_int32,
+    ),
     # S1-17: layers per gradient-checkpointing segment; 0 = off. Before the first step, or never.
     Symbol(
         Library.FARM,

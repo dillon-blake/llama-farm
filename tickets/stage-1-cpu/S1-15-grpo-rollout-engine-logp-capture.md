@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-05"]
-status: open
-pr: null
+status: done
+pr: 33
 ---
 
 # S1-15 — GRPO rollout engine: generation, logp_old capture, rewards, advantages

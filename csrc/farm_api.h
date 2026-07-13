@@ -16,6 +16,7 @@
 #ifndef LEARNING_LLAMAS_FARM_API_H
 #define LEARNING_LLAMAS_FARM_API_H
 
+#include <stdbool.h> // this header declares `bool` parameters; a C consumer needs the typedef
 #include <stddef.h>
 #include <stdint.h>
 
@@ -192,6 +193,51 @@ LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 // silently rewrites the graph's memory and speed characteristics, and a run whose steps are not
 // alike is not a run.
 LL_API int32_t ll_set_grad_checkpointing(struct llama_context * ctx, int32_t segment_len);
+
+// ---------------------------------------------------------------------------
+// GRPO (S1-16) -- the clipped importance-ratio surrogate, weighted by group advantage.
+// ---------------------------------------------------------------------------
+
+// Everything the GRPO objective needs beyond a batch. Every array is [n_tokens] and is indexed
+// exactly like `weights`, so a token's advantage sits at the same index as the token itself.
+//
+// ALL OF THESE ARE CONSTANTS. None is differentiated: ggml only propagates a gradient from tensors
+// flagged PARAM or LOSS, so a named input never gets an accumulator. GRPO's gradient is the
+// policy's alone -- which is what makes the ratio an off-policy correction rather than a second
+// model to train.
+//
+// Masked positions (prompt tokens, padding) must be ZERO in every array. The shim enforces it
+// rather than trusting the caller, and the reason is worth stating: `logp_new` is zero on a masked
+// token (ce_sparse multiplies by the weight), so a NONZERO logp_ref there would make
+// `d = logp_ref - 0` enormous, `expm1(d)` would be +inf, and `inf * 0` is NaN. The loss and every
+// gradient in the batch would go NaN, silently, from one stray number in a padding slot.
+struct ll_grpo_inputs {
+    // advantage_i * mask_i, with any 1/N normalization already folded in host-side.
+    const float * adv;
+
+    // The BEHAVIOUR policy's logp of target_i -- captured at sample time from the raw logits
+    // (S1-15), not recomputed. The denominator of the importance ratio.
+    const float * logp_old;
+
+    // The REFERENCE policy's logp of target_i, for the KL term. NULL means "no reference": the
+    // shim then fills it with logp_old, so the KL term is exactly zero rather than NaN.
+    const float * logp_ref;
+
+    // kl_coef * mask_i, with normalization folded in. NULL means zeros -- the KL is off, but its
+    // nodes are still built, because the graph's node count must not change between steps.
+    const float * kl_w;
+
+    // PPO's epsilon. FIXED for the life of the context: it is baked into the graph's op_params, so
+    // changing it mid-run keeps the node count identical while silently changing the objective.
+    float clip_eps;
+};
+
+// One GRPO step. Same batch contract as ll_train_step; `weights` is the completion MASK and must be
+// exactly 0.0 or 1.0 at every position -- a fractional weight would scale logp_new inside ce_sparse
+// and corrupt the ratio with no error anywhere. All normalization belongs in `adv` and `kl_w`.
+LL_API int32_t ll_train_step_grpo(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
+                                  const float * weights, const int32_t * seq_ids, const int32_t * positions,
+                                  int32_t n_tokens, const struct ll_grpo_inputs * grpo, bool train, float * loss_out);
 
 // Bytes the scheduler has allocated for compute -- i.e. the activation high-water mark, summed over
 // every backend (S1-17).

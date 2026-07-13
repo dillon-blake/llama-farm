@@ -6,6 +6,14 @@ accumulate, or how the learning rate moves. That common part lives in :mod:`.loo
 """
 
 from .dpo import DPOConfig, DPOResult, DPOTrainer, Preference, reference_logratios, train_dpo
+from .grpo import (
+    GRPOBatch,
+    GRPOConfig,
+    GRPOMetrics,
+    GRPOResult,
+    GRPOTrainer,
+    train_grpo,
+)
 from .loop import Batch, Hooks, StepMetrics, TrainableModel, TrainConfig, Trainer, run
 from .packing import n_sequences, pack
 from .rollout import (
@@ -17,6 +25,7 @@ from .rollout import (
     group_advantages,
     length_reward,
     substring_reward,
+    token_reward,
 )
 from .schedule import constant, warmup_cosine
 from .sft import SFTConfig, SFTResult, collate, to_batch, train_sft
@@ -53,4 +62,11 @@ __all__ = [
     "group_advantages",
     "length_reward",
     "substring_reward",
+    "token_reward",
+    "GRPOBatch",
+    "GRPOConfig",
+    "GRPOMetrics",
+    "GRPOResult",
+    "GRPOTrainer",
+    "train_grpo",
 ]
