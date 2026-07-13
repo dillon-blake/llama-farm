@@ -11,6 +11,30 @@ pr: null
 
 # S1-24 — FA8: graph-level chunked-attention backward fallback (kernel-free long-context path)
 
+> **⚠️ The justification is stale and the implementation plan does not work. Re-scope before starting.**
+>
+> **The memory figures are stale.** The "Why" quotes 128-192 GiB at 4k/8B on the grounds that the
+> attention matrices are live across *all layers simultaneously*. **S1-17 (gradient checkpointing)
+> landed** and killed the `x n_layers` factor: at `segment_len=1` only one layer's matrices are live.
+> The real numbers are roughly 4-8 GiB with S1-17 alone, and 0.5-1 GiB with S1-17 + this ticket. The
+> two are **multiplicative, not alternatives** — S1-17 removes the depth factor, S1-24 removes the
+> `n_ctx^2` factor *within* a layer — so the ticket is still worth doing, for a smaller stated win.
+>
+> **"No vendored llama.cpp changes" is FALSE.** The shim cannot reach the backward: the forward graph
+> is built inside `llm_graph_context::build_attn_mha`, the backward inside `ggml_opt_build`, and the
+> shim's `build_loss` callback can only *append forward nodes* to `gf`. The only injection point is
+> `opt_ctx->checkpoints` — which is precisely the hook S1-17 had to add **to the vendor**.
+>
+> **Recommended re-scope, which is also cheaper:** chunk the **forward** attention into Q-chunks
+> inside `build_attn_mha` behind a cparam, and let S1-17's existing recompute machinery produce the
+> chunked backward *for free* — each chunk's `kq_soft_max` becomes a segment-interior node,
+> recomputed just before the backward node that reads it, then dies. No hand-emitted VJPs, no new
+> backward hook. One small vendor change instead of a graph rewriter plus a new vendor API.
+>
+> **This is the only member of the FA family that changes the path training actually uses** — FA is
+> force-disabled during training (`llama-context.cpp`, `set_training`), and S1-21/22/23 all place
+> "turn FA back on" out of scope. Prioritize it above them.
+
 **One-line outcome:** chunked attention backward built entirely from existing ops
 (per-Q-chunk `soft_max_ext` recompute + `SOFT_MAX_BACK`/`MUL_MAT`/`OUT_PROD`): peak
 attention memory drops by the chunk factor at ~+50% attention FLOPs, unblocking 2-4k

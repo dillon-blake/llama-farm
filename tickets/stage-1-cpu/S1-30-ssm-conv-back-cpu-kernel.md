@@ -11,6 +11,27 @@ pr: null
 
 # S1-30 — SSM: SSM_CONV_BACK CPU
 
+> **⚠️ THIS TICKET'S PREMISE IS FALSE. Read this before starting.**
+>
+> It opens by saying S1-29 wired the SSM backward-switch cases. **It did not.** S1-29 (fork commit
+> `5608bb9aa`) touched exactly two files and delivered **only the CONCAT VJP**. Items 2, 3, 4 and 6
+> of its own ticket — the `SSM_CONV_BACK` / `SSM_SCAN_BACK` enums, the constructors, the two
+> backward-switch cases, and the mamba backward-build test — were never landed. Verified:
+> `SSM_CONV_BACK` appears **zero** times in `ggml/include/ggml.h`.
+>
+> **That work is currently unowned.** It has to be done first, by this ticket or by an S1-29b, and
+> it is ~2-3 days: enums at the tail, the name/symbol tables, the two `static_assert(GGML_OP_COUNT
+> == N)` in `ggml.c`, the constructors, the switch cases, and a graph-build test.
+>
+> Also note **the CPU `supports_op` trap** (see S1-25): it ends in `default: return true`, so a new
+> op with no dispatch case is reported *supported*, gets scheduled, and then aborts inside
+> `ggml_compute_forward`. Every new op must return `false` explicitly until its kernel lands.
+>
+> And **the grad test will be vacuous unless you make it otherwise**: `test_ssm_conv` and
+> `test_ssm_scan` call `ggml_set_param` zero times today, so `grad -o SSM_CONV` already prints `OK`
+> with no backward in existence. Their default shapes are also over `grad_nmax()` (10000) and would
+> be *silently skipped* even with a param. See `docs/dev/backward-coverage.md`.
+
 **One-line outcome:** the `SSM_CONV_BACK` CPU kernel exists — `d_sx` computed as a
 correlation with the flipped conv window, same deterministic row-parallel structure as the
 forward — and `test-backend-ops` MODE_GRAD is green for `SSM_CONV` on CPU.

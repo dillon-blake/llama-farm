@@ -71,6 +71,32 @@ the vendored tree:
 pip install -e . --no-build-isolation --no-deps --force-reinstall
 ```
 
+### Building a wheel poisons the editable build directory
+
+`python -m build` and `pip install -e .` **share one CMake build directory**, and CMake caches the
+flags it was last configured with. So this, which is what CI does:
+
+```bash
+CMAKE_ARGS="-DGGML_NATIVE=OFF ..." python -m build --wheel
+```
+
+leaves `GGML_NATIVE=OFF` in the cache, and every subsequent editable rebuild silently inherits it —
+`CMAKE_ARGS` being unset on the next command changes nothing, because the *cache* already holds the
+value.
+
+The symptom is not a build error. It is a **test that passes when it should fail**:
+`test_repacked_base_is_rejected_at_init_not_aborted_mid_training` asserts that a Q4_K base loaded
+with extra buffer types on is *refused*. Without `GGML_NATIVE` there is no AVX2, so there is no
+q4_K repack, so nothing is there to refuse, and `ll_opt_init_lora` cheerfully succeeds. The test's
+premise quietly evaporates and it reports a wrong answer with total confidence.
+
+If a build-flag change is in play, delete the directory rather than trusting the cache:
+
+```bash
+rm -rf build/cp*-linux_* && pip install -e . --no-build-isolation
+grep GGML_NATIVE build/cp*/CMakeCache.txt      # ON for local dev
+```
+
 ## Backend flags
 
 Stage 0 and stage 1 are **CPU-only**: the CPU backend is the correctness oracle for the entire

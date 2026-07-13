@@ -11,6 +11,29 @@ pr: null
 
 # S1-12 — Convergence gate: tiny-model SFT vs recorded PEFT reference
 
+> **✅ This does NOT require torch on the dev machine — the ticket already says so, and it is worth
+> re-reading before anyone plans around the dependency.**
+>
+> Step 2's `record_reference.py` is a **one-time recorder** (torch + peft are explicitly *not* runtime
+> deps); step 3's gate reads a **committed `reference_curve.json`**. So `pytest tests/test_convergence.py`
+> needs numpy + learning-llamas only. Record the curve **once, on a CI runner** via `workflow_dispatch`
+> (`pip install torch --index-url .../cpu`), commit the JSON, and this box never installs torch.
+>
+> **Recommended addition — do this first, and make IT the per-PR gate.** A float64 **numpy** reference
+> (forward + LoRA backward + AdamW for the tiny-llama arch) is a *strictly better oracle* than PEFT
+> loss-bands. The ticket concedes per-step exact match against PEFT is impossible, so the bands must be
+> wide enough to absorb kernel-numerics drift — which makes them wide enough to **hide a real gradient
+> bug**. A float64 reference on the same weights and the same A/B init, compared per-step at ~1e-5, is a
+> real oracle. The precedent is already in-tree: `tests/reference_grpo.py` — *"a reference that shares
+> the graph's structure shares its bugs."*
+>
+> **Four things the ticket forgets to twin,** each of which makes the reference diverge from step 1:
+> LoRA **A's init** (PEFT uses `kaiming_uniform(a=sqrt(5))`; `adapter.py` uses `normal(0, sigma)` — the
+> ticket twins the *base* weights and forgets the *adapter*); the **scale convention** (PEFT is
+> `alpha/r`; llama.cpp drops the factor entirely when `alpha == 0`); **`lora_dropout=0`**, or the
+> reference is not deterministic; and **RMSNorm eps / RoPE theta**, which must come from one source of
+> truth rather than being typed into both the GGUF writer and the HF config.
+
 **One-line outcome:** the reusable end-to-end correctness gate exists — a tiny-model SFT
 run whose loss curve must match a recorded PEFT/transformers reference within documented
 tolerance bands, runnable per-backend via one flag — plus the pytest wrapper that runs the
