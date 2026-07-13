@@ -49,11 +49,13 @@ SYMBOLS = [
         [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],
         ctypes.c_void_p,
     ),
-    # CONCAT has no backward rule, which is what makes it the right op to test the walker with.
+    # PAD has no backward rule, which is what makes it the right op to test the walker with.
+    # (CONCAT used to serve here, and then S1-29 gave it one -- at which point the preflight tests
+    # started failing, which is exactly what should happen: the preflight was telling the truth.)
     Symbol(
         Library.GGML_BASE,
-        "ggml_concat",
-        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int],
+        "ggml_pad",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int],
         ctypes.c_void_p,
     ),
     Symbol(Library.GGML_BASE, "ggml_new_graph", [ctypes.c_void_p], ctypes.c_void_p),

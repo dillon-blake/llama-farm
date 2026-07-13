@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S0-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/27
 ---
 
 # S1-29 — SSM: CONCAT backward + SSM backward-switch wiring (S1/S4)
