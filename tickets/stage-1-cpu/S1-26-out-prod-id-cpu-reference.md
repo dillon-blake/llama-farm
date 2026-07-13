@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S1-25", "S0-09"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/21
 ---
 
 # S1-26 — MoE: OUT_PROD_ID CPU reference (activation grads through quantized experts)
