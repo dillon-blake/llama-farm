@@ -5,8 +5,8 @@ stage: 1
 track: shim
 size: M
 deps: ["S1-02"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/24
 ---
 
 # S1-09 — Optimizer-state sidecar checkpoint/resume (name-keyed AdamW m/v)

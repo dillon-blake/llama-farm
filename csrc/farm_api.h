@@ -212,6 +212,49 @@ LL_API int32_t ll_train_step(struct llama_context * ctx, const int32_t * tokens,
                              int32_t n_tokens, bool train, float * loss_out);
 
 // ---------------------------------------------------------------------------
+// Optimizer-state checkpoint / resume (S1-09)
+// ---------------------------------------------------------------------------
+//
+// AdamW's first and second moments, and the iteration counter that corrects them for bias. These
+// are what a resume needs and the adapter file does not carry.
+//
+// Restart from the weights alone and the OPTIMIZER restarts from a standing start: m and v are
+// zero, the bias correction is back at iteration 1, and the first steps after the resume are much
+// larger than the ones they follow. The loss curve jumps at every restart, and nothing says why.
+// Restoring the moments without the counter is just as wrong: it corrects them for the wrong
+// iteration.
+//
+// The moments do not exist until ggml-opt has built an optimizer graph, which happens on the first
+// TRAINING step. Before then these return LL_ERR_NOT_INITIALIZED -- not an empty checkpoint, but a
+// question with no answer yet.
+//
+// Tensors are addressed by their PARAMETER's name (the ggml tensor name, e.g.
+// "blk.0.attn_q.weight.lora_a") plus which moment. Indexed enumeration is m-then-v per parameter,
+// over the parameter names sorted lexicographically -- not a hash map's iteration order, which is
+// not promised to be the same between builds.
+
+// How many moment tensors there are: 2 per trainable tensor. Or a negative LL_ERR_*.
+LL_API int32_t ll_opt_state_count(struct llama_context * ctx);
+
+// The index-th moment: its parameter's name, whether it is v (else m), and its element count.
+LL_API int32_t ll_opt_state_info(struct llama_context * ctx, int32_t index, char * name_out, int32_t name_capacity,
+                                 bool * is_v, int64_t * n_elements);
+
+// Copy a moment out. out=NULL with n_max=0 asks only for the element count.
+LL_API int64_t ll_opt_state_get(struct llama_context * ctx, const char * param_name, bool is_v, float * out,
+                                int64_t n_max);
+
+// Overwrite a moment. The element count must match exactly (LL_ERR_SHAPE_MISMATCH otherwise): a
+// checkpoint whose rank differs from the adapter it is restored into is not a checkpoint of this
+// run, and restoring the overlap would give an optimizer state that is part one run and part another.
+LL_API int64_t ll_opt_state_set(struct llama_context * ctx, const char * param_name, bool is_v, const float * data,
+                                int64_t n);
+
+// AdamW's iteration counter -- what drives its bias correction. >= 1.
+LL_API int64_t ll_opt_get_iter(struct llama_context * ctx);
+LL_API int32_t ll_opt_set_iter(struct llama_context * ctx, int64_t iter);
+
+// ---------------------------------------------------------------------------
 // Adapter enumeration (S1-08) -- read the trained tensors back out
 // ---------------------------------------------------------------------------
 //

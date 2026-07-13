@@ -17,6 +17,9 @@
 #include "ggml.h"
 #include "llama.h"
 
+#include <algorithm>
+#include <cinttypes>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <cstddef>
@@ -49,6 +52,12 @@ struct ll_train_state {
     // which ggml_opt will tell us: with dynamic graphs, ggml_opt_eval nulls the graphs it looked
     // them up in. The tensors themselves persist in opt_ctx's static context.
     std::unordered_map<std::string, ggml_tensor *> grad_accs;
+
+    // The AdamW moments of each param tensor, keyed the same way and captured in the same window
+    // and for the same reason. These are what a checkpoint has to save: resuming from the weights
+    // alone restarts the optimizer from a standing start, and the loss curve jumps.
+    std::unordered_map<std::string, ggml_tensor *> grad_m;
+    std::unordered_map<std::string, ggml_tensor *> grad_v;
 
     // The n_tokens of the first step. Every later step must match it -- see ll_train_step.
     int32_t n_tokens_seen = 0;
@@ -317,9 +326,19 @@ void capture_grad_accs(ll_train_state * state) {
     }
 
     for (ggml_tensor * t : state->param_tensors) {
+        const std::string name = ggml_get_name(t);
+
         ggml_tensor * grad = ggml_opt_grad_acc(state->opt_ctx, t);
         if (grad != nullptr) {
-            state->grad_accs[std::string(ggml_get_name(t))] = grad;
+            state->grad_accs[name] = grad;
+        }
+
+        // The AdamW moments, from the same window and for the same reason (S1-09).
+        ggml_tensor * m = ggml_opt_grad_m(state->opt_ctx, t);
+        ggml_tensor * v = ggml_opt_grad_v(state->opt_ctx, t);
+        if (m != nullptr && v != nullptr) {
+            state->grad_m[name] = m;
+            state->grad_v[name] = v;
         }
     }
 }
@@ -697,4 +716,182 @@ int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, fl
 
     ggml_backend_tensor_get(grad, out, 0, n * sizeof(float));
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// Optimizer-state checkpoint / resume (S1-09)
+// ---------------------------------------------------------------------------
+//
+// In farm_train.cpp rather than a farm_checkpoint.cpp as the ticket suggests, because the state
+// these read -- ll_train_state and its captured moment tensors -- lives in this file's anonymous
+// namespace. Moving them out to share it would widen the shim's internal surface for no gain.
+
+namespace {
+
+// The moment tensors, in a STABLE order: sorted by parameter name.
+//
+// The map they come from is an unordered_map, whose iteration order is not promised to be the same
+// between two builds. An index that meant a different tensor on a different machine is a fine way
+// to write a checkpoint that resumes into the wrong optimizer state -- and it would not crash, it
+// would just train slightly wrong.
+std::vector<std::string> sorted_param_names(ll_train_state * state) {
+    std::vector<std::string> names;
+    names.reserve(state->grad_m.size());
+
+    for (const auto & [name, tensor] : state->grad_m) {
+        names.push_back(name);
+    }
+
+    std::sort(names.begin(), names.end());
+
+    return names;
+}
+
+// The m or v of one parameter, or nullptr.
+ggml_tensor * find_moment(ll_train_state * state, const char * param_name, bool is_v) {
+    const auto & map = is_v ? state->grad_v : state->grad_m;
+    const auto it = map.find(std::string(param_name));
+    return it == map.end() ? nullptr : it->second;
+}
+
+} // namespace
+
+int32_t ll_opt_state_count(llama_context * ctx) {
+    ll_train_state * state = ctx ? state_for(ctx) : nullptr;
+    if (state == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+    if (state->grad_m.empty()) {
+        // The moments do not exist until ggml-opt has built an optimizer graph, which happens on
+        // the first TRAINING step. Checkpointing before then is not "an empty checkpoint", it is a
+        // question with no answer yet.
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    return (int32_t)(2 * state->grad_m.size()); // an m and a v for each parameter
+}
+
+int32_t ll_opt_state_info(llama_context * ctx, int32_t index, char * name_out, int32_t name_capacity, bool * is_v,
+                          int64_t * n_elements) {
+    if (ctx == nullptr || name_out == nullptr || is_v == nullptr || n_elements == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->grad_m.empty()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    const std::vector<std::string> names = sorted_param_names(state);
+
+    // Laid out m-then-v per parameter, so index/2 is the parameter and index%2 the role.
+    const size_t param = (size_t)index / 2;
+    const bool want_v = (index % 2) == 1;
+
+    if (index < 0 || param >= names.size()) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const std::string & name = names[param];
+
+    if ((int32_t)name.size() + 1 > name_capacity) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    std::memcpy(name_out, name.c_str(), name.size() + 1);
+
+    ggml_tensor * tensor = find_moment(state, name.c_str(), want_v);
+    if (tensor == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    *is_v = want_v;
+    *n_elements = ggml_nelements(tensor);
+
+    return LL_OK;
+}
+
+int64_t ll_opt_state_get(llama_context * ctx, const char * param_name, bool is_v, float * out, int64_t n_max) {
+    if (ctx == nullptr || param_name == nullptr || n_max < 0 || (out == nullptr && n_max != 0)) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->grad_m.empty()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * tensor = find_moment(state, param_name, is_v);
+    if (tensor == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const int64_t n = ggml_nelements(tensor);
+
+    if (out == nullptr) {
+        return n; // the sizing call
+    }
+    if (n > n_max) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_tensor_get(tensor, out, 0, n * sizeof(float));
+
+    return n;
+}
+
+int64_t ll_opt_state_set(llama_context * ctx, const char * param_name, bool is_v, const float * data, int64_t n) {
+    if (ctx == nullptr || param_name == nullptr || data == nullptr || n < 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->grad_m.empty()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * tensor = find_moment(state, param_name, is_v);
+    if (tensor == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // The shape must match EXACTLY. A checkpoint whose rank differs from the adapter it is being
+    // restored into is not a checkpoint of this run, and quietly restoring the overlap would give
+    // an optimizer state that is part one run and part another.
+    if (ggml_nelements(tensor) != n) {
+        LLAMA_LOG_ERROR("%s: %s has %" PRId64 " elements but the checkpoint has %" PRId64
+                        ". The checkpoint is not of this adapter.\n",
+                        __func__, param_name, ggml_nelements(tensor), n);
+        return LL_ERR_SHAPE_MISMATCH;
+    }
+
+    ggml_backend_tensor_set(tensor, data, 0, n * sizeof(float));
+
+    return n;
+}
+
+int64_t ll_opt_get_iter(llama_context * ctx) {
+    ll_train_state * state = ctx ? state_for(ctx) : nullptr;
+    if (state == nullptr || state->opt_ctx == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    return ggml_opt_get_iter(state->opt_ctx);
+}
+
+int32_t ll_opt_set_iter(llama_context * ctx, int64_t iter) {
+    if (iter < 1) {
+        // ggml asserts this, and the reason is worth knowing: iteration 0 would make AdamW's bias
+        // correction divide by 1 - beta^0 == 0.
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ll_train_state * state = ctx ? state_for(ctx) : nullptr;
+    if (state == nullptr || state->opt_ctx == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_opt_set_iter(state->opt_ctx, iter);
+
+    return LL_OK;
 }

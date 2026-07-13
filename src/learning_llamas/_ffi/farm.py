@@ -207,6 +207,47 @@ SYMBOLS = [
         ctypes.c_int64,
     ),
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
+    # S1-09: the AdamW moments and the iteration counter — what a resume needs.
+    Symbol(Library.FARM, "ll_opt_state_count", [ctypes.c_void_p], ctypes.c_int32),
+    Symbol(
+        Library.FARM,
+        "ll_opt_state_info",
+        [
+            ctypes.c_void_p,
+            ctypes.c_int32,  # index
+            ctypes.c_char_p,  # name_out
+            ctypes.c_int32,  # name_capacity
+            ctypes.POINTER(ctypes.c_bool),  # is_v
+            ctypes.POINTER(ctypes.c_int64),  # n_elements
+        ],
+        ctypes.c_int32,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_opt_state_get",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_opt_state_set",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
+    Symbol(Library.FARM, "ll_opt_get_iter", [ctypes.c_void_p], ctypes.c_int64),
+    Symbol(Library.FARM, "ll_opt_set_iter", [ctypes.c_void_p, ctypes.c_int64], ctypes.c_int32),
     # S1-08: read the trained adapter tensors back out, so they can be saved.
     Symbol(Library.FARM, "ll_adapter_n_tensors", [ctypes.c_void_p], ctypes.c_int32),
     Symbol(
