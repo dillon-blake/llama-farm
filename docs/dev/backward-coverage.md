@@ -76,9 +76,51 @@ ticket until it is the whole table and the qualifier can be deleted.
 
 | Op | Symptom | Assessment |
 |---|---|---|
-| **`SOFT_MAX`** | **every failing case is `sinks=1`**, e.g. `MAA = 0.000532 > 0.0001` | **A real gap.** `ggml_soft_max_ext_back(ctx, grad, tensor, scale, max_bias)` takes **no sinks argument**, and the backward rule (`ggml.c:6762-6772`) never reads `src[2]`. Attention-sink models would train on a wrong gradient. Ticket **S1-34**. |
 | `MUL_MAT` | a handful of cases marginally over the bound (`MAA = 0.0001004 > 0.0001`) | Finite-difference precision at large `k`, not a gradient bug. 360 F32 cases pass. Candidate for a per-op `max_maa_err()` override. |
-| `CPY`, `SCALE`, `EXPM1`, `SUM` | marginal | Not investigated. Low priority — none is on the LoRA training path. |
+| `CPY`, `SCALE`, `SUM` | marginal | Not investigated. None is on the LoRA training path. |
+
+### Two entries this table got wrong, and what they cost
+
+**`SOFT_MAX` — the gradient was never wrong. The test never checked it.** (S1-34, fork PR #13.)
+
+This table used to say sinks were a *missing term* in `SOFT_MAX_BACK` and that "attention-sink
+models would train on a wrong gradient". Both claims were false, and the reason is worth carrying:
+
+MODE_GRAD's objective is `sum(out)`, and **a softmax's rows sum to one by construction**. So
+`sum(out)` is identically 1 whatever the input, `d(sum(out))/dx` is *exactly zero*, and every
+`sinks=0` case was comparing zero against zero and reporting `OK`. The test had never exercised
+`SOFT_MAX_BACK` at all. A sink breaks the conservation — it takes part in the normalization but
+emits no output, so the rows sum to `1 − p_sink`, which *does* depend on the input. The `sinks=1`
+cases were the only ones in the whole sweep with a nonzero gradient, hence the only ones that
+*could* fail. And they failed on the **finite difference**, not on the kernel: against a float64
+FD with mask, sink, scale and ALiBi slope all present, the worst relative error is `3.1e-6`.
+
+The lesson generalizes past softmax: **an op whose output sum is conserved is invisible to a
+`sum(out)` objective.** `test_case` now takes a `grad_loss` hook so such an op can supply an
+objective that actually depends on its input.
+
+What *was* genuinely missing is `dL/d(sinks)` — silently ignored rather than unimplemented, so a
+full fine-tune would have trained its attention sinks **frozen** and nothing would have said so.
+It now aborts with the formula in the message: `dL/ds = -(1 - sum(y)) * dot(y, dy)`.
+
+**`EXPM1` — "not on the LoRA training path" was wrong, and it hid a real numerical bug.**
+
+`EXPM1` is on the GRPO training path: the k3 KL estimator is `expm1(d) − d`. And ggml's
+`op_expm1` was implemented as `expf(x) - 1.0f` — precisely the catastrophic cancellation the op
+exists to avoid, and precisely the regime a GRPO run lives in (`d ≈ 0` on every on-policy step, by
+design). Measured against the true value:
+
+| d | ggml's k3 | true | |
+|---|---|---|---|
+| 1e-6 | 7.29e-8 | 5.0e-13 | 145,000× too large |
+| 5e-5 | **−5.13e-8** | +1.25e-9 | **negative** |
+
+A KL penalty that goes negative does not penalize divergence; it **pays for it**. Fixed in the
+fork (`op_expm1` → `expm1f`, which was already used twice in the same file — see
+[`fork-changes.md`](fork-changes.md)).
+
+Dismissing an op as "low priority, not on the training path" is a claim about the *whole* library,
+including the parts not written yet. This table now says what was checked, not what was assumed.
 
 ## The allowlist: what the vendor-bump gate runs today
 

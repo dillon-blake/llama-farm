@@ -3,12 +3,17 @@
 The interesting part of this ticket is that the PPO clip is **built out of RELU**:
 
     clip(r, lo, hi) = lo + relu(r - lo) - relu(r - hi)
-    min(a, b)       = b - relu(b - a)
+    min(a, b)       = a - relu(a - b)
 
 Those identities are exactly true on paper. That is not the claim being tested. The claim is that
 *the graph I wrote computes them* — and the way to test that is to compare it, on inputs that reach
 every branch, against a numpy implementation that shares none of its structure (`np.clip`,
 `np.minimum`, `np.expm1`; no relu anywhere).
+
+And that comparison is **not sufficient**, which is the other thing this file is about. The
+blueprint prescribed `min(a, b) = b - relu(b - a)`, which is the same *number* and a different
+*gradient* — so the numpy reference agrees with both forms and cannot tell them apart. Catching it
+took a test that differentiates: see the clip-bound test at the bottom.
 
 **And the ratio is controllable, exactly.** `r = exp(logp_new − logp_old)`, so setting
 `logp_old = logp_new − log(r*)` makes the ratio exactly `r*` — for any `r*` I like. That turns a

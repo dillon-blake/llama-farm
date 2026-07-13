@@ -5,8 +5,11 @@ locally, on llama.cpp's ggml backend — CPU, Metal, CUDA, and Vulkan — with t
 training step GPU-resident when a GPU is available. Trained adapters load
 directly in stock llama.cpp, llama-server, and ollama.
 
-**Status: stage 0 (groundwork) landing.** The build, the bindings, the adapter
-format, and the test harness exist; the training core is stage 1.
+**Status: stage 1 (CPU training core), 25 of 36 tickets landed or in review.**
+SFT, DPO and GRPO all train today on CPU, on quantized bases, with gradient
+checkpointing and a chunked lm_head. The 11 open tickets are the remaining kernel
+families — flash-attention backward, MoE, and SSM — plus the convergence gate.
+Stages 2–4 (Metal, CUDA, Vulkan) have not started.
 
 ## Getting started
 
@@ -20,8 +23,34 @@ pip install -e vendor/llama.cpp/gguf-py
 pytest tests/ -m "not slow"
 ```
 
-See [`docs/dev/`](docs/dev/) — the [build guide](docs/dev/building.md), the
-[testing guide](docs/dev/testing.md), and the per-backend
+Then fine-tune something — four steps, and the shape never changes:
+
+```python
+from learning_llamas import Model, create_zero_adapter, libraries, read_adapter, save_adapter
+from learning_llamas.train import SFTConfig, train_sft
+
+create_zero_adapter("base.gguf", "adapter.gguf", r=16)      # a provable no-op at step 0
+
+with Model("base.gguf", n_ctx=512, n_ubatch=512, training=True) as model:
+    model.attach_adapter("adapter.gguf")
+    train_sft(libraries(), model, samples, SFTConfig(lr=1e-4, seq_len=512))
+
+    info = read_adapter("adapter.gguf")
+    save_adapter(libraries(), model.adapter, "trained.gguf",
+                 architecture=info.architecture, alpha=info.alpha)
+```
+
+```bash
+llama-cli -m base.gguf --lora trained.gguf -p "..."     # no merge step required
+```
+
+**[`docs/quickstart.md`](docs/quickstart.md)** is the full version — where `samples`
+comes from, GRPO, and the three things that will bite you.
+
+For working on the library itself, see [`docs/dev/`](docs/dev/) — the
+[build guide](docs/dev/building.md), the [testing guide](docs/dev/testing.md), the
+[backward coverage](docs/dev/backward-coverage.md) table, the
+[carried llama.cpp changes](docs/dev/fork-changes.md), and the per-backend
 [VM playbooks](docs/dev/vm-playbooks.md).
 
 ## The plan
@@ -44,12 +73,18 @@ See [`docs/dev/`](docs/dev/) — the [build guide](docs/dev/building.md), the
 - [`docs/PROVENANCE.md`](docs/PROVENANCE.md) — what may be copied from where.
 
 Both design documents are grounded in llama.cpp @ `4f37f51` and were
-adversarially fact-checked; ticket citations were re-verified independently.
+adversarially fact-checked; ticket citations were re-verified independently. Where
+implementation has since proved one of them wrong, the document says so at the
+point of the claim rather than being quietly patched — the corrections are worth
+more than the appearance of having been right.
 
-**One correction since:** the docs asserted that training graphs bypass the KV
-cache. They do not — causal-arch training routes K/V through the cache, which
-severs the autodiff edge and makes `ggml_build_backward_expand` abort
-(`ggml.c:7093`). Upstream's own `llama-finetune` aborts before printing a loss.
-This is now BLUEPRINT gap **G16** and ticket **S1-00**, a root of the stage-1
-dependency graph; five tickets that had stated the no-KV-cache property as fact
-now cite S1-00 as what establishes it.
+**The first such correction, now fixed.** The docs asserted that training graphs
+bypass the KV cache. They did not: causal-arch training routed K/V through the
+cache, which severs the autodiff edge and made `ggml_build_backward_expand` abort
+(`ggml.c:7093`) — upstream's own `llama-finetune` aborts before printing a loss.
+That became BLUEPRINT gap **G16** and ticket **S1-00**, the root of the stage-1
+dependency graph, and it is what the training-mode graph bypass now establishes.
+Training works.
+
+The llama.cpp changes this carries — and which of them belong upstream — are
+inventoried in [`docs/dev/fork-changes.md`](docs/dev/fork-changes.md).

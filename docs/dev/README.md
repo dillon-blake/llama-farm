@@ -1,11 +1,18 @@
 # Developer documentation
 
+This is the documentation for working **on** the library. To work **with** it, start at
+[`../quickstart.md`](../quickstart.md).
+
 | Document | What it covers |
 |---|---|
 | [`building.md`](building.md) | Prerequisites, the editable install, per-backend CMake flags, building the vendored test binaries |
 | [`testing.md`](testing.md) | The pytest suite and its markers; `test-backend-ops` including MODE_GRAD; where the tolerances come from |
 | [`vm-playbooks.md`](vm-playbooks.md) | Copy-pasteable, idempotent provisioning for each backend's VM, plus self-hosted GitHub Actions runners |
-| [`backward-coverage.md`](backward-coverage.md) | **Measured** MODE_GRAD coverage per op — which gradients are actually checked today, which abort, and which are wrong |
+| [`backward-coverage.md`](backward-coverage.md) | **Measured** MODE_GRAD coverage per op — which gradients are actually checked today, which abort, and which were wrong |
+| [`fork-changes.md`](fork-changes.md) | Every change this project carries in its vendored llama.cpp, why, and which belong upstream — the map a rebase needs |
+| [`gradient-checkpointing.md`](gradient-checkpointing.md) | Trading recompute for activation memory: the segmented backward, and what it costs (S1-17) |
+| [`grpo.md`](grpo.md) | The GRPO update, and the several ways one can look like it is training when it is not (S1-15, S1-16) |
+| [`cpu-throughput.md`](cpu-throughput.md) | What one CPU training step actually costs, measured (S1-32) |
 
 Two architecture decisions bind every kernel PR. Read them before writing one:
 

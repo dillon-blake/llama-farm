@@ -539,13 +539,16 @@ ggml_tensor * build_masked_ce(ggml_context * ctx_compute, ggml_cgraph * gf, ggml
         // pins, it is topology-stable, and it needs nothing that was not already there:
         //
         //     clip(r, lo, hi) = lo + relu(r - lo) - relu(r - hi)
-        //     min(a, b)       = b - relu(b - a)
+        //     min(a, b)       = a - relu(a - b)
         //
         // Check the clip on its three regions: r < lo gives lo + 0 - 0; lo <= r <= hi gives
         // lo + (r - lo) - 0 = r; r > hi gives lo + (r - lo) - (r - hi) = hi. And min is exact
         // whichever way round a and b fall -- which matters, because a NEGATIVE advantage swaps
         // them, and PPO's asymmetry between "made a good token likelier" and "made a bad token
         // likelier" lives entirely in that swap.
+        //
+        // The min's ARGUMENT ORDER is load-bearing and is NOT the form the blueprint prescribed.
+        // See the comment at the min itself, below.
         const float lo = 1.0f - lc->clip_eps;
         const float hi = 1.0f + lc->clip_eps;
 
