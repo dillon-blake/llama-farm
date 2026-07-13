@@ -5,8 +5,8 @@ stage: 1
 track: infra
 size: M
 deps: [S0-03, S0-07]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/30
 ---
 
 # S1-33 — Windows/MSVC build of liblearningllamas + ci-windows lane (CPU)

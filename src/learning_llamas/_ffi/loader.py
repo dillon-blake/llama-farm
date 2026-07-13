@@ -22,6 +22,7 @@ one atomic version (ADR-0001).
 from __future__ import annotations
 
 import ctypes
+import os
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -98,9 +99,37 @@ def library_dir() -> pathlib.Path:
     )
 
 
+# Held for the life of the process, deliberately: see _add_windows_dll_directory.
+_dll_directory_cookie: object | None = None
+
+
+def _add_windows_dll_directory(lib_dir: pathlib.Path) -> None:
+    """Let Windows find each DLL's *dependencies*, which sit next to it.
+
+    Windows resolves a DLL's imports through the process's DLL search path — and **since Python 3.8
+    that path no longer includes the directory the DLL was loaded from**. So loading
+    ``learningllamas.dll``, which imports ``llama.dll``, which imports ``ggml.dll``, all of them in
+    the same folder, fails on the very first one. The error names the *dependency*, not the file you
+    asked for, which is a memorable way to spend an afternoon.
+
+    ``os.add_dll_directory``, not a ``PATH`` edit: ``PATH`` is process-wide, order-dependent, and
+    shared with everything else in the interpreter. The cookie is kept alive for the life of the
+    process because ggml's backend registry can load a backend DLL lazily, long after this returns —
+    dropping the directory would make that fail instead.
+    """
+    global _dll_directory_cookie  # noqa: PLW0603 - process-wide by nature
+
+    if sys.platform != "win32" or _dll_directory_cookie is not None:
+        return
+
+    _dll_directory_cookie = os.add_dll_directory(str(lib_dir))
+
+
 def _open_libraries() -> Libraries:
     lib_dir = library_dir()
     handles: dict[Library, ctypes.CDLL] = {}
+
+    _add_windows_dll_directory(lib_dir)
 
     for library in LOAD_ORDER:
         path = lib_dir / library_filename(library.value)

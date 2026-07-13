@@ -111,6 +111,20 @@ set_target_properties(${LL_VENDOR_LIBS} learningllamas PROPERTIES
     INSTALL_RPATH "${LL_RPATH}"
     BUILD_WITH_INSTALL_RPATH FALSE)
 
+# MSVC (S1-33).
+#
+# /utf-8 because MSVC otherwise reads a source file in the system codepage, and this codebase has
+# UTF-8 in its comments. Without it the build does not fail -- it mis-decodes, and you get warnings
+# about characters that are fine.
+#
+# The DLLs install to the same lib/ directory as everything else (RUNTIME DESTINATION, below), which
+# is what lets the loader's os.add_dll_directory find each one's dependencies. The .lib import
+# libraries are deliberately NOT installed: nothing links against the shim at build time, ctypes
+# opens it at run time.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 install(TARGETS ${LL_VENDOR_LIBS} learningllamas
         COMPONENT learningllamas
         LIBRARY DESTINATION "${LL_INSTALL_LIBDIR}"

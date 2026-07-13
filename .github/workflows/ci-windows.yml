@@ -1,0 +1,80 @@
+# Windows / MSVC (S1-33).
+#
+# A separate workflow from ci-cpu, not a matrix entry on it, and the reason is that almost nothing
+# is shared: a different compiler, a different linker, a different DLL search model, a different
+# cache tool. Folding it into the Linux/macOS matrix would mean an `if: runner.os == 'Windows'` on
+# every step, which is a matrix in a trench coat.
+#
+# Two tiers, mirroring ci-cpu (S0-07): a quick per-PR lane, and a fuller nightly one.
+
+name: ci-windows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build + test (windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # sccache, not ccache: ccache's MSVC support is experimental and its cache-miss behaviour on
+      # Windows is its own adventure. sccache is what Mozilla built for exactly this.
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" --no-build-isolation
+        env:
+          # GGML_NATIVE=OFF for a reproducible build: with it on, ggml compiles for whatever the
+          # runner happens to be, and a cached object from one runner generation crashes on another.
+          # /utf-8 because MSVC otherwise reads the sources as the system codepage, and this codebase
+          # has UTF-8 in its comments.
+          CMAKE_ARGS: >-
+            -DGGML_NATIVE=OFF
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+          SCCACHE_GHA_ENABLED: "true"
+
+      # The load order and the DLL search path are the two things that are genuinely different on
+      # Windows, and both fail at import rather than at build. Check them before anything else, so a
+      # failure here is unambiguous.
+      - name: import (the DLL search path is the thing under test)
+        run: python -c "from learning_llamas import _ffi; libs = _ffi.load(); print(libs.farm.ll_version().decode())"
+
+      - name: pytest (per-PR selection)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: python -m pytest -q -m "not slow and not cuda and not metal and not vulkan"
+
+      - name: pytest (full, nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python -m pytest -q
+
+      - name: wheel builds and imports
+        run: |
+          python -m pip install build
+          python -m build --wheel --no-isolation
+          python -m pip install (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName --force-reinstall --no-deps
+          cd $env:TEMP
+          python -c "from learning_llamas import _ffi; _ffi.load(); print('wheel imports outside the source tree')"
+        shell: pwsh

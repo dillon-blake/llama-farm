@@ -143,3 +143,32 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Debug" pip install -e . --no-build-isolation
 Debug ggml is *slow* — 10-30× on the kernels. Use it to attach a debugger to a specific failure,
 not to run the suite. For a middle ground, `RelWithDebInfo` keeps the optimizations and the
 symbols.
+
+
+## Windows / MSVC (S1-33)
+
+```
+pip install -e ".[dev]" --no-build-isolation
+```
+
+Two things are genuinely different on Windows, and **both fail at import rather than at build**,
+which is what makes them worth knowing about in advance.
+
+**Dependency resolution.** Windows resolves a DLL's imports through the process's DLL search path,
+and **since Python 3.8 that path no longer includes the directory the DLL was loaded from**. So
+`learningllamas.dll` — which imports `llama.dll`, which imports `ggml.dll`, all of them sitting in
+the same folder — fails on the very first load. And the error names the *dependency*, not the file
+you actually asked for.
+
+`_ffi.loader` handles this with `os.add_dll_directory`, held for the life of the process (ggml's
+backend registry can load a backend DLL lazily, long after the initial load). It does **not** edit
+`PATH`: that is process-wide, order-dependent, and shared with everything else in the interpreter.
+
+**`GGML_NATIVE=OFF` in CI.** With it on, ggml compiles for whatever the runner happens to be — and a
+cached object file from one runner generation crashes on another. Reproducibility beats the few
+percent.
+
+`ci-windows.yml` is a separate workflow rather than a matrix entry on `ci-cpu`, because almost
+nothing is shared: a different compiler, a different linker, a different DLL model, a different cache
+tool. Folding it in would mean an `if: runner.os == 'Windows'` on every step — a matrix in a trench
+coat.
