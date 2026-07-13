@@ -5,8 +5,8 @@ stage: 1
 track: python
 size: M
 deps: ["S1-04"]
-status: open
-pr: null
+status: done
+pr: 31
 ---
 
 # S1-13 — Chunked lm_head / selective-logprob host pattern for no-grad passes
