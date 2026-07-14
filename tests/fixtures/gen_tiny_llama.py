@@ -290,10 +290,17 @@ def cache_key(hp: TinyLlamaHParams = HPARAMS) -> str:
 
     Any change to how a fixture is built invalidates the cache, so a stale fixture can never
     silently survive an edit to this file.
+
+    **Newlines are normalized, and that is not cosmetic.** Hashing the raw bytes makes the key
+    depend on the checkout's line endings: git hands Windows a CRLF working tree by default, so the
+    same source file hashes differently there. S1-12's ``reference_curve.json`` embeds this key as
+    its identity, so the convergence gate failed on ci-windows with "recorded against a different
+    fixture" — against a fixture that was byte-for-byte the same model. Read as text, hash as LF.
     """
+    source = pathlib.Path(__file__).read_text(encoding="utf-8").replace("\r\n", "\n")
     payload = b"".join(
         [
-            pathlib.Path(__file__).read_bytes(),
+            source.encode(),
             repr(hp).encode(),
             version("gguf").encode(),
         ]

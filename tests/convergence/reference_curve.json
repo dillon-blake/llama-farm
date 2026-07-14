@@ -1,6 +1,6 @@
 {
   "_comment": "Recorded once by tests/convergence/record_reference.py. Do not hand-edit. See tests/convergence/README.md to regenerate.",
-  "identity": "19fa76b211f53944",
+  "identity": "1a025ff6bbfd4302",
   "twin_max_logit_deviation": 8.018681566523966e-07,
   "versions": {
     "torch": "2.13.0+cpu",

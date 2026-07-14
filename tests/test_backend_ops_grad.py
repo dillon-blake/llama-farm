@@ -175,19 +175,24 @@ def test_the_vacuity_guard_can_actually_detect_vacuity(ggml_device: str) -> None
 
 
 def test_the_harness_runs_on_the_device_we_asked_for(ggml_device: str) -> None:
-    """``-b`` is an exact ``strcmp``, and GPU device names are index-suffixed.
+    """``-b`` is an exact ``strcmp``, and the device names are not what you would guess.
 
-    ``ggml_backend_dev_name`` returns ``CUDA0`` / ``Vulkan0``, not ``CUDA`` / ``Vulkan``
-    (``ggml-cuda.cu``, and the filter at ``test-backend-ops.cpp:11214``). Passing the *family* name
-    matches no device: the harness prints ``Skipping``, counts it as passed, and exits 0 having run
-    nothing — so every backend lane would go green while checking zero gradients.
+    ``ggml_backend_dev_name`` returns ``MTL0`` (not ``Metal``), ``CUDA0`` / ``ROCm0`` / ``MUSA0``
+    (not ``CUDA``), and ``Vulkan0`` (not ``Vulkan``) — ``ggml-metal-device.m:858``,
+    ``ggml-cuda.cu:5178``, ``ggml-vulkan.cpp:6459``, and the filter at
+    ``test-backend-ops.cpp:11214``. A name that matches no device makes the harness print
+    ``Skipping``, **count it as passed, and exit 0** having run nothing at all. Demonstrated:
+    ``test -b NOPE0 -o RMS_NORM`` prints ``1/1 backends passed``, ``OK``, and returns 0.
 
-    ``CPU`` happens to be unsuffixed, which is exactly why this was invisible here. Assert that the
-    name we pass actually selects a device, so a GPU lane cannot inherit the bug.
+    **Assert the positive.** The obvious guard — "``Skipping`` must not appear" — is WRONG, and it
+    failed in CI on the very first macOS runner it met: that box has *two* devices, so ``-b CPU``
+    skips the **Metal** one entirely legitimately and says so. The guard fired on a perfectly
+    healthy run. What actually matters is that the device we asked for *did something*.
     """
     result = _run(PROJECT_ADDED_OPS[0], ggml_device)
-    assert "Skipping" not in result.stdout, (
-        f"test-backend-ops skipped device {ggml_device!r} — the name matched nothing, and the run "
-        f"is worthless. -b takes ggml_backend_dev_name()'s exact string (CUDA0, not CUDA)."
+
+    assert _n_gradients_compared(result.stdout) > 0, (
+        f"test-backend-ops compared no gradients on {ggml_device!r}. If it printed "
+        f"'Skipping {ggml_device}', the name matched no device and the run is worthless: -b takes "
+        f"ggml_backend_dev_name()'s exact string (MTL0, not Metal; CUDA0, not CUDA)."
     )
-    assert _n_gradients_compared(result.stdout) > 0
