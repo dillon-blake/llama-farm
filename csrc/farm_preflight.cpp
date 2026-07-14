@@ -80,6 +80,16 @@ bool op_has_backward(ggml_op op) {
     case GGML_OP_CROSS_ENTROPY_LOSS:
     case GGML_OP_CROSS_ENTROPY_LOSS_SPARSE:
     case GGML_OP_GLU:
+    // learning-llamas: MoE (S1-25 wiring + S1-26/S1-27 kernels). MUL_MAT_ID is the expert matmul
+    // and ADD_ID the per-expert bias; both have backwards now, which is what makes a Mixtral
+    // trainable. The OUT_PROD_ID* ops are what MUL_MAT_ID's backward EMITS -- they never appear on
+    // a forward graph, but listing them costs nothing and stops a future graph-shape surprise from
+    // reading as "no backward rule".
+    case GGML_OP_MUL_MAT_ID:
+    case GGML_OP_ADD_ID:
+    case GGML_OP_OUT_PROD_ID:
+    case GGML_OP_OUT_PROD_ID_GRP:
+    case GGML_OP_GLU_BACK:
         return true;
     default:
         return false;
@@ -97,13 +107,19 @@ bool op_has_backward(ggml_op op) {
 // exactly the outcome this preflight exists to predict. The whole point of the report is that it
 // is believed. S1-28 adds the missing VJPs and flips these on.
 bool glu_has_backward(const ggml_tensor * node) {
-    if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU) {
+    // S1-28 gave the whole family a VJP (GGML_OP_GLU_BACK), including the fused form and the
+    // GEGLU/REGLU/SWIGLU_OAI variants that used to GGML_ABORT. Gemma and gpt-oss train now.
+    switch (ggml_get_glu_op(node)) {
+    case GGML_GLU_OP_REGLU:
+    case GGML_GLU_OP_GEGLU:
+    case GGML_GLU_OP_SWIGLU:
+    case GGML_GLU_OP_SWIGLU_OAI:
+    case GGML_GLU_OP_GEGLU_ERF:
+    case GGML_GLU_OP_GEGLU_QUICK:
+        return true;
+    default:
         return false;
     }
-
-    // Split form only: src1 is the up-projection half. Fused SWIGLU packs both halves into src0
-    // and has no backward.
-    return node->src[1] != nullptr;
 }
 
 // The unary sub-switch has its own coverage, and its default aborts just like the outer one.
@@ -134,10 +150,6 @@ const char * blocker_detail(ggml_op op) {
         return "flash attention has no backward. Training mode disables it "
                "(llama_context::set_training), so seeing it here means something re-enabled it. "
                "Unblocked by S1-21..S1-24.";
-    case GGML_OP_MUL_MAT_ID:
-    case GGML_OP_ADD_ID:
-        return "MoE expert routing has no backward yet. Unblocked by S1-25 (wiring) plus S1-26 "
-               "and S1-27 (the OUT_PROD_ID kernels).";
     case GGML_OP_GLU:
         return "only SPLIT SwiGLU has a backward. Fused SwiGLU, and the GEGLU / REGLU / "
                "SWIGLU_OAI variants (Gemma, gpt-oss), have none. Unblocked by S1-28.";
@@ -201,9 +213,20 @@ int32_t ll_preflight_walk(ggml_cgraph * gf, ggml_tensor ** params, int32_t n_par
             continue; // off the gradient path: the backward never reaches it, so it cannot block
         }
 
-        if (can_carry_grad(node)) {
-            needs_grad.insert(node);
+        if (!can_carry_grad(node)) {
+            // An I32 output TERMINATES the gradient path -- ggml_build_backward_expand skips such
+            // nodes outright (`if (node->type == GGML_TYPE_I32) continue;`), so it never asks for
+            // their VJP and they cannot block anything.
+            //
+            // Without this, a MoE model reported ARGSORT as a blocker: its source (the router
+            // probabilities) is on the gradient path, so the node looked reachable -- but its
+            // output is the I32 expert selection, which is never differentiated. The preflight was
+            // right that argsort has no gradient and wrong that it mattered, which is the failure
+            // mode that trains people to ignore a report.
+            continue;
         }
+
+        needs_grad.insert(node);
 
         const bool supported = op_has_backward(node->op) &&
                                (node->op != GGML_OP_UNARY || unary_has_backward(ggml_get_unary_op(node))) &&

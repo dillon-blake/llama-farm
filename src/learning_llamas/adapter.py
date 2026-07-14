@@ -62,6 +62,13 @@ except ImportError as exc:  # pragma: no cover - environment problem, not a code
     ) from exc
 
 # The default LoRA target set (BLUEPRINT D5): attention projections and the FFN.
+#
+# The `_exps` entries are the MoE expert stacks (S1-28). They are 3D -- [n_in, n_out, n_expert] --
+# and adapting them is not a variation on the dense case, it is the whole reason MUL_MAT_ID needed a
+# backward at all: build_lora_mm_id computes mul_mat_id(B, mul_mat_id(A, cur, ids), ids), so the
+# trainable A/B tensors ARE the expert operand.
+#
+# A dense model simply has no tensor with these names, so listing them costs nothing there.
 DEFAULT_PRESET: tuple[str, ...] = (
     "attn_q",
     "attn_k",
@@ -71,6 +78,9 @@ DEFAULT_PRESET: tuple[str, ...] = (
     "ffn_up",
     "ffn_gate",
     "ffn_down",
+    "ffn_up_exps",
+    "ffn_gate_exps",
+    "ffn_down_exps",
 )
 
 TOKEN_EMBD = "token_embd"
@@ -89,6 +99,9 @@ class LoraTarget:
             own A/B tensors are always F32, whatever the base is quantized to.
         is_token_embd: Whether this is ``token_embd.weight``, which the loader validates with
             the flipped shape convention.
+        n_expert: The tensor's ``ne[2]``, for a 3D MoE expert stack; 0 for an ordinary 2D
+            tensor. A nonzero value makes the adapter's A and B 3D as well — one slice per
+            expert — because that is what ``ggml_mul_mat_id`` consumes.
     """
 
     name: str
@@ -96,6 +109,7 @@ class LoraTarget:
     n_out: int
     dtype: gguf.GGMLQuantizationType
     is_token_embd: bool
+    n_expert: int = 0
 
 
 @dataclass(frozen=True)
@@ -166,6 +180,13 @@ def enumerate_targets(
 
         # GGUFReader exposes `shape` in GGUF ne order: ne[0] is the fastest-moving dimension.
         n_in, n_out = int(tensor.shape[0]), int(tensor.shape[1])
+
+        # ne[2] is the expert count on a MoE stack, and reading only ne[0] and ne[1] would silently
+        # flatten it: the adapter would come out 2D, the loader's shape check (which only validates
+        # ne[0] and ne[1]) would ACCEPT it, and ggml_mul_mat_id would then read an expert axis of 1
+        # for a 4-expert model. A wrong answer with no error anywhere.
+        n_expert = int(tensor.shape[2]) if len(tensor.shape) > 2 and tensor.shape[2] > 1 else 0
+
         targets.append(
             LoraTarget(
                 name=tensor.name,
@@ -173,6 +194,7 @@ def enumerate_targets(
                 n_out=n_out,
                 dtype=tensor.tensor_type,
                 is_token_embd=(module == TOKEN_EMBD),
+                n_expert=n_expert,
             )
         )
 
@@ -302,6 +324,23 @@ def _zero_init_pair(
         n_embd, n_vocab = target.n_in, target.n_out
         a = rng.normal(0.0, sigma, size=(n_vocab, r)).astype(np.float32)  # ne = [r, n_vocab]
         b = np.zeros((n_embd, r), dtype=np.float32)  # ne = [r, n_embd]
+        return a, b
+
+    if target.n_expert:
+        # A MoE expert stack. A and B get one slice per expert, so that build_lora_mm_id's
+        #
+        #     mul_mat_id(B, mul_mat_id(A, cur, ids), ids)
+        #
+        # gathers the same expert from the adapter that the base gathered from itself.
+        #
+        #     a.ne = [n_in,  r,     n_expert]
+        #     b.ne = [r,     n_out, n_expert]
+        #
+        # The loader validates only ne[0] and ne[1] (llama-adapter.cpp:362-367), so a 2D adapter
+        # would load happily against a 3D base and then be read as a 1-expert stack. The shape has
+        # to be right here, because nothing downstream will complain.
+        a = rng.normal(0.0, sigma, size=(target.n_expert, r, target.n_in)).astype(np.float32)
+        b = np.zeros((target.n_expert, target.n_out, r), dtype=np.float32)
         return a, b
 
     # Normal convention: a.ne = [n_in, r], b.ne = [r, n_out]

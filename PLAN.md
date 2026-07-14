@@ -17,7 +17,7 @@ agent-executable backlog:
   flash-attention backward, MoE and SSM ops), numerics/determinism policy,
   licensing audit of reusable unsloth ideas.
 
-The backlog itself lives in `tickets/` — **89 tickets, each scoped to one pull
+The backlog itself lives in `tickets/` — **90 tickets, each scoped to one pull
 request**, with `tickets/README.md` as the guide agents read before picking up
 work (ordering, claim protocol, definition of done, CI model).
 
@@ -40,7 +40,7 @@ two binding ADRs (numerics + determinism policy; fork lineage).
 **Exit:** CPU CI green; a zero-B adapter attached to a tiny model provably
 changes nothing (the no-op smoke test).
 
-### Stage 1 — CPU training core (38 tickets)
+### Stage 1 — CPU training core (39 tickets)
 
 Everything needed to train **correctly** end-to-end on CPU:
 
