@@ -340,6 +340,7 @@ def forward(
     scale: float,
     tokens: np.ndarray,
     positions: np.ndarray | None = None,
+    seq_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Run the llama forward in float64.
 
@@ -351,6 +352,9 @@ def forward(
         scale: The effective LoRA scale, from :func:`lora_scale`.
         tokens: ``(T,)`` input token ids.
         positions: ``(T,)`` position ids. Defaults to ``0..T-1``.
+        seq_ids: ``(T,)`` sequence ids for a packed batch (S1-07). When given, attention is causal
+            *within* a sequence and forbidden across sequences — the block mask the packer's
+            ``seq_ids`` induce in llama.cpp. ``None`` is one sequence, plain causal.
 
     Returns:
         A ``(logits, cache)`` pair. ``logits`` is ``(T, n_vocab)``; ``cache`` holds every
@@ -364,8 +368,12 @@ def forward(
 
     x = tensors["token_embd.weight"][tokens]  # (T, E)
 
-    # A causal mask, additive: 0 where a query may attend, -inf where it may not.
+    # A causal mask, additive: 0 where a query may attend, -inf where it may not. For a packed
+    # batch, "may" additionally requires being the same sequence.
     mask = np.triu(np.full((t_len, t_len), -np.inf), k=1)
+    if seq_ids is not None:
+        ids = np.asarray(seq_ids)
+        mask = np.where(ids[:, None] == ids[None, :], mask, -np.inf)
 
     cache: dict[str, object] = {"tokens": tokens, "positions": positions, "mask": mask}
     layers: list[dict[str, object]] = []
