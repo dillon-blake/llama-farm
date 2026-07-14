@@ -97,3 +97,52 @@ def grpo_loss(
         total += kl_coef * float((k3_kl(logp_new, reference) * mask).sum())
 
     return total
+
+
+def grpo_dlogp(
+    logp_new: np.ndarray,
+    logp_old: np.ndarray,
+    adv: np.ndarray,
+    mask: np.ndarray,
+    eps: float = 0.2,
+    kl_coef: float = 0.0,
+    logp_ref: np.ndarray | None = None,
+) -> np.ndarray:
+    """``dL/dlogp_new``, derived from the math — branch selection by ``np.where``, no relu.
+
+    Per live token, with ``u = r·A`` (unclipped) and ``v = clip(r)·A``:
+
+        d(min(u, v))/dlogp = r·A            if u <= v          (unclipped branch active)
+                           = r·A            if clip not binding (v's clip passthrough)
+                           = 0              if clip binding      (a constant times A)
+
+    and the k3 term contributes ``kl_coef · (1 - exp(logp_ref - logp_new))``. The sign asymmetry
+    the blueprint's ``b - relu(b - a)`` bug got wrong lives exactly in the ``u <= v`` selection, so
+    this function is the reference that catches gradient-only bugs the value-only
+    :func:`grpo_loss` provably cannot.
+    """
+    logp_new = np.asarray(logp_new, dtype=np.float64)
+    logp_old = np.asarray(logp_old, dtype=np.float64)
+    adv = np.asarray(adv, dtype=np.float64)
+    mask = np.asarray(mask, dtype=np.float64)
+
+    live = mask != 0.0
+    logp_new = np.where(live, logp_new, 0.0)
+    logp_old = np.where(live, logp_old, 0.0)
+    adv = np.where(live, adv, 0.0)
+
+    ratio = np.exp(logp_new - logp_old)
+    u = ratio * adv
+    v = clip(ratio, eps) * adv
+
+    du = ratio * adv
+    dv = np.where((ratio > 1.0 - eps) & (ratio < 1.0 + eps), ratio * adv, 0.0)
+    d_surrogate = np.where(u <= v, du, dv)
+
+    out = -d_surrogate
+    if kl_coef != 0.0:
+        reference = logp_old if logp_ref is None else np.asarray(logp_ref, dtype=np.float64)
+        reference = np.where(live, reference, 0.0)
+        out = out + kl_coef * mask * (1.0 - np.exp(reference - logp_new))
+
+    return np.where(live, out, 0.0)
