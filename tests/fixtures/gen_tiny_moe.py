@@ -185,10 +185,16 @@ def _write(path: pathlib.Path, hp: TinyMoEHParams, variant: str, seed: int) -> N
 
 
 def cache_key(hp: TinyMoEHParams = HPARAMS) -> str:
-    """A content hash of this generator, its hyperparameters, and gguf-py's version."""
+    """A content hash of this generator, its hyperparameters, and gguf-py's version.
+
+    Newlines normalized, for the reason spelled out in
+    :func:`tests.fixtures.gen_tiny_llama.cache_key`: hashing raw bytes makes the key depend on the
+    checkout's line endings, and git gives Windows CRLF.
+    """
+    source = pathlib.Path(__file__).read_text(encoding="utf-8").replace("\r\n", "\n")
     payload = b"".join(
         [
-            pathlib.Path(__file__).read_bytes(),
+            source.encode(),
             repr(hp).encode(),
             version("gguf").encode(),
         ]

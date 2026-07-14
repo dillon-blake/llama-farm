@@ -30,6 +30,11 @@ on:
     # get queued.
     - cron: "17 4 * * *"
   workflow_dispatch:
+    inputs:
+      record_reference:
+        description: "Re-record tests/convergence/reference_curve.json (needs torch + peft; S1-12)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-cpu-${{ github.ref }}
@@ -224,44 +229,81 @@ jobs:
       # MODE_GRAD is the acceptance harness for every kernel ticket (ADR-0002). Running it
       # per-PR from day one protects the CPU oracle that stages 2-4 are measured against.
       #
-      # The op list is short, and every omission is deliberate. See
-      # docs/dev/backward-coverage.md for the measured state of all 126 ops.
+      # The op list is NO LONGER WRITTEN HERE. It is tests/project_ops.py, and this job reads
+      # it -- because when it lived inline it went stale the moment a kernel ticket landed. By
+      # S1-31 it still named eight ops and the project had thirteen: MUL_MAT_ID, ADD_ID, GLU,
+      # SSM_CONV and SSM_SCAN -- every op the MoE and Mamba work added -- were not being
+      # grad-checked in CI at all, and CI was green.
       #
-      #   OUT_PROD is NOT here even though it is the single most important gradient op,
-      #   because `grad -o OUT_PROD` checks ZERO gradients: test_out_prod never calls
-      #   ggml_set_param, so eval_grad reports "not supported [OUT_PROD]" and still ends in
-      #   "Backend CPU: OK". It is real evidence of nothing. OUT_PROD's gradient path is
-      #   exercised indirectly by MUL_MAT, whose backward is built from ggml_out_prod
-      #   (ggml.c:6594-6630) -- but MUL_MAT takes 3m20s, so it is a nightly job, not a
-      #   per-PR one.
-      #
-      #   SOFT_MAX is NOT here because it genuinely FAILS: every failing case has sinks=1,
-      #   and ggml_soft_max_ext_back takes no sinks argument at all. That is a real
-      #   SOFT_MAX is here as of S1-34, and it is worth saying what that ticket found. It was
-      #   FAILING on every sinks=1 case, and PASSING on every other -- because MODE_GRAD's
-      #   objective is sum(out), and a softmax's rows sum to one BY CONSTRUCTION. So sum(out)
-      #   is identically 1, its gradient is exactly zero, and the non-sink cases were comparing
-      #   zero against zero. The test had never exercised SOFT_MAX_BACK at all. The kernel was
-      #   right the whole time (verified to 2.1e-7 MAA against a float64 finite difference); the
-      #   objective was degenerate. It now uses a weighted sum, so it finally checks something.
-      #
-      # What is left is what is both genuinely grad-checked and green.
-      - name: test-backend-ops — grad (targeted, MODE_GRAD)
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
+      # tests/test_backend_ops_grad.py owns the per-op run AND the vacuity guard: an op whose
+      # test class never calls ggml_set_param reports OK having checked nothing, so a green
+      # `grad -o X` is not evidence that X has a backward. See docs/dev/backward-coverage.md.
+      - name: Install (for the grad wrapper)
         run: |
-          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,CROSS_ENTROPY_LOSS_SPARSE,RMS_NORM,TANH,SIGMOID,CLAMP,SOFT_MAX,CONCAT
+          pip install scikit-build-core cmake ninja pytest
+          pip install -e . --no-build-isolation
+          pip install -e vendor/llama.cpp/gguf-py
+
+      - name: test-backend-ops — grad (MODE_GRAD, ops from tests/project_ops.py)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
+        run: pytest tests/test_backend_ops_grad.py -v
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
         run: |
           ./build/vendor-tests/bin/test-backend-ops test -b CPU
-          # The UNFILTERED grad sweep -- which ADR-0001 wants on every vendor bump -- still
-          # cannot complete, and that is now a statement about the product rather than the
-          # harness: it aborts on ops that have no backward rule yet (REGLU, GEGLU, ...,
-          # ggml.c:6897), which is exactly what S1-28 and friends exist to add. So the
-          # nightly runs the allowlist, and every stage-1 kernel ticket appends to it until
-          # the filter can be deleted.
-          ./build/vendor-tests/bin/test-backend-ops grad -o CROSS_ENTROPY_LOSS,RMS_NORM,MUL_MAT
+          pytest tests/test_backend_ops_grad.py -v
+          # MUL_MAT is nightly-only: it takes 3m20s, and it is the ONLY thing that exercises
+          # OUT_PROD's gradient path at all (MUL_MAT's backward is built from ggml_out_prod,
+          # ggml.c:6594-6630, while `grad -o OUT_PROD` checks zero gradients -- test_out_prod
+          # never calls ggml_set_param).
+          #
+          # The UNFILTERED grad sweep, which ADR-0001 wants on every vendor bump, still cannot
+          # complete -- it aborts on ops that have no backward rule (CUMSUM, DIAG, FILL, ...,
+          # ggml.c:6906). None is on a training path. See docs/dev/backward-coverage.md.
+          ./build/vendor-tests/bin/test-backend-ops grad -b CPU -o MUL_MAT
+
+  # Regenerate tests/convergence/reference_curve.json (S1-12). Run BY HAND, and only when the
+  # gate says the recorded curve describes a different experiment -- it embeds an identity hash
+  # over the fixture generator, the config and the dataset, so it fails loudly rather than
+  # comparing against a curve for something else.
+  #
+  # torch and peft are NOT dependencies of this project and must not become any. They exist only
+  # inside this job. The recorder needs no compiled shim -- it builds an F32 fixture and a zero
+  # adapter, both pure gguf-py -- so the source on PYTHONPATH is enough.
+  record-reference:
+    name: record-reference (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.record_reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the recording environment
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install peft transformers
+          pip install -e vendor/llama.cpp/gguf-py
+
+      - name: Record
+        run: PYTHONPATH=$PWD:$PWD/src python -m tests.convergence.record_reference
+
+      - name: Show the diff
+        run: git diff --stat tests/convergence/reference_curve.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reference_curve
+          path: tests/convergence/reference_curve.json
 
   lint:
     name: lint

@@ -203,7 +203,7 @@ def test_training_a_moe_moves_the_expert_adapters(tiny_moe_f32, tmp_path, load_m
     would stay exactly at their zero-init B and the model would still learn, through attention,
     and the loss would still fall. So check the expert adapters specifically.
     """
-    from learning_llamas.adapter import _read
+    from learning_llamas.adapter import _index_by_name, _read
 
     adapter = tmp_path / "a.gguf"
     create_zero_adapter(tiny_moe_f32, adapter, r=RANK, seed=3)
@@ -213,20 +213,23 @@ def test_training_a_moe_moves_the_expert_adapters(tiny_moe_f32, tmp_path, load_m
     )
     handle = model.attach_adapter(adapter, scale=1.0)
 
-    # B starts at exactly zero, by construction, which makes "did it move" an exact question.
-    targets = enumerate_targets(tiny_moe_f32)
-    expert_idx = [i for i, t in enumerate(targets) if t.name.endswith("_exps.weight")]
-    assert expert_idx
+    # Address the expert tensors BY NAME. The shim's index is the lexicographic position of the
+    # base name, not enumerate_targets' file order (see adapter._index_by_name) -- and reading the
+    # wrong tensor here would be silent, because after training every adapter has moved. This
+    # assertion would then pass by reading the ATTENTION adapters, which is the exact failure it
+    # exists to rule out.
+    index = _index_by_name(libs, handle)
+    expert_names = [
+        t.name for t in enumerate_targets(tiny_moe_f32) if t.name.endswith("_exps.weight")
+    ]
+    assert expert_names
 
+    # B starts at exactly zero, by construction, which makes "did it move" an exact question.
     train_sft(libs, model, _samples(), SFTConfig(lr=1e-2, seq_len=SEQ_LEN, pad_id=0, epochs=6))
 
-    moved = 0
-    for i in expert_idx:
-        b = _read(libs, handle, i, is_b=True)
-        if abs(b).max() > 0.0:
-            moved += 1
+    stuck = [n for n in expert_names if abs(_read(libs, handle, index[n], is_b=True)).max() == 0.0]
 
-    assert moved == len(expert_idx), (
-        f"only {moved}/{len(expert_idx)} expert LoRA B tensors moved — "
-        "the weight gradient is not reaching the expert stacks"
+    assert not stuck, (
+        f"{len(stuck)}/{len(expert_names)} expert LoRA B tensors are still exactly zero — "
+        f"the weight gradient is not reaching the expert stacks: {stuck}"
     )

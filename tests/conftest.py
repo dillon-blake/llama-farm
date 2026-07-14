@@ -101,3 +101,74 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
 
     for model in opened:
         model.close()
+
+
+# ---------------------------------------------------------------------------
+# --device (S1-12)
+#
+# ROADMAP §11 makes the convergence gate the phase-exit criterion for every backend stage, so it
+# is backend-parameterized from day one and S2-01/S3-01/S4-01 reuse it with one flag rather than
+# forking it. A device this build does not have SKIPS -- it does not fail, and it does not quietly
+# run on the CPU while reporting success.
+# ---------------------------------------------------------------------------
+
+DEVICES = ("cpu", "metal", "cuda", "vulkan")
+
+# What ggml calls each device, so `--device metal` can ask ggml whether this build has one rather
+# than guessing from the platform.
+_GGML_DEVICE_PREFIX = {"cpu": "CPU", "metal": "Metal", "cuda": "CUDA", "vulkan": "Vulkan"}
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--device",
+        action="store",
+        default="cpu",
+        choices=DEVICES,
+        help="Compute backend for the convergence gate and the grad-check wrapper.",
+    )
+
+
+def ggml_device_names(libs: _ffi.Libraries) -> dict[str, str]:
+    """Map each logical device to the name **ggml actually registered it under**.
+
+    The distinction is not pedantry. ``test-backend-ops -b <name>`` matches with an exact
+    ``strcmp`` against ``ggml_backend_dev_name`` (``test-backend-ops.cpp:11214``) — and GPU
+    backends **index-suffix** their names: the first CUDA device is ``CUDA0``, not ``CUDA``. So
+    ``-b CUDA`` matches nothing, and the harness then prints ``Skipping``, counts it as passed,
+    and **exits 0** having run zero cases. Every backend lane would go green while checking
+    nothing, exactly like ``grad -o GLU`` did.
+
+    So the real name is asked of ggml rather than assumed. ``CPU`` happens to be unsuffixed, which
+    is why this was invisible on the CPU lane.
+    """
+    registered = [
+        libs.ggml_base.ggml_backend_dev_name(libs.ggml.ggml_backend_dev_get(i)).decode()
+        for i in range(libs.ggml.ggml_backend_dev_count())
+    ]
+    found: dict[str, str] = {}
+    for device, prefix in _GGML_DEVICE_PREFIX.items():
+        for name in registered:
+            if name.startswith(prefix):
+                found.setdefault(device, name)
+    return found
+
+
+def available_devices(libs: _ffi.Libraries) -> set[str]:
+    """The devices this ggml build actually registered."""
+    return set(ggml_device_names(libs))
+
+
+@pytest.fixture(scope="session")
+def device(request: pytest.FixtureRequest, libs: _ffi.Libraries) -> str:
+    """The requested compute backend, skipping the test if this build has no such device."""
+    requested = request.config.getoption("--device")
+    if requested not in available_devices(libs):
+        pytest.skip(f"this build has no {requested} device")
+    return str(requested)
+
+
+@pytest.fixture(scope="session")
+def ggml_device(device: str, libs: _ffi.Libraries) -> str:
+    """The requested device under ggml's own name for it (``CUDA0``, not ``CUDA``)."""
+    return ggml_device_names(libs)[device]

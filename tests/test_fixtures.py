@@ -7,7 +7,7 @@ import subprocess
 import gguf
 import pytest
 
-from .fixtures import gen_tiny_llama
+from .fixtures import gen_tiny_llama, gen_tiny_moe
 
 TOKENS = [1, 5, 9, 42, 7, 3]
 
@@ -119,3 +119,38 @@ def test_no_model_binaries_are_committed() -> None:
         cwd=pathlib.Path(__file__).resolve().parents[1],
     )
     assert tracked.stdout.strip() == "", f"model binaries are tracked by git:\n{tracked.stdout}"
+
+
+def test_the_cache_key_does_not_depend_on_line_endings(tmp_path) -> None:
+    """Git hands Windows a CRLF working tree, and the key must not notice.
+
+    ``cache_key`` hashes the generator's source. Hashing the raw *bytes* makes the key depend on the
+    checkout's line endings — so the same generator hashes differently on Windows. S1-12's
+    ``reference_curve.json`` embeds that key as its identity, and the convergence gate duly failed
+    on ci-windows with "recorded against a different fixture", against a fixture that was
+    byte-for-byte the same model.
+
+    Simulate the CRLF checkout directly: hash the source, then hash a CRLF copy of it, and require
+    the same answer.
+    """
+    import hashlib
+    import pathlib
+    from importlib.metadata import version
+
+    for module in (gen_tiny_llama, gen_tiny_moe):
+        source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+        crlf = source.replace("\n", "\r\n")
+        assert crlf != source, "the fixture generator has no newlines?"
+
+        # What cache_key computes, but from the CRLF text — it must normalize back.
+        normalized = crlf.replace("\r\n", "\n")
+        payload = b"".join(
+            [
+                normalized.encode(),
+                repr(module.HPARAMS).encode(),
+                version("gguf").encode(),
+            ]
+        )
+        assert hashlib.sha256(payload).hexdigest()[:16] == module.cache_key(), (
+            f"{module.__name__}.cache_key() changes under a CRLF checkout"
+        )
