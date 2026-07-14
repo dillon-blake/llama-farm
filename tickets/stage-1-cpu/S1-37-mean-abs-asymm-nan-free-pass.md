@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: [S1-28]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/22
 ---
 
 # S1-37 — `mean_abs_asymm` divides by the signed sum, and NaN passes
