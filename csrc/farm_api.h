@@ -194,6 +194,24 @@ LL_API int32_t ll_opt_n_params(struct llama_context * ctx);
 // alike is not a run.
 LL_API int32_t ll_set_grad_checkpointing(struct llama_context * ctx, int32_t segment_len);
 
+// Chunked attention (S1-24) -- the kernel-free long-context path.
+//
+//   chunk_q: tokens per query chunk. 0 turns it off (the default, and the byte-identical path).
+//
+// The attention matrix is [n_kv, n_q, n_head]: QUADRATIC in context, and the reason long-context
+// training runs out of memory. Splitting the QUERY axis and softmaxing each chunk on its own
+// leaves only [n_kv, chunk_q, n_head] live at a time. Softmax is row-wise over the KEY axis, so
+// chunking queries is EXACT -- no running-max rescale, no new kernel, every op already on every
+// backend. (Chunking the KEY axis is what flash attention does, and that does need the rescale.)
+//
+// PAIR IT WITH ll_set_grad_checkpointing. On its own this shrinks the forward only. SOFT_MAX_BACK
+// reads the softmax's own output, so without recompute every chunk's P stays live from the forward
+// until the backward consumes it and the peak is unchanged -- chunking alone buys nothing. The two
+// are multiplicative, not alternatives. See docs/dev/chunked-attention.md for the measured table.
+//
+// Must be called before the first training step; changing it mid-run is LL_ERR_ALREADY_INIT.
+LL_API int32_t ll_set_chunked_attention(struct llama_context * ctx, int32_t chunk_q);
+
 // ---------------------------------------------------------------------------
 // GRPO (S1-16) -- the clipped importance-ratio surrogate, weighted by group advantage.
 // ---------------------------------------------------------------------------

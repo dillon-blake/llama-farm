@@ -51,6 +51,10 @@ struct ll_train_state {
     // ll_set_grad_checkpointing can refuse a mid-run change.
     int32_t grad_ckpt_segment = 0;
 
+    // Tokens per attention query chunk; 0 = off (S1-24). Same reason, and a harder one: chunking
+    // changes the graph's node COUNT, and ggml-opt indexes optimizer state by node index.
+    int32_t attn_chunk_q = 0;
+
     // The gradient accumulator of each param tensor, keyed by the tensor's name.
     //
     // Captured once, from inside the first training step, because that is the only window in
@@ -357,6 +361,31 @@ int32_t ll_set_grad_checkpointing(llama_context * ctx, int32_t segment_len) {
 
     ctx->set_grad_checkpointing((uint32_t)segment_len);
     it->second->grad_ckpt_segment = segment_len;
+
+    return LL_OK;
+}
+
+int32_t ll_set_chunked_attention(llama_context * ctx, int32_t chunk_q) {
+    if (ctx == nullptr || chunk_q < 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const auto it = train_states().find(ctx);
+    if (it == train_states().end()) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    // Same reason as ll_set_grad_checkpointing, and a harder one. Chunking changes the graph's
+    // TOPOLOGY -- it emits n_chunks softmaxes and n_chunks-1 concats per layer where the naive
+    // path emits one softmax -- and ggml-opt keys its gradient accumulators and AdamW momenta by
+    // NODE INDEX, from the first graph it is shown (BLUEPRINT D1). Change the chunk factor
+    // mid-run and one parameter's momentum lands on another. It would not crash.
+    if (it->second->n_tokens_seen > 0) {
+        return LL_ERR_ALREADY_INIT;
+    }
+
+    ctx->set_attn_chunk_q((uint32_t)chunk_q);
+    it->second->attn_chunk_q = chunk_q;
 
     return LL_OK;
 }

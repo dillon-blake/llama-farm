@@ -5,13 +5,41 @@ stage: 1
 track: shim
 size: M
 deps: ["S1-00", "S1-19", "S1-20"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/43
 ---
 
 # S1-24 — FA8: graph-level chunked-attention backward fallback (kernel-free long-context path)
 
-> **⚠️ The justification is stale and the implementation plan does not work. Re-scope before starting.**
+> **✅ DONE — re-scoped exactly as the banner below recommended, and the re-scope was right.**
+>
+> Measured (tiny fixture, peak compute buffer, one training step):
+>
+> | n_ctx | naive | chunk only | ckpt only | **ckpt+chunk** | vs naive |
+> |---:|---:|---:|---:|---:|---:|
+> | 1024 | 79 MiB | 66 MiB | 47 MiB | **44 MiB** | 1.80x |
+> | 2048 | 254 MiB | 196 MiB | 166 MiB | **128 MiB** | 1.98x |
+> | 4096 | 904 MiB | 652 MiB | 620 MiB | **416 MiB** | **2.17x** |
+>
+> The acceptance bar (>=2x at 4096) is met. Losses are **bit-identical** to naive; gradients agree
+> to ~1e-6. The `chunk only` column is the "you must pair this with S1-17" warning, measured.
+>
+> **Two things the plan did not anticipate**, both now carrying comments in the fork:
+> 1. **Slice the token axis BEFORE the permute.** Slicing the permuted `q` takes a view of a
+>    non-contiguous tensor and ggml's autodiff dies in `ggml_scale`'s `is_padded_1d` assert — inside
+>    the *LoRA scale's* backward, three ops from the mistake, naming a function you never called.
+> 2. **A balanced concat tree, not a left fold.** A fold's accumulators grow `1/C .. C/C` of the
+>    output and hand the saved memory straight back: peak got **worse** past 4 chunks.
+>
+> **NOT DONE:** softcap (gemma2) and ALiBi have no fixture. `attn_soft_cap` is set in *code* by
+> `models/gemma2.cpp`, not by a GGUF key, so it cannot be enabled on a llama-arch fixture. Both
+> branches are written and are chunk-invariant by construction (ALiBi's slope is a function of the
+> HEAD index; softcap is elementwise) — an argument, not a test, and recorded as one. A gemma2
+> fixture is the follow-up.
+>
+> ---
+>
+> **⚠️ The original justification was stale and the original plan did not work. (Kept for the record.)**
 >
 > **The memory figures are stale.** The "Why" quotes 128-192 GiB at 4k/8B on the grounds that the
 > attention matrices are live across *all layers simultaneously*. **S1-17 (gradient checkpointing)
