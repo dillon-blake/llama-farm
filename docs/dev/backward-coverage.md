@@ -143,6 +143,40 @@ Measured today, on the ops stage 1 still has to implement:
 Every one of those ops falls through `ggml_compute_backward`'s `default:` case, which is a
 `GGML_ABORT`. **Every one of them reports `OK` under `grad`.**
 
+### There is a THIRD way to check nothing: the op name matches no case at all
+
+`-o` filters on `ggml_op_desc(out)` — and for a `GGML_OP_GLU` node that returns the **variant**
+name, not `"GLU"` (`ggml.c:1398-1400`, exactly as `GGML_OP_UNARY` returns `"SILU"` rather than
+`"UNARY"`):
+
+```
+$ test-backend-ops grad -b CPU -o GLU
+Testing 1 devices
+Backend 1/1: CPU
+  Backend CPU: OK          # ...having matched ZERO cases and run nothing. Exit code 0.
+```
+
+`GLU` sat in `tests/project_ops.py` on the strength of that, checking nothing, until the guard was
+fixed. The real names are `SWIGLU`, `GEGLU`, `REGLU`, `GEGLU_ERF`, `GEGLU_QUICK`, `SWIGLU_OAI` —
+8 genuinely-checked cases each.
+
+### How to tell, mechanically
+
+The harness prints **two lines per case**: first whether the backend *supports* the op, then the
+**gradient verdict**. They are easy to confuse, and confusing them is what made the first version of
+the guard vacuous:
+
+```
+OUT_PROD(...): OK                        <- SUPPORT. Says nothing about gradients.
+OUT_PROD(...): not supported [OUT_PROD]  <- the GRADIENT verdict: no params, nothing compared.
+```
+
+`tests/test_backend_ops_grad.py` reads the second line (the odd-indexed ones — they are emitted
+back to back). An op counts as checked only if at least one case's gradient verdict is neither
+`not supported` nor `skipping`. And `test_the_vacuity_guard_can_actually_detect_vacuity` points the
+guard at `OUT_PROD` and `FLASH_ATTN_EXT` — both of which must keep reporting *zero* checked
+gradients, or the guard has stopped working and every op in the registry is being taken on trust.
+
 This matters beyond bookkeeping, because the remaining stage-1 kernel tickets (S1-21 … S1-31) each
 name *"`test-backend-ops grad -o <op>` green"* as an acceptance criterion — **and that criterion
 passes right now, with nothing implemented.** It cannot fail. A ticket closed against it would ship
@@ -318,7 +352,7 @@ that, so an op cannot join the list on the strength of a vacuous pass:
 | `CONCAT` | 46 | S1-29 |
 | `MUL_MAT_ID` | 840 | S1-25 |
 | `ADD_ID` | 64 | S1-25 |
-| `GLU` | 2 | S1-28 |
+| `SWIGLU` / `GEGLU` / `REGLU` / `GEGLU_ERF` / `GEGLU_QUICK` / `SWIGLU_OAI` | 8 each | S1-28 |
 | `SSM_CONV` | 75 | S1-30 |
 | `SSM_SCAN` | 10 | S1-31 |
 

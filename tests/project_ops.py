@@ -42,8 +42,19 @@ PROJECT_ADDED_OPS: tuple[str, ...] = (
     # MUL_MAT_ID needed a backward at all.
     "MUL_MAT_ID",
     "ADD_ID",
-    # S1-28 — all six GLU variants. SwiGLU is the FFN.
-    "GLU",
+    # S1-28 — the GLU family. SwiGLU is the FFN.
+    #
+    # NOT "GLU". `-o` filters on ggml_op_desc(out), and for a GGML_OP_GLU node that returns the
+    # *variant* name, not "GLU" (ggml.c:1398-1400 — same as GGML_OP_UNARY returning "SILU"). So
+    # `grad -o GLU` matches ZERO cases: it runs nothing, prints "Backend CPU: OK", and exits 0.
+    # It sat in this list checking nothing until test_every_op_reports_real_cases was fixed to
+    # parse the GRADIENT verdict rather than the support line.
+    "SWIGLU",
+    "GEGLU",
+    "REGLU",
+    "GEGLU_ERF",
+    "GEGLU_QUICK",
+    "SWIGLU_OAI",
     # S1-30 / S1-31 — Mamba.
     "SSM_CONV",
     "SSM_SCAN",
