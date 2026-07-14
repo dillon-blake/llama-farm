@@ -114,9 +114,26 @@ def load_model(libs: _ffi.Libraries):  # noqa: ANN201 - a factory, closed over t
 
 DEVICES = ("cpu", "metal", "cuda", "vulkan")
 
-# What ggml calls each device, so `--device metal` can ask ggml whether this build has one rather
-# than guessing from the platform.
-_GGML_DEVICE_PREFIX = {"cpu": "CPU", "metal": "Metal", "cuda": "CUDA", "vulkan": "Vulkan"}
+# What ggml ACTUALLY calls each device -- which is not what you would guess, and guessing wrong is
+# silent. Read out of the backends themselves:
+#
+#   CPU     "CPU"
+#   Metal   "MTL0"      <-- NOT "Metal". ggml-metal-device.m:858 formats it as "MTL%d".
+#   CUDA    "CUDA0"     ggml-cuda.cu:5178, GGML_CUDA_NAME + index. A HIP build says "ROCm0" and a
+#                       MUSA build "MUSA0" (ggml-cuda.h:11-17), so both are matched here.
+#   Vulkan  "Vulkan0"   ggml-vulkan.cpp:6459, GGML_VK_NAME + index.
+#
+# The index suffix and the MTL/Metal mismatch both matter, because `test-backend-ops -b <name>` is
+# an exact strcmp against this string (test-backend-ops.cpp:11214). A name that matches nothing
+# makes the harness print "Skipping", count it as passed, and EXIT 0 having run no tests at all --
+# a whole backend lane green while checking nothing. S2-01's ticket specifies `-b Metal`, which is
+# exactly that bug.
+_GGML_DEVICE_PREFIXES = {
+    "cpu": ("CPU",),
+    "metal": ("MTL",),
+    "cuda": ("CUDA", "ROCm", "MUSA"),
+    "vulkan": ("Vulkan",),
+}
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -147,9 +164,9 @@ def ggml_device_names(libs: _ffi.Libraries) -> dict[str, str]:
         for i in range(libs.ggml.ggml_backend_dev_count())
     ]
     found: dict[str, str] = {}
-    for device, prefix in _GGML_DEVICE_PREFIX.items():
+    for device, prefixes in _GGML_DEVICE_PREFIXES.items():
         for name in registered:
-            if name.startswith(prefix):
+            if name.startswith(prefixes):
                 found.setdefault(device, name)
     return found
 

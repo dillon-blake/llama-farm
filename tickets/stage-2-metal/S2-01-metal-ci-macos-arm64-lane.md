@@ -5,11 +5,35 @@ stage: 2
 track: infra
 size: M
 deps: ["S0-07"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/44
 ---
 
 # S2-01 — Metal CI: GitHub Actions lane on macOS arm64 (MODE_GRAD + e2e)
+
+> **⚠️ THE TICKET'S OWN `-b Metal` WOULD HAVE MADE THIS LANE GREEN WHILE RUNNING ZERO TESTS.**
+>
+> `test-backend-ops` filters devices with an **exact `strcmp`** against `ggml_backend_dev_name`
+> (`test-backend-ops.cpp:11214`), and **Metal registers itself as `MTL0`** —
+> `ggml-metal-device.m:858` formats it as `"MTL%d"`. Not `Metal`. The ticket specifies `-b Metal` in
+> three places.
+>
+> A name that matches nothing makes the harness print `Skipping`, **count it as passed, and exit 0**.
+> Demonstrated: `test-backend-ops test -b NOPE0 -o RMS_NORM` prints `1/1 backends passed`, `OK`, and
+> returns **0**.
+>
+> So the lane **resolves** the device name from the binary's own output and never hardcodes it, and
+> every GPU step asserts the device actually reached a verdict. Note the guard is a *positive*
+> assertion, not a `grep Skipping` — with `-b MTL0` the CPU device is skipped **legitimately** and
+> says so, so a naive grep fails every healthy run.
+>
+> **S3-01 and S4-01 inherit this**: `CUDA0` (or `ROCm0`/`MUSA0`) and `Vulkan0`. It also fixed a live
+> bug in S1-12's `conftest`, which mapped `metal -> "Metal"` and would have reported "no metal
+> device" *on an actual Mac*.
+>
+> **One deliberate deviation:** the ticket's `metal-changed-ops.sh` (a changed-files -> op-list
+> mapper with its own default list) is **not** implemented. That is a *second op registry*, and a
+> second op registry is exactly the drift S1-12 had to fix. One registry: `tests/project_ops.py`.
 
 **One-line outcome:** `ci-metal.yml` exists: a per-PR quick lane plus a nightly detailed lane on
 macOS arm64 runners building `GGML_METAL=ON`, running `test-backend-ops` on the Metal backend

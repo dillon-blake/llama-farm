@@ -1,0 +1,298 @@
+# ci-metal — the Metal backend lane (S2-01).
+#
+# Two tiers, the same shape as ci-cpu (S0-07):
+#
+#   per-PR   quick. Build with GGML_METAL=ON, probe the device, run MODE_GRAD for the ops in
+#            tests/project_ops.py on Metal. Budget: keep it under 20 minutes.
+#   nightly  detailed. The full test-backend-ops sweep in both modes, plus the S1-12 convergence
+#            gate with --device metal, plus the GPU-vs-CPU fallback report.
+#
+# Check names are `ci-metal / build`, `ci-metal / grad`, `ci-metal / e2e` — the convention S0-07
+# established, so branch protection can require them by name.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# THE ONE THING TO KNOW BEFORE EDITING: `-b Metal` MATCHES NOTHING.
+#
+# test-backend-ops filters devices with an exact strcmp against ggml_backend_dev_name
+# (test-backend-ops.cpp:11214), and Metal registers itself as "MTL0" — ggml-metal-device.m:858
+# formats it as "MTL%d". Not "Metal". Pass a name that matches nothing and the harness prints
+# "Skipping", counts it as passed, and EXITS 0 having run no tests whatsoever: a fully green Metal
+# lane that checked nothing at all.
+#
+# So the device name is RESOLVED from the binary's own output ("Backend i/N: <name>") and never
+# hardcoded, and every GPU step asserts it did not skip. tests/test_backend_ops_grad.py does both
+# (it takes --device metal and asks ggml for the real name), which is why this workflow drives it
+# through pytest instead of shelling out to test-backend-ops with a guessed -b.
+#
+# The same trap is waiting for CUDA ("CUDA0", or "ROCm0"/"MUSA0") and Vulkan ("Vulkan0") in
+# S3-01/S4-01. See docs/dev/ci-metal.md.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+#
+# The scheduler note (ROADMAP §11): until Stage 2's kernels are complete, ggml_backend_sched runs
+# the gaps on the CPU, so training WORKS on Metal from day one at reduced speed. That is correct
+# behaviour, and it is also a way to ship a green GPU lane that is barely touching the GPU. Hence:
+# a fallback does not fail the build, but a run with NO REPORT does. S2-10 flips dense-LoRA ops to
+# fallback-forbidden once the kernels land.
+
+name: ci-metal
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 04:41 UTC daily. Off the hour, and off ci-cpu's slot, so the two do not queue behind each other.
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label. Swap to a self-hosted Apple Silicon box if the hosted GPU is not enough (S0-08 playbook)."
+        type: string
+        default: "macos-15"
+
+concurrency:
+  group: ci-metal-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # GGML_NATIVE=OFF for the same reason as ci-cpu: this lane is an ORACLE, and an oracle compiled
+  # differently on different days is not an oracle.
+  CMAKE_ARGS: "-DGGML_METAL=ON -DGGML_NATIVE=OFF"
+
+jobs:
+  build:
+    name: build
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    outputs:
+      device: ${{ steps.probe.outputs.device }}
+      usable: ${{ steps.probe.outputs.usable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-metal
+          max-size: 500M
+
+      - name: Build the wheel (GGML_METAL=ON)
+        run: |
+          pip install scikit-build-core cmake ninja pytest
+          pip install -e . --no-build-isolation
+          pip install -e vendor/llama.cpp/gguf-py
+
+      - name: Build test-backend-ops
+        run: |
+          cmake -S vendor/llama.cpp -B build/vendor-tests \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_METAL=ON -DGGML_NATIVE=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/vendor-tests --target test-backend-ops -j 4
+
+      # The probe. GitHub's hosted macOS arm64 runners expose Metal through a PARAVIRTUAL GPU whose
+      # capability set is not guaranteed to match real Apple Silicon: every Stage-2 kernel gates on
+      # has_simdgroup_reduction / has_simdgroup_mm in supports_op (ggml-metal-device.m:1051+), and
+      # the backend logs both at init (:901-902).
+      #
+      # If the device is missing or lacks them, SKIP WITH A NOTICE — not a failure. A hosted-runner
+      # capability regression should be visible, not red, and the work then moves to a self-hosted
+      # box via the `runner` input.
+      - name: Probe the Metal device
+        id: probe
+        run: |
+          set -o pipefail
+          ./build/vendor-tests/bin/test-backend-ops support 2>&1 | tee probe.txt || true
+
+          # Resolve the device name from the binary's own output. NEVER hardcode it: Metal calls
+          # itself MTL0, and a wrong name silently runs nothing (see the header).
+          DEVICE=$(grep -oE '^Backend [0-9]+/[0-9]+: [^ ]+' probe.txt | awk '{print $3}' | grep -v '^CPU$' | head -1 || true)
+
+          if [ -z "$DEVICE" ]; then
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "device=" >> "$GITHUB_OUTPUT"
+            {
+              echo "## ⚠️ No GPU device — Metal steps skipped"
+              echo ""
+              echo "\`test-backend-ops support\` registered no non-CPU device on this runner."
+              echo "This is a **skip, not a failure**: it means the hosted runner's GPU is gone."
+              echo "Re-run with the \`runner\` input pointed at a self-hosted Apple Silicon box."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Resolved GPU device: $DEVICE"
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+
+          # The two capability lines every Stage-2 kernel gates on.
+          grep -iE "simdgroup reduction|simdgroup matrix" probe.txt | tee caps.txt || true
+
+          if grep -qiE "simdgroup reduction *= *(0|false|no)" caps.txt \
+             || grep -qiE "simdgroup matrix[^=]*= *(0|false|no)" caps.txt; then
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## ⚠️ Paravirtual GPU lacks simdgroup support — Metal steps skipped"
+              echo ""
+              echo '```'
+              cat caps.txt
+              echo '```'
+              echo ""
+              echo "Every Stage-2 kernel gates on these in \`supports_op\`. Skipping rather than"
+              echo "failing: this is a **runner capability** problem, not a code problem."
+              echo "Re-run with \`runner\` set to a self-hosted Apple Silicon box (S0-08 playbook)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metal-probe
+          path: |
+            probe.txt
+            caps.txt
+          if-no-files-found: warn
+
+  # MODE_GRAD on Metal for the ops in tests/project_ops.py — the SAME registry ci-cpu uses.
+  #
+  # The ticket asked for a changed-files -> op-list mapper. It is deliberately not here: that is a
+  # SECOND op registry, and a second op registry is precisely the drift S1-12 had to fix (CI's
+  # inline list still named eight ops when the project had thirteen, and the MoE and Mamba ops were
+  # not being grad-checked at all, and CI was green). One registry. It is 18 ops; it is fast enough.
+  grad:
+    name: grad
+    needs: build
+    if: needs.build.outputs.usable == 'true'
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-metal
+          max-size: 500M
+
+      - name: Install
+        run: |
+          pip install scikit-build-core cmake ninja pytest
+          pip install -e . --no-build-isolation
+          pip install -e vendor/llama.cpp/gguf-py
+          cmake -S vendor/llama.cpp -B build/vendor-tests \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_METAL=ON -DGGML_NATIVE=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/vendor-tests --target test-backend-ops -j 4
+
+      # Forward parity against the CPU oracle (ADR-0002), for the same op set.
+      - name: test-backend-ops — test (Metal, forward parity)
+        env:
+          DEVICE: ${{ needs.build.outputs.device }}
+        run: |
+          set -o pipefail
+          OPS=$(python -c "import sys; sys.path.insert(0,'tests'); from project_ops import PROJECT_ADDED_OPS; print(','.join(PROJECT_ADDED_OPS))")
+          echo "device=$DEVICE ops=$OPS"
+          ./build/vendor-tests/bin/test-backend-ops test -b "$DEVICE" -o "$OPS" 2>&1 | tee test.txt
+
+          # `-b` is an exact strcmp; a name that matches nothing runs NOTHING and still exits 0.
+          #
+          # Do NOT grep for "Skipping": with `-b MTL0` the CPU device is skipped LEGITIMATELY and
+          # says so (test-backend-ops.cpp:11213-11217), so that guard fires on every healthy run.
+          # Assert the positive instead: the device we asked for reached a verdict, which it only
+          # does if it actually ran.
+          if ! grep -q "Backend $DEVICE:" test.txt; then
+            echo "::error::test-backend-ops never ran on '$DEVICE' — the -b name matched no device, so the run checked NOTHING. See docs/dev/ci-metal.md."
+            exit 1
+          fi
+
+      # MODE_GRAD, through the pytest wrapper, which owns the vacuity guard: an op whose cases all
+      # bail out reports OK having compared zero gradients. See docs/dev/backward-coverage.md.
+      - name: test-backend-ops — grad (Metal, MODE_GRAD)
+        env:
+          TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
+        run: pytest tests/test_backend_ops_grad.py --device metal -v
+
+  e2e:
+    name: e2e
+    needs: build
+    if: needs.build.outputs.usable == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ci-metal
+          max-size: 500M
+
+      - name: Install
+        run: |
+          pip install scikit-build-core cmake ninja pytest
+          pip install -e . --no-build-isolation
+          pip install -e vendor/llama.cpp/gguf-py
+          cmake -S vendor/llama.cpp -B build/vendor-tests \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_METAL=ON -DGGML_NATIVE=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/vendor-tests --target test-backend-ops -j 4
+
+      - name: test-backend-ops — full sweep (Metal)
+        env:
+          DEVICE: ${{ needs.build.outputs.device }}
+        run: |
+          set -o pipefail
+          ./build/vendor-tests/bin/test-backend-ops test -b "$DEVICE" 2>&1 | tee sweep.txt
+          # The positive assertion, not a "Skipping" grep — the CPU device is skipped legitimately
+          # whenever -b names something else. See the note in the `grad` job.
+          if ! grep -q "Backend $DEVICE:" sweep.txt; then
+            echo "::error::the sweep never ran on '$DEVICE' — it checked NOTHING."
+            exit 1
+          fi
+
+      # The S1-12 convergence gate, on Metal. `--device metal` resolves the real device name and
+      # SKIPS cleanly if the build has none — it never quietly runs on the CPU and reports success.
+      - name: Convergence gate (--device metal)
+        run: pytest tests/test_convergence.py --device metal -v
+
+      # The auditability requirement. A fallback does not fail the build; a MISSING REPORT does.
+      - name: GPU-vs-CPU fallback report
+        env:
+          DEVICE: ${{ needs.build.outputs.device }}
+          GGML_SCHED_DEBUG: "2"
+        run: |
+          set -o pipefail
+          pytest tests/test_convergence.py::test_one_step_matches_the_reference_exactly \
+            --device metal -s 2>&1 | tee sched.txt
+
+          python .github/scripts/sched_fallback_report.py \
+            --gpu "$DEVICE" --out report.md --json report.json < sched.txt
+
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metal-fallback-report
+          path: |
+            report.md
+            report.json
+          if-no-files-found: error   # a run without the report is a failed run
