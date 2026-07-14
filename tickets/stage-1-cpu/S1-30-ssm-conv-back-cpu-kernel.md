@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S1-29"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/24
 ---
 
 # S1-30 — SSM: SSM_CONV_BACK CPU
