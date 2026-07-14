@@ -6,10 +6,14 @@ backward, AdamW — computes the *right* thing, not merely a thing whose loss fa
 Run it:
 
 ```bash
-pytest tests/test_convergence.py                 # per-PR: the reference audit, one step, all gradients
-pytest tests/test_convergence.py -m slow         # nightly: the full 40-step curves
+pytest tests/test_convergence.py                 # the gate: reference audit, one step, 40-step curves
+pytest tests/test_convergence_variants.py        # the same gate, off the recorded config (S1-38)
+pytest tests/test_determinism.py                 # thread-count bit-identity
 pytest tests/test_convergence.py --device cuda   # a backend lane (S2-01/S3-01/S4-01)
 ```
+
+(Nothing here is `slow`-marked: the three files together run in ~13 s, and a gate that only runs
+nightly tells you which of the day's twenty PRs broke it.)
 
 Nothing here needs `torch`. The PEFT curve is **recorded once** and committed as
 `reference_curve.json`; the gate only reads it.
@@ -53,7 +57,24 @@ enough to hide a real gradient bug, and that is the exact class of bug this proj
 
 The margins exist for **one** reason: a different host's SIMD width changes the float32 reduction
 order (ADR-0002), and that cannot be measured from here. It is *not* thread count — the curve is
-**bit-identical across 1, 2 and 4 threads** on this host.
+**bit-identical across 1, 2 and 4 threads** on this host, and since S1-38 that claim is asserted
+(`tests/test_determinism.py`), not just stated.
+
+## Off the recorded config: the variants (S1-38)
+
+The recorded config has three built-in coincidences — `alpha == rank` (effective scale exactly
+1.0), `weight_decay == 0`, and a single rank — that make it numerically blind to a dropped or
+doubled `alpha/rank` factor, an ignored `user_scale`, an unplumbed decay term, and rank-dependent
+shape errors. `tests/test_convergence_variants.py` re-runs the gate with one knob at a time moved
+off the recorded value (`RunSpec` in `config.py`); each variant gets the one-step all-gradients
+check plus a curve band, and must prove its own separation from the recorded trajectory so it
+cannot silently become decorative.
+
+One measured surprise worth knowing: at effective scale 2.5 the f32-vs-f64 divergence compounds to
+**5.7e-04 by step 35 with exactly-correct gradients** (verified at 6.2e-06 by the one-step check).
+Trajectory conditioning depends on the config, which is why each variant's band is its own
+measurement rather than `CURVE_TOL`, and why the sharp per-variant claim rests on the one-step
+gradients — the same division of labor as the Q8_0 case.
 
 **Q8_0 is looser on purpose and for a different reason.** Quantizing the base perturbs the logits,
 so a Q8_0 run is a genuinely different model whose trajectory diverges in the small; PEFT cannot

@@ -26,22 +26,15 @@ been wide enough to hide a real gradient bug; it turns out no such band is neede
 
 from __future__ import annotations
 
-import ctypes
 import json
 import pathlib
 
-import gguf
 import numpy as np
-import pytest
 
-from learning_llamas import Model, _ffi, create_zero_adapter, enumerate_targets
-from learning_llamas.adapter import _index_by_name
-from learning_llamas.data import MaskedSample
-from learning_llamas.train import SFTConfig, TrainConfig, Trainer, train_sft
-from learning_llamas.train.loop import Batch
+from learning_llamas import Model, create_zero_adapter
 
 from . import reference_llama as ref
-from .convergence import config
+from .convergence import config, harness
 from .fixtures import gen_tiny_llama
 
 # ---------------------------------------------------------------------------
@@ -73,113 +66,12 @@ QUANT_WINDOW_TOL = 0.03
 #   observed: 2.0e-06 worst, over all 28 tensors.
 GRAD_TOL = 1e-3
 
-N_CTX = 64
 WINDOWS = ((0, 10), (10, 25), (25, 40))
 
-
-# ---------------------------------------------------------------------------
-# Shared setup
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def conv_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    return config.dataset(gen_tiny_llama.HPARAMS.n_vocab)
-
-
-def _samples(conv_data) -> list[MaskedSample]:  # noqa: ANN001
-    """The dataset as S1-05 wants it.
-
-    ``to_batch`` re-derives the targets by shifting, so a sample carries ``SEQ_LEN + 1`` tokens and
-    its weights are shifted onto the *prediction*: ``weights[i]`` grades the guess at
-    ``tokens[i + 1]``. Handing it the already-shifted arrays would train the model one step out of
-    phase, and the loss would still fall.
-    """
-    tokens, targets, weights = conv_data
-    return [
-        MaskedSample(
-            tokens=[int(t) for t in tokens[i]] + [int(targets[i][-1])],
-            weights=[0.0] + [float(w) for w in weights[i]],
-        )
-        for i in range(config.N_SAMPLES)
-    ]
-
-
-def _sft_config() -> SFTConfig:
-    return SFTConfig(
-        lr=config.LR,
-        betas=config.BETAS,
-        eps=config.EPS,
-        weight_decay=config.WEIGHT_DECAY,
-        seq_len=config.SEQ_LEN,
-        pad_id=config.PAD_ID,
-        epochs=config.EPOCHS,
-        shuffle=config.SHUFFLE,
-        schedule="constant",
-    )
-
-
-def _load_loras(base_path: pathlib.Path, adapter_path: pathlib.Path) -> dict[str, ref.Lora]:
-    """The same A/B the GGUF adapter holds, as float64 — so both sides start identical."""
-    reader = gguf.GGUFReader(str(adapter_path), "r")
-    data = {t.name: np.array(t.data, dtype=np.float64) for t in reader.tensors}
-    return {
-        t.name: ref.Lora(
-            a=data[f"{t.name}.lora_a"].copy(),
-            b=data[f"{t.name}.lora_b"].copy(),
-        )
-        for t in enumerate_targets(base_path)
-    }
-
-
-def _reference_curve(base_path: pathlib.Path, adapter_path: pathlib.Path, conv_data) -> list[float]:  # noqa: ANN001
-    """Run the float64 reference for the same 40 steps: forward, backward, AdamW."""
-    tokens, targets, weights = conv_data
-    base, hp = ref.load_model(base_path)
-    loras = _load_loras(base_path, adapter_path)
-    scale = ref.lora_scale(config.ALPHA, config.RANK, 1.0)
-
-    params: dict[str, np.ndarray] = {}
-    for name, lora in loras.items():
-        params[f"{name}.lora_a"] = lora.a
-        params[f"{name}.lora_b"] = lora.b
-
-    opt = ref.AdamW(
-        lr=config.LR, betas=config.BETAS, eps=config.EPS, weight_decay=config.WEIGHT_DECAY
-    )
-
-    curve: list[float] = []
-    for _epoch in range(config.EPOCHS):
-        for i in range(config.N_SAMPLES):
-            logits, cache = ref.forward(base, hp, loras, scale, tokens[i])
-            loss, dlogits = ref.loss_from_logits(logits, targets[i], weights[i])
-            grads = ref.backward(base, hp, loras, scale, cache, dlogits)
-            opt.step(params, grads)
-            curve.append(loss)
-
-    return curve
-
-
-def _train(
-    libs: _ffi.Libraries, base_path: pathlib.Path, adapter_path: pathlib.Path, conv_data
-) -> list[float]:  # noqa: ANN001
-    create_zero_adapter(
-        base_path, adapter_path, r=config.RANK, alpha=config.ALPHA, seed=config.ADAPTER_SEED
-    )
-    model = Model(
-        base_path,
-        libs=libs,
-        n_ctx=N_CTX,
-        n_ubatch=config.SEQ_LEN,
-        training=True,
-        n_threads=2,
-    )
-    try:
-        model.attach_adapter(adapter_path, scale=1.0)
-        result = train_sft(libs, model, _samples(conv_data), _sft_config())
-        return [step.loss for step in result.steps]
-    finally:
-        model.close()
+# The run/reference helpers live in tests/convergence/harness.py, shared with the off-unit
+# variants (test_convergence_variants.py) and the determinism check (test_determinism.py). The
+# `conv_data` fixture is in conftest.py for the same reason. Everything here runs the RECORDED
+# spec — the one reference_curve.json holds.
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +98,7 @@ def test_the_reference_backward_is_itself_correct(tiny_f32, tmp_path, conv_data)
     )
 
     base, hp = ref.load_model(tiny_f32)
-    loras = _load_loras(tiny_f32, adapter)
+    loras = harness.load_loras(tiny_f32, adapter)
     scale = ref.lora_scale(config.ALPHA, config.RANK, 1.0)
 
     # B is zero at init, and dA is proportional to B — so with a fresh adapter every dA is exactly
@@ -258,75 +150,22 @@ def test_one_step_matches_the_reference_exactly(tiny_f32, tmp_path, libs, conv_d
     tensor, and a failure names the tensor.
 
     ``lr`` is 1e-30 so the optimizer cannot move the weights before the gradient is read back.
+    (The mechanics live in ``harness.one_step_grad_errors``, shared with the off-unit variants.)
     """
-    tokens, targets, weights = conv_data
-    adapter = tmp_path / "a.gguf"
-    create_zero_adapter(
-        tiny_f32, adapter, r=config.RANK, alpha=config.ALPHA, seed=config.ADAPTER_SEED
+    loss_rel, by_tensor = harness.one_step_grad_errors(
+        libs, tiny_f32, tmp_path / "a.gguf", conv_data
     )
 
-    base, hp = ref.load_model(tiny_f32)
-    loras = _load_loras(tiny_f32, adapter)
-    scale = ref.lora_scale(config.ALPHA, config.RANK, 1.0)
-
-    model = Model(
-        tiny_f32, libs=libs, n_ctx=N_CTX, n_ubatch=config.SEQ_LEN, training=True, n_threads=2
+    assert loss_rel < 1e-5, (
+        f"the training loss disagrees with the float64 reference by {loss_rel:.2e} relative"
     )
-    try:
-        model.attach_adapter(adapter, scale=1.0)
 
-        # Perturb B on BOTH sides identically, so the dA path is live here too.
-        rng = np.random.default_rng(11)
-        index = _index_by_name(libs, model.adapter)
-        for name, lora in loras.items():
-            lora.b += rng.normal(0.0, 0.02, size=lora.b.shape)
-            flat = np.ascontiguousarray(lora.b.astype(np.float32).reshape(-1))
-            n = libs.farm.ll_adapter_set(
-                model.adapter,
-                index[name],
-                True,
-                flat.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                flat.size,
-            )
-            assert n == flat.size
-
-        with Trainer(libs, model, TrainConfig(lr=1e-30)) as trainer:
-            metrics = trainer.step(
-                Batch(
-                    tokens=[int(t) for t in tokens[0]],
-                    targets=[int(t) for t in targets[0]],
-                    weights=[float(w) for w in weights[0]],
-                )
-            )
-
-            logits, cache = ref.forward(base, hp, loras, scale, tokens[0])
-            loss, dlogits = ref.loss_from_logits(logits, targets[0], weights[0])
-            grads = ref.backward(base, hp, loras, scale, cache, dlogits)
-
-            assert abs(metrics.loss - loss) / abs(loss) < 1e-5, (
-                f"the training loss disagrees with the float64 reference: "
-                f"{metrics.loss:.10f} vs {loss:.10f}"
-            )
-
-            for name in loras:
-                for is_b in (False, True):
-                    expected = grads[f"{name}.lora_{'b' if is_b else 'a'}"]
-                    buf = (ctypes.c_float * expected.size)()
-                    got = libs.farm.ll_debug_grad(
-                        model.ctx, name.encode(), is_b, buf, expected.size
-                    )
-                    assert got == expected.size, f"ll_debug_grad({name}) returned {got}"
-
-                    actual = np.frombuffer(buf, dtype=np.float32, count=got).reshape(expected.shape)
-                    rel = np.abs(actual.astype(np.float64) - expected).max() / max(
-                        np.abs(expected).max(), 1e-30
-                    )
-                    assert rel < GRAD_TOL, (
-                        f"{name}.lora_{'b' if is_b else 'a'}: ggml's gradient disagrees with the "
-                        f"float64 reference by {rel:.2e} (relative to the tensor's largest element)"
-                    )
-    finally:
-        model.close()
+    assert len(by_tensor) == 28, f"expected 28 LoRA tensors, compared {len(by_tensor)}"
+    worst = max(by_tensor, key=by_tensor.__getitem__)
+    assert by_tensor[worst] < GRAD_TOL, (
+        f"{worst}: ggml's gradient disagrees with the float64 reference by "
+        f"{by_tensor[worst]:.2e} (relative to the tensor's largest element)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +188,8 @@ def test_the_loss_curve_matches_the_float64_reference(tiny_f32, tmp_path, libs, 
     and nowhere else.
     """
     adapter = tmp_path / "a.gguf"
-    got = _train(libs, tiny_f32, adapter, conv_data)
-    want = _reference_curve(tiny_f32, adapter, conv_data)
+    got = harness.train(libs, tiny_f32, adapter, conv_data)
+    want = harness.reference_curve(tiny_f32, adapter, conv_data)
 
     assert len(got) == len(want) == config.EPOCHS * config.N_SAMPLES
 
@@ -383,7 +222,7 @@ def test_the_loss_curve_matches_the_recorded_peft_reference(
     )
 
     adapter = tmp_path / "a.gguf"
-    got = np.array(_train(libs, tiny_f32, adapter, conv_data))
+    got = np.array(harness.train(libs, tiny_f32, adapter, conv_data))
     want = np.array(recorded["curve"])
 
     diff = np.abs(got - want)
@@ -406,13 +245,13 @@ def test_a_quantized_base_trains_within_its_band(tiny_q8_0, tmp_path, libs, conv
     base trains along the *same trajectory*, not that it lands on the same number.
     """
     adapter = tmp_path / "a.gguf"
-    got = np.array(_train(libs, tiny_q8_0, adapter, conv_data))
+    got = np.array(harness.train(libs, tiny_q8_0, adapter, conv_data))
 
     f32_path, _ = gen_tiny_llama.build("f32", tiny_q8_0.parent)
     create_zero_adapter(
         f32_path, adapter, r=config.RANK, alpha=config.ALPHA, seed=config.ADAPTER_SEED
     )
-    want = np.array(_reference_curve(f32_path, adapter, conv_data))
+    want = np.array(harness.reference_curve(f32_path, adapter, conv_data))
 
     assert np.abs(got - want).max() < QUANT_STEP_TOL, (
         f"the Q8_0 curve left its per-step band: worst |diff| {np.abs(got - want).max():.3e}"
@@ -453,7 +292,7 @@ def test_the_report_records_the_device_it_actually_ran_on(
     report_dir.mkdir(exist_ok=True)
 
     adapter = tmp_path / "a.gguf"
-    curve = _train(libs, tiny_f32, adapter, conv_data)
+    curve = harness.train(libs, tiny_f32, adapter, conv_data)
 
     report = {
         "device_requested": device,
@@ -485,7 +324,7 @@ def test_inference_and_training_differ_only_by_the_f16_kv_cache(tiny_f32, libs, 
     tokens, _, _ = conv_data
     base, hp = ref.load_model(tiny_f32)
 
-    model = Model(tiny_f32, libs=libs, n_ctx=N_CTX, n_ubatch=config.SEQ_LEN, n_threads=2)
+    model = Model(tiny_f32, libs=libs, n_ctx=harness.N_CTX, n_ubatch=config.SEQ_LEN, n_threads=2)
     try:
         inference = np.asarray(model.logits([int(t) for t in tokens[0]]), dtype=np.float64)
     finally:

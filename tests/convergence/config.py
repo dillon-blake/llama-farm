@@ -12,6 +12,7 @@ dataset or config cannot silently be compared against.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -69,6 +70,37 @@ GGUF_TO_HF = {
 HF_TARGET_MODULES = sorted(GGUF_TO_HF.values())
 
 CURVE_PATH = pathlib.Path(__file__).parent / "reference_curve.json"
+
+
+@dataclasses.dataclass(frozen=True)
+class RunSpec:
+    """One convergence run's adapter and optimizer parameters.
+
+    The module constants above describe *the recorded run* — the one ``reference_curve.json``
+    holds, whose ``alpha == rank`` and ``weight_decay == 0`` were chosen to make the PEFT
+    comparison clean. Those same choices make the recorded run numerically blind to a dropped
+    ``alpha/rank`` factor and to the decay term, so ``tests/test_convergence_variants.py`` re-runs
+    the gate with one parameter at a time moved off the recorded value.
+
+    The dataset is deliberately **not** part of a spec: every variant trains on the same committed
+    dataset, so the only thing that moved is the parameter under test.
+
+    Defaults are exactly the recorded run.
+    """
+
+    rank: int = RANK
+    alpha: float = float(ALPHA)
+    user_scale: float = 1.0
+    lr: float = LR
+    betas: tuple[float, float] = BETAS
+    eps: float = EPS
+    weight_decay: float = WEIGHT_DECAY
+    epochs: int = EPOCHS
+    adapter_seed: int = ADAPTER_SEED
+    grad_accum: int = 1
+
+
+RECORDED = RunSpec()
 
 
 # ---------------------------------------------------------------------------

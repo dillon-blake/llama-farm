@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import pathlib
 
+import numpy as np
 import pytest
 
 from learning_llamas import Model, _ffi, libraries
 
+from .convergence import config as convergence_config
 from .fixtures import gen_tiny_llama
 
 CACHE_DIR = pathlib.Path(__file__).parent / ".fixtures"
@@ -36,6 +38,12 @@ def libs() -> _ffi.Libraries:
 def fixture_cache_dir() -> pathlib.Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return CACHE_DIR
+
+
+@pytest.fixture(scope="session")
+def conv_data() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The committed convergence dataset — shared by the gate, its variants, and determinism."""
+    return convergence_config.dataset(gen_tiny_llama.HPARAMS.n_vocab)
 
 
 @pytest.fixture(scope="session")
