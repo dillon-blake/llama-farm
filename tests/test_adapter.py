@@ -49,9 +49,13 @@ def base_gguf(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
         writer.add_tensor(f"blk.{il}.ffn_up.weight", f32(N_FF, N_EMBD))  # ne = [n_embd, n_ff]
         writer.add_tensor(f"blk.{il}.ffn_gate.weight", f32(N_FF, N_EMBD))
         writer.add_tensor(f"blk.{il}.ffn_down.weight", f32(N_EMBD, N_FF))  # ne = [n_ff, n_embd]
-        # Norms are not LoRA targets (the loader ignores norm vectors), and the MoE expert
-        # tensor must NOT be swept up by a naive `endswith("ffn_down.weight")` match.
+        # Norms are not LoRA targets (the loader ignores norm vectors).
         writer.add_tensor(f"blk.{il}.attn_norm.weight", f32(N_EMBD))
+
+        # A MoE expert stack. It IS a target now (S1-28): build_lora_mm_id puts the trainable A/B
+        # tensors inside the expert operand, which is the whole reason MUL_MAT_ID needed a backward.
+        # It is kept here 2-D on purpose -- module matching must key on the module NAME, not on a
+        # `endswith("ffn_down.weight")` substring that would confuse it with the dense ffn_down.
         writer.add_tensor(f"blk.{il}.ffn_down_exps.weight", f32(N_EMBD, N_FF))
 
     writer.write_header_to_file()
@@ -76,15 +80,18 @@ def test_enumerate_returns_exactly_the_default_preset(base_gguf: pathlib.Path) -
             "ffn_up",
             "ffn_gate",
             "ffn_down",
+            "ffn_down_exps",
         )
     }
     assert names == expected
 
-    # Norms, the LM head, the embedding table, and the MoE expert tensor are all excluded.
+    # Norms, the LM head and the embedding table are excluded. The MoE expert stack is NOT: as of
+    # S1-28 it is a first-class target, because build_lora_mm_id puts the trainable A/B tensors
+    # inside the expert operand and a Mixtral cannot be LoRA-tuned without them.
     assert not any("norm" in n for n in names)
-    assert not any("_exps" in n for n in names)
     assert "output.weight" not in names
     assert "token_embd.weight" not in names
+    assert any("_exps" in n for n in names)
 
 
 def test_enumerate_opt_ins_extend_the_preset(base_gguf: pathlib.Path) -> None:
@@ -257,4 +264,9 @@ def test_default_preset_is_the_blueprint_set() -> None:
         "ffn_up",
         "ffn_gate",
         "ffn_down",
+        # S1-28: the MoE expert stacks. A dense model has no tensor with these names, so listing
+        # them costs it nothing -- and a Mixtral cannot be LoRA-tuned without them.
+        "ffn_up_exps",
+        "ffn_gate_exps",
+        "ffn_down_exps",
     )
