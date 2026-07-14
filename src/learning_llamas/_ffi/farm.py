@@ -258,6 +258,14 @@ SYMBOLS = [
         [ctypes.c_void_p, ctypes.c_int32],
         ctypes.c_int32,
     ),
+    # S1-24: chunked attention — the kernel-free long-context path. Pairs with
+    # ll_set_grad_checkpointing, and needs it to shrink the backward.
+    Symbol(
+        Library.FARM,
+        "ll_set_chunked_attention",
+        [ctypes.c_void_p, ctypes.c_int32],
+        ctypes.c_int32,
+    ),
     # S1-14: DPO — the pairwise objective, and the reference log-ratio it needs.
     Symbol(
         Library.FARM,
