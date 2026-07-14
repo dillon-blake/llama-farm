@@ -334,7 +334,13 @@ def test_one_step_matches_the_reference_exactly(tiny_f32, tmp_path, libs, conv_d
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
+# The 40-step checks are NOT marked `slow`, and that is a deliberate reversal of the ticket.
+#
+# S1-12 assumed the gate would be expensive and put it in the nightly tier. The whole file runs in
+# ~7 seconds. Leaving it nightly-only would mean per-PR CI never exercises ggml's AdamW numerics at
+# all -- a single step at lr=1e-30 does not move the optimizer -- and never runs the independent
+# (PEFT) oracle. Both AdamW mutations in the mutation table are caught ONLY by these three tests.
+# A gate that runs once a night is a gate that tells you which of the day's twenty PRs broke it.
 def test_the_loss_curve_matches_the_float64_reference(tiny_f32, tmp_path, libs, conv_data) -> None:
     """Forty optimizer steps of ``train_sft``, per step, against float64.
 
@@ -356,7 +362,6 @@ def test_the_loss_curve_matches_the_float64_reference(tiny_f32, tmp_path, libs, 
     )
 
 
-@pytest.mark.slow
 def test_the_loss_curve_matches_the_recorded_peft_reference(
     tiny_f32, tmp_path, libs, conv_data
 ) -> None:
@@ -389,7 +394,6 @@ def test_the_loss_curve_matches_the_recorded_peft_reference(
     )
 
 
-@pytest.mark.slow
 def test_a_quantized_base_trains_within_its_band(tiny_q8_0, tmp_path, libs, conv_data) -> None:
     """A Q8_0 base, against the same F32 reference — with a band that reflects the quantization.
 

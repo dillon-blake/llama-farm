@@ -162,20 +162,44 @@ fixed. The real names are `SWIGLU`, `GEGLU`, `REGLU`, `GEGLU_ERF`, `GEGLU_QUICK`
 
 ### How to tell, mechanically
 
-The harness prints **two lines per case**: first whether the backend *supports* the op, then the
-**gradient verdict**. They are easy to confuse, and confusing them is what made the first version of
-the guard vacuous:
+Reading the harness's output is trickier than it looks, and **both** obvious approaches are wrong.
+
+Per case, `eval_grad` prints:
+
+* a **non-F32 output** bails at `test-backend-ops.cpp:1746` and prints **one** line;
+* every other case prints an **info line first** (`:1754`) — which `print_operation` renders as a
+  bare `OK`, *before a single thing has been checked* — and then exactly one real verdict.
 
 ```
-OUT_PROD(...): OK                        <- SUPPORT. Says nothing about gradients.
+OUT_PROD(...): OK                        <- the INFO line. Printed before any check. Means nothing.
 OUT_PROD(...): not supported [OUT_PROD]  <- the GRADIENT verdict: no params, nothing compared.
 ```
 
-`tests/test_backend_ops_grad.py` reads the second line (the odd-indexed ones — they are emitted
-back to back). An op counts as checked only if at least one case's gradient verdict is neither
-`not supported` nor `skipping`. And `test_the_vacuity_guard_can_actually_detect_vacuity` points the
-guard at `OUT_PROD` and `FLASH_ATTN_EXT` — both of which must keep reporting *zero* checked
-gradients, or the guard has stopped working and every op in the registry is being taken on trust.
+Reading the **first** line is what made the first version of the guard vacuous. But "take every
+second line" is **also** wrong, because of the one-line bail: `CLAMP` emits **nine** lines today —
+an odd number, which is definitionally impossible under two-per-case — and the misalignment makes
+info lines get read as gradient verdicts.
+
+`tests/test_backend_ops_grad.py::_n_gradients_compared` walks the output **in order**: a leading
+`not supported`/`skipping` is a one-line bail; anything else is an info line whose verdict is the
+line after it. An op counts as checked only if some case's *verdict* is neither `not supported` nor
+`skipping`.
+
+And `test_the_vacuity_guard_can_actually_detect_vacuity` points the guard at `OUT_PROD` and
+`FLASH_ATTN_EXT` — both of which must keep reporting **zero** compared gradients, or the guard has
+stopped working and every op in the registry is being taken on trust.
+
+### A fourth way to check nothing: `-b` takes ggml's device name, and GPU names are index-suffixed
+
+`test-backend-ops -b <name>` matches with an exact `strcmp` against `ggml_backend_dev_name`
+(`test-backend-ops.cpp:11214`). GPU backends **index-suffix** their names — the first CUDA device is
+`CUDA0`, not `CUDA`. So `-b CUDA` matches nothing: the harness prints `Skipping`, counts it as
+passed, and **exits 0** having run zero cases. Every backend lane would go green while checking
+nothing.
+
+`CPU` happens to be unsuffixed, which is exactly why this stays invisible until a GPU lane exists.
+The `ggml_device` fixture asks ggml for the real name rather than assuming it, and
+`test_the_harness_runs_on_the_device_we_asked_for` asserts the run was not skipped.
 
 This matters beyond bookkeeping, because the remaining stage-1 kernel tickets (S1-21 … S1-31) each
 name *"`test-backend-ops grad -o <op>` green"* as an acceptance criterion — **and that criterion

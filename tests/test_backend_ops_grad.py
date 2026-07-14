@@ -41,8 +41,6 @@ from .project_ops import PROJECT_ADDED_OPS
 # Where S0-07's CI puts it, and where docs/dev/backward-coverage.md says to build it.
 _BUILD_DIRS = ("build/vendor-tests/bin", "build/vendor-tests")
 
-_GGML_DEVICE = {"cpu": "CPU", "metal": "Metal", "cuda": "CUDA", "vulkan": "Vulkan"}
-
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # `  OP(vars): result`. The op name on the gradient line is not necessarily the filtered op: once
@@ -73,73 +71,123 @@ def _binary() -> pathlib.Path:
     raise AssertionError("unreachable")  # pragma: no cover - pytest.skip raises
 
 
-def _run(op: str, device: str) -> subprocess.CompletedProcess[str]:
+def _run(op: str, ggml_device: str) -> subprocess.CompletedProcess[str]:
+    """``ggml_device`` must be the name **ggml registered** (``CUDA0``, not ``CUDA``).
+
+    ``-b`` is an exact ``strcmp`` against ``ggml_backend_dev_name``
+    (``test-backend-ops.cpp:11214``). A name that matches nothing makes the harness print
+    ``Skipping``, count it as passed, and **exit 0** having run zero cases.
+    """
     return subprocess.run(
-        [str(_binary()), "grad", "-b", _GGML_DEVICE[device], "-o", op],
+        [str(_binary()), "grad", "-b", ggml_device, "-o", op],
         capture_output=True,
         text=True,
         timeout=900,
     )
 
 
-def _grad_verdicts(stdout: str) -> list[str]:
-    """The **gradient** verdict of each case — the second of its two lines.
+def _bailed(tail: str) -> bool:
+    """A verdict that compared no gradient."""
+    return tail.startswith(("not supported", "skipping"))
 
-    The two lines are emitted back to back, so the verdicts are simply the odd-indexed ones. Pairing
-    them by their ``vars`` string instead looks more careful and is *wrong*: two distinct cases can
-    stringify to the same vars, which mis-pairs the run and lets a support line be counted as a
-    gradient verdict. That mistake alone made a fully-vacuous ``OUT_PROD`` report one "real" case.
+
+def _n_gradients_compared(stdout: str) -> int:
+    """How many cases MODE_GRAD actually compared a gradient for.
+
+    The output has to be walked **in order**, and the reason is a trap worth naming. Per case,
+    ``eval_grad`` prints:
+
+    * a non-F32 *output* bails at ``test-backend-ops.cpp:1746`` and prints **one** line;
+    * every other case prints an **info line first** (``:1754``) — which ``print_operation``
+      renders as a bare ``OK``, *before a single thing has been checked* — and then exactly one
+      real verdict.
+
+    So the count is **not** two lines per case, and "take every second line" is wrong. ``CLAMP``
+    emits **nine** lines today — an odd number, which is definitionally impossible under that
+    assumption — and the mis-alignment makes support lines get read as gradient verdicts. An
+    earlier version of this file did exactly that.
+
+    Walking in order is unambiguous: a leading ``not supported``/``skipping`` is a one-line bail;
+    anything else is an info line whose verdict is the line after it.
     """
-    lines = [m.group(2) for line in stdout.splitlines() if (m := _CASE.match(_ANSI.sub("", line)))]
-    return lines[1::2]
+    tails = [m.group(2) for line in stdout.splitlines() if (m := _CASE.match(_ANSI.sub("", line)))]
 
+    compared = 0
+    i = 0
+    while i < len(tails):
+        if _bailed(tails[i]):
+            i += 1  # a one-line bail: no info line was printed for this case
+            continue
+        # tails[i] is the info line. Its verdict is the next line.
+        verdict = tails[i + 1] if i + 1 < len(tails) else ""
+        if not _bailed(verdict):
+            compared += 1
+        i += 2
 
-def _checked(verdicts: list[str]) -> list[str]:
-    """Verdicts from cases that actually compared a gradient."""
-    return [v for v in verdicts if not v.startswith(("not supported", "skipping"))]
+    return compared
 
 
 @pytest.mark.parametrize("op", PROJECT_ADDED_OPS)
-def test_the_gradient_of_a_project_op_is_checked_and_correct(op: str, device: str) -> None:
-    """For each project op: MODE_GRAD must actually check it, **and** it must pass.
+def test_the_gradient_of_a_project_op_is_checked_and_correct(op: str, ggml_device: str) -> None:
+    """For each project op: MODE_GRAD must actually compare a gradient, **and** it must pass.
 
     Both halves matter, and the first is the one that bites. An op whose cases all bail out — no
-    ``ggml_set_param``, or a name that matches nothing — exits 0 and looks green forever.
+    ``ggml_set_param``, every case above ``grad_nmax()``, or a name that matches nothing — exits 0
+    and looks green forever.
     """
-    result = _run(op, device)
+    result = _run(op, ggml_device)
 
-    checked = _checked(_grad_verdicts(result.stdout))
-    assert checked, (
-        f"`grad -o {op}` compared ZERO gradients — it exited {result.returncode} having checked "
-        f"nothing. Either the test class never calls ggml_set_param, or every case is above "
-        f"grad_nmax() (10000), or `{op}` is not what ggml_op_desc() calls this op and the filter "
-        f"matched nothing at all (GLU's nodes report SWIGLU/GEGLU/...). "
-        f"See docs/dev/backward-coverage.md."
+    compared = _n_gradients_compared(result.stdout)
+    assert compared > 0, (
+        f"`grad -o {op}` compared ZERO gradients on {ggml_device} — it exited "
+        f"{result.returncode} having checked nothing. Either the test class never calls "
+        f"ggml_set_param, or every case is above grad_nmax() (10000), or `{op}` is not what "
+        f"ggml_op_desc() calls this op so the filter matched nothing at all (a GLU node reports "
+        f"SWIGLU/GEGLU/..., never 'GLU'). See docs/dev/backward-coverage.md."
     )
 
     if result.returncode != 0:
         failures = "\n".join(
             line for line in result.stdout.splitlines() if "FAIL" in line or "MAA" in line
         )
-        pytest.fail(f"grad -o {op} failed on {device}:\n{failures or result.stdout[-3000:]}")
+        pytest.fail(f"grad -o {op} failed on {ggml_device}:\n{failures or result.stdout[-3000:]}")
 
 
-def test_the_vacuity_guard_can_actually_detect_vacuity(device: str) -> None:
+def test_the_vacuity_guard_can_actually_detect_vacuity(ggml_device: str) -> None:
     """The guard above is only worth having if it can fail. So point it at ops that check nothing.
 
     ``OUT_PROD`` and ``FLASH_ATTN_EXT`` both report ``Backend CPU: OK`` and exit 0 in MODE_GRAD
     while comparing **not one gradient** — ``test_out_prod`` and ``test_flash_attn_ext`` never call
     ``ggml_set_param`` (and ``ggml_flash_attn_back``'s first statement is a ``GGML_ABORT``). If the
-    guard ever stops flagging them, it has stopped working, and every op in the registry is
-    unverified.
+    guard ever stops flagging them, it has stopped working, and every op in the registry is being
+    taken on trust.
 
     This is the test that would have caught ``GLU`` sitting in the registry checking nothing.
     """
     for vacuous in ("OUT_PROD", "FLASH_ATTN_EXT"):
-        verdicts = _grad_verdicts(_run(vacuous, device).stdout)
-        assert verdicts, f"expected `grad -o {vacuous}` to emit cases at all"
-        assert not _checked(verdicts), (
-            f"`grad -o {vacuous}` now reports genuinely-checked gradients. Either upstream added "
+        result = _run(vacuous, ggml_device)
+        assert result.returncode == 0, f"`grad -o {vacuous}` was expected to exit 0 and be useless"
+        assert _n_gradients_compared(result.stdout) == 0, (
+            f"`grad -o {vacuous}` now compares real gradients. Either upstream added "
             f"ggml_set_param to its test class — good news, update this test — or the vacuity "
             f"guard is broken and every op in PROJECT_ADDED_OPS is being taken on trust."
         )
+
+
+def test_the_harness_runs_on_the_device_we_asked_for(ggml_device: str) -> None:
+    """``-b`` is an exact ``strcmp``, and GPU device names are index-suffixed.
+
+    ``ggml_backend_dev_name`` returns ``CUDA0`` / ``Vulkan0``, not ``CUDA`` / ``Vulkan``
+    (``ggml-cuda.cu``, and the filter at ``test-backend-ops.cpp:11214``). Passing the *family* name
+    matches no device: the harness prints ``Skipping``, counts it as passed, and exits 0 having run
+    nothing — so every backend lane would go green while checking zero gradients.
+
+    ``CPU`` happens to be unsuffixed, which is exactly why this was invisible here. Assert that the
+    name we pass actually selects a device, so a GPU lane cannot inherit the bug.
+    """
+    result = _run(PROJECT_ADDED_OPS[0], ggml_device)
+    assert "Skipping" not in result.stdout, (
+        f"test-backend-ops skipped device {ggml_device!r} — the name matched nothing, and the run "
+        f"is worthless. -b takes ggml_backend_dev_name()'s exact string (CUDA0, not CUDA)."
+    )
+    assert _n_gradients_compared(result.stdout) > 0
