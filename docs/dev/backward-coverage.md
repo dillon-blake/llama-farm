@@ -156,6 +156,42 @@ So a kernel PR here is **not** done when the VJP is written. It is done when:
 3. `grad -o <op>` is green *after* (1) and (2), which is the first point at which its greenness
    means anything.
 
+## ⚠️ Your VJP will be handed a TRANSPOSED grad. Read `src->nb[0]`, never `float*[j]`
+
+ggml's autodiff produces non-contiguous gradients as a matter of course. `GGML_OP_TRANSPOSE`'s
+backward is `ggml_add_or_set(..., ggml_transpose(ctx, grad))`, and the MUL_MAT backward passes
+`ggml_transpose(grad)` **straight into `ggml_out_prod`** with no `ggml_cont`. That is precisely why
+`ggml_compute_forward_out_prod_f32` reads `src1` through `i1*nb10` instead of indexing a `float *`.
+
+Both S1-26/S1-27 kernels dropped that and indexed `grad` as `g_col[j]` — a hard-coded 4-byte
+stride. A TRANSPOSE node reaching them has `nb[0] == 8`. Measured: **24 of 36 output elements
+wrong, max abs error 9.2.** No assert fires. The run just trains on a wrong gradient.
+
+The same applies to **index tensors**. `ggml_mul_mat_id` places *no* contiguity constraint on `ids`,
+and the forward reads it through `nb[0]`
+(`*(int32_t *)(ids->data + iid1*nb[1] + id*nb[0])`). So a strided `ids` is a legal tensor that the
+forward computes **correctly** and a `int32_t*[i]` backward misreads — crediting the wrong experts
+with each other's gradients.
+
+**And no test in this repo could see either bug.** `test-backend-ops` only ever builds a contiguous
+grad. A hand-written numerical reference does not help either, because it constructs *its own*
+contiguous tensors: a verification that builds its own inputs cannot discover an input shape you did
+not think of.
+
+So the guard has to force the shape. `test_mul_mat_id::grad_transposed` routes the objective through
+`cont(transpose(out))`, which makes `ggml_build_backward_expand` hand the backward a TRANSPOSE-op
+grad. With the bug reintroduced:
+
+| cases | verdict |
+|---|---|
+| contiguous grad — **the entire pre-existing suite** | **PASS. Invisible.** |
+| transposed grad — the new case | **FAIL, MAA 21.0 / 2.57 / 2.55** |
+
+**Every new VJP needs an equivalent case.** Contiguity is an assumption, and in ggml it is usually
+the wrong one. Assert contiguity only where the arithmetic genuinely requires it — e.g. the *vector*
+operand of `ggml_vec_mad_f32`, where a strided read is not merely wrong but unrepresentable — and
+read everything else through its strides.
+
 ## ⚠️ `mean_abs_asymm` divides by `(gn + ga)`, not `(|gn| + |ga|)`
 
 ```c
