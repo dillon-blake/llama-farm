@@ -97,13 +97,19 @@ bool op_has_backward(ggml_op op) {
 // exactly the outcome this preflight exists to predict. The whole point of the report is that it
 // is believed. S1-28 adds the missing VJPs and flips these on.
 bool glu_has_backward(const ggml_tensor * node) {
-    if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU) {
+    // S1-28 gave the whole family a VJP (GGML_OP_GLU_BACK), including the fused form and the
+    // GEGLU/REGLU/SWIGLU_OAI variants that used to GGML_ABORT. Gemma and gpt-oss train now.
+    switch (ggml_get_glu_op(node)) {
+    case GGML_GLU_OP_REGLU:
+    case GGML_GLU_OP_GEGLU:
+    case GGML_GLU_OP_SWIGLU:
+    case GGML_GLU_OP_SWIGLU_OAI:
+    case GGML_GLU_OP_GEGLU_ERF:
+    case GGML_GLU_OP_GEGLU_QUICK:
+        return true;
+    default:
         return false;
     }
-
-    // Split form only: src1 is the up-projection half. Fused SWIGLU packs both halves into src0
-    // and has no backward.
-    return node->src[1] != nullptr;
 }
 
 // The unary sub-switch has its own coverage, and its default aborts just like the outer one.

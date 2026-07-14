@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: M
 deps: ["S1-26", "S1-27", "S1-19"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/22
 ---
 
 # S1-28 — MoE: GLU-family backward (SWIGLU_OAI, GEGLU exact/tanh, REGLU) + tiny-MoE e2e
