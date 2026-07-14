@@ -5,11 +5,51 @@ stage: 1
 track: python
 size: M
 deps: ["S1-05"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama-farm/pull/42
 ---
 
 # S1-12 — Convergence gate: tiny-model SFT vs recorded PEFT reference
+
+> **✅ DONE — and the ticket's central assumption was wrong, in our favour.**
+>
+> The ticket says per-step exact match against PEFT is impossible and prescribes **windowed
+> tolerance bands**. Measured over 40 optimizer steps, three independent implementations agree to
+> **~1e-6**:
+>
+> | comparison | worst per-step deviation |
+> |---|---|
+> | llama.cpp (F32) vs the float64 reference | **5.3e-07** |
+> | llama.cpp (F32) vs PEFT | **9.5e-07** |
+> | the float64 reference vs PEFT | **7.9e-07** |
+>
+> So the gate is **per-step at 1e-4**, not windowed. This matters: a band wide enough to absorb
+> kernel-numerics drift is wide enough to hide a real gradient bug, which is the exact class of bug
+> this project keeps finding. The curve is also **bit-identical across 1, 2 and 4 threads**.
+>
+> **The float64 numpy reference is the real oracle** (`tests/reference_llama.py`) and it audits
+> itself against a finite difference of its own forward. Mutation-tested: seven injected bug classes,
+> seven caught — including **a LoRA gradient wrong by 0.1%**, which no loss band could see.
+>
+> The PEFT curve is recorded and **committed** (`tests/convergence/reference_curve.json`); the
+> recorder refuses to record unless the HF twin's logits match the float64 reference (recorded
+> deviation: **8.0e-07**), which is what makes the RoPE permutation — otherwise unobservable —
+> provably right.
+>
+> **Two things found along the way, neither of which the ticket anticipated:**
+>
+> 1. **`test-backend-ops grad -o SILU` reports FAIL on an exactly-correct kernel.** MODE_GRAD's FD
+>    noise floor is `ulp(|objective|) / (2·grad_eps)`; `silu` is unbounded, so `sum(silu(x))` over
+>    5005 elements reaches 187,860 and the FD is quantized in steps of 0.078 while 47% of elements
+>    have a true gradient below 1e-3. `ggml_silu_back` is correct to 7.1e-07. See
+>    docs/dev/backward-coverage.md.
+> 2. **The inference and training paths are different functions.** llama.cpp's KV cache is **F16** by
+>    default; training bypasses it (S1-00) and keeps K/V in F32. `model.logits()` therefore sits
+>    ~8e-4 from the exact answer while the training path sits at ~5e-7. Pinned by a test.
+>
+> Item 6's `PROJECT_ADDED_OPS` was overdue: CI's inline grad list still named **eight** ops when the
+> project had **thirteen** — MUL_MAT_ID, ADD_ID, GLU, SSM_CONV and SSM_SCAN (every op the MoE and
+> Mamba work added) were **not being grad-checked in CI at all**, and CI was green.
 
 > **✅ This does NOT require torch on the dev machine — the ticket already says so, and it is worth
 > re-reading before anyone plans around the dependency.**

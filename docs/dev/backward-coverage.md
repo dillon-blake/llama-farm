@@ -250,15 +250,87 @@ quantized weight, run it again with that same weight dequantized to F32, and req
 For `OUT_PROD_ID` they agree **bit-exactly** on q8_0, q4_K and q4_0. That is a stronger check than a
 finite difference, not a weaker one.
 
+## ⚠️ A MODE_GRAD **failure** is not proof of a bug either. The FD is cancellation-limited.
+
+The trap above is a false *pass*. This is the false *fail*, and it wasted an afternoon in S1-12.
+
+`test-backend-ops grad -o SILU` reports **FAIL, MAA 0.31**. SILU is on the LoRA training path (it is
+the activation in the SwiGLU FFN), so this looks alarming. Checked against the exact derivative,
+`ggml_silu_back` is **correct to 7.1e-07** — float32 rounding. The kernel is fine. The *harness* is
+measuring noise.
+
+**MODE_GRAD finite-differences a scalar objective that it reads back as a float32.** Look at what
+that costs:
+
+| | |
+|---|---|
+| `test_unary` initializes in **[-150, 150]** | (`test-backend-ops.cpp:2114`) |
+| `silu(x) ≈ x` for `x > 0` — **unbounded** | so `sum(silu(x))` over 5005 elements is **187,860** |
+| float32 ulp at 187,860 | **0.0156** |
+| `grad_eps` = 0.1, so the FD quantum is `ulp / 2·eps` | **0.078** |
+| elements whose true gradient is below 1e-3 | **47%** — and each scores asymm = **1.000** |
+
+That is the entire MAA. The general rule, which is worth stating because nothing in the harness
+says it:
+
+> **MODE_GRAD's finite-difference noise floor is `ulp(|objective|) / (2 · grad_eps)`.** It fails
+> whenever the objective's *magnitude* is large relative to the gradient signal — **whether or not
+> the kernel is correct**.
+
+Bounded-output ops (TANH, SIGMOID, SOFT_MAX) never trip it: their summed objective stays small.
+SILU trips it because `silu` is unbounded, and SCALE trips it because its `bias=1` inflates the sum.
+Upstream already knows, without saying so: `test_sum` overrides `grad_eps()` to `0.1·sqrt(n)`
+*precisely* to fight this, and `test_unary` does not.
+
+Two consequences:
+
+* **A MODE_GRAD failure is a hypothesis, not a verdict.** Confirm it against an exact oracle before
+  touching a kernel. (SILU, SCALE, SUM and CPY are all in this category and are all correct.)
+* **A MODE_GRAD pass on a large-magnitude objective is weak**, for the same reason — the FD it is
+  agreeing with is quantized.
+
+Neatly, the weighted `grad_loss` hook added for the *vacuity* trap cures this one too: zero-mean
+weights make the objective `O(sqrt(n)·sigma)` instead of `O(n·mu)`, so the cancellation goes away.
+That is why the ops which override `grad_loss` (SOFT_MAX, MUL_MAT_ID, SSM_CONV) are green.
+
+This is also why S1-12's convergence gate exists, and why it is a **float64 reference** rather than
+a tolerance band: MODE_GRAD's arithmetic simply cannot resolve a gradient to better than a few
+percent on a large objective, and a real gradient bug lives well inside that.
+
 ## The allowlist: what the vendor-bump gate runs today
 
-Genuinely grad-checked (the test class calls `ggml_set_param`) **and** green:
+**The list is now `tests/project_ops.py`, and CI reads it from there.** It used to be typed inline
+in `.github/workflows/ci-cpu.yml`, where it went stale the moment a kernel ticket landed — by S1-31
+it still named eight ops while the project had thirteen, so MUL_MAT_ID, ADD_ID, GLU, SSM_CONV and
+SSM_SCAN (every op the MoE and Mamba work added) were not grad-checked in CI at all. CI was green.
 
-```
-test-backend-ops grad -o CROSS_ENTROPY_LOSS,CROSS_ENTROPY_LOSS_SPARSE,RMS_NORM,TANH,SIGMOID,CLAMP
-```
+All thirteen are genuinely grad-checked (the test class calls `ggml_set_param`) **and** green, with
+real cases rather than skips — `test_backend_ops_grad.py::test_every_op_reports_real_cases` enforces
+that, so an op cannot join the list on the strength of a vacuous pass:
 
-**S1-19 added TANH, SIGMOID and CLAMP.** All three now grad-check (6, 6 and 5 cases). Note that
+| op | real cases | added by |
+|---|---|---|
+| `CROSS_ENTROPY_LOSS` | 5 | S1-04 |
+| `CROSS_ENTROPY_LOSS_SPARSE` | 17 | S1-04 |
+| `RMS_NORM` | 33 | S0-09 |
+| `TANH` / `SIGMOID` / `CLAMP` | 8 / 8 / 7 | S1-19 |
+| `SOFT_MAX` | 293 | S1-20, S1-34 |
+| `CONCAT` | 46 | S1-29 |
+| `MUL_MAT_ID` | 840 | S1-25 |
+| `ADD_ID` | 64 | S1-25 |
+| `GLU` | 2 | S1-28 |
+| `SSM_CONV` | 75 | S1-30 |
+| `SSM_SCAN` | 10 | S1-31 |
+
+Deliberately **not** on the list:
+
+* `MUL_MAT` — genuinely checked and nearly green, but it takes **3m20s**, so it is nightly. It
+  matters more than it looks: **`MUL_MAT`'s backward is built from `ggml_out_prod`**
+  (`ggml.c:6594-6630`), so it is the only thing that exercises `OUT_PROD`'s gradient path at all —
+  `grad -o OUT_PROD` checks zero gradients, because `test_out_prod` never calls `ggml_set_param`.
+* `SILU`, `SCALE`, `SUM`, `CPY` — FD-cancellation-limited, see the section above. All correct.
+
+**S1-19 added TANH, SIGMOID and CLAMP.** All three now grad-check. Note that
 `test_clamp` already *declared* `grad_eps()` and `grad_expect() = {0, 1}` — as if it were being
 gradient-checked — while never calling `ggml_set_param`. It looked like a gradient test and
 verified nothing. Exactly the trap this document exists to name.

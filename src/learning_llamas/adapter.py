@@ -490,8 +490,37 @@ def save_adapter(
     return n
 
 
+def _index_by_name(libs: _ffi.Libraries, adapter: int) -> dict[str, int]:
+    """Map each base tensor name to its index in the shim's adapter accessors.
+
+    **The shim's index is not** :func:`enumerate_targets`' **index, and confusing the two is
+    silent.** ``ll_adapter_*`` addresses tensors by their position in the base-tensor names sorted
+    **lexicographically** (``farm_api.h``); :func:`enumerate_targets` returns them in **GGUF file
+    order**. For a dense llama those orders differ from the very first FFN tensor — file order is
+    ``ffn_gate, ffn_up, ffn_down``, lexicographic is ``ffn_down, ffn_gate, ffn_up`` — so index 5
+    means two different tensors depending on who you ask.
+
+    When the two tensors happen to have the same shape the mistake does not even raise: you read
+    the wrong tensor's weights and get plausible numbers. Address them by name.
+    """
+    n = _ffi.check(libs.farm.ll_adapter_n_tensors(adapter), "ll_adapter_n_tensors")
+
+    out: dict[str, int] = {}
+    for i in range(n):
+        name_buf = ctypes.create_string_buffer(256)
+        ne_a = (ctypes.c_int64 * 4)()
+        ne_b = (ctypes.c_int64 * 4)()
+        _ffi.check(
+            libs.farm.ll_adapter_tensor_info(adapter, i, name_buf, 256, ne_a, ne_b),
+            "ll_adapter_tensor_info",
+        )
+        out[name_buf.value.decode()] = i
+
+    return out
+
+
 def _read(libs: _ffi.Libraries, adapter: int, index: int, is_b: bool) -> np.ndarray:
-    """One adapter tensor, flat."""
+    """One adapter tensor, flat. ``index`` is the shim's — see :func:`_index_by_name`."""
     n = _ffi.check(libs.farm.ll_adapter_get(adapter, index, is_b, None, 0), "ll_adapter_get")
 
     buf = (ctypes.c_float * n)()

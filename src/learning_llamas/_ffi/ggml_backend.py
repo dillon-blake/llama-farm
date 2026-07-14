@@ -94,4 +94,19 @@ SYMBOLS = [
         [ctypes.c_void_p],
         ctypes.c_size_t,
     ),
+    # ---------------------------------------------------------------------------------------
+    # Which devices this build actually has (S1-12).
+    #
+    # The convergence gate takes `--device {cpu,metal,cuda,vulkan}` so that S2-01/S3-01/S4-01 can
+    # reuse it unchanged as their phase-exit criterion. A device the build does not have must SKIP
+    # cleanly rather than fail -- and "does the build have it" is a question only ggml can answer,
+    # so it is asked rather than inferred from the platform.
+    # ---------------------------------------------------------------------------------------
+    # The split here is not arbitrary and is not guessable: enumerating devices is the *registry*,
+    # which lives in libggml (the library that discovers backends), while asking a device its name
+    # is plain device plumbing and lives in libggml-base. test_ffi.py checks each symbol against
+    # the library that actually defines it, and it caught this being wrong.
+    Symbol(Library.GGML, "ggml_backend_dev_count", [], ctypes.c_size_t),
+    Symbol(Library.GGML, "ggml_backend_dev_get", [ctypes.c_size_t], ctypes.c_void_p),
+    Symbol(Library.GGML_BASE, "ggml_backend_dev_name", [ctypes.c_void_p], ctypes.c_char_p),
 ]
