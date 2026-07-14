@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: L
 deps: ["S1-29", "S0-09"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/25
 ---
 
 # S1-31 — SSM: SSM_SCAN_BACK CPU (chunk-recompute) + tiny-Mamba e2e

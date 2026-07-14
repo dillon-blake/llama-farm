@@ -5,8 +5,8 @@ stage: 1
 track: kernels
 size: S
 deps: ["S1-25"]
-status: open
-pr: null
+status: pr-open
+pr: https://github.com/dillon-blake/llama.cpp/pull/23
 ---
 
 # S1-29b — the SSM backward wiring S1-29 never landed
