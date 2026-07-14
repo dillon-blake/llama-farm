@@ -156,6 +156,100 @@ So a kernel PR here is **not** done when the VJP is written. It is done when:
 3. `grad -o <op>` is green *after* (1) and (2), which is the first point at which its greenness
    means anything.
 
+## ⚠️ Your VJP will be handed a TRANSPOSED grad. Read `src->nb[0]`, never `float*[j]`
+
+ggml's autodiff produces non-contiguous gradients as a matter of course. `GGML_OP_TRANSPOSE`'s
+backward is `ggml_add_or_set(..., ggml_transpose(ctx, grad))`, and the MUL_MAT backward passes
+`ggml_transpose(grad)` **straight into `ggml_out_prod`** with no `ggml_cont`. That is precisely why
+`ggml_compute_forward_out_prod_f32` reads `src1` through `i1*nb10` instead of indexing a `float *`.
+
+Both S1-26/S1-27 kernels dropped that and indexed `grad` as `g_col[j]` — a hard-coded 4-byte
+stride. A TRANSPOSE node reaching them has `nb[0] == 8`. Measured: **24 of 36 output elements
+wrong, max abs error 9.2.** No assert fires. The run just trains on a wrong gradient.
+
+The same applies to **index tensors**. `ggml_mul_mat_id` places *no* contiguity constraint on `ids`,
+and the forward reads it through `nb[0]`
+(`*(int32_t *)(ids->data + iid1*nb[1] + id*nb[0])`). So a strided `ids` is a legal tensor that the
+forward computes **correctly** and a `int32_t*[i]` backward misreads — crediting the wrong experts
+with each other's gradients.
+
+**And no test in this repo could see either bug.** `test-backend-ops` only ever builds a contiguous
+grad. A hand-written numerical reference does not help either, because it constructs *its own*
+contiguous tensors: a verification that builds its own inputs cannot discover an input shape you did
+not think of.
+
+So the guard has to force the shape. `test_mul_mat_id::grad_transposed` routes the objective through
+`cont(transpose(out))`, which makes `ggml_build_backward_expand` hand the backward a TRANSPOSE-op
+grad. With the bug reintroduced:
+
+| cases | verdict |
+|---|---|
+| contiguous grad — **the entire pre-existing suite** | **PASS. Invisible.** |
+| transposed grad — the new case | **FAIL, MAA 21.0 / 2.57 / 2.55** |
+
+**Every new VJP needs an equivalent case.** Contiguity is an assumption, and in ggml it is usually
+the wrong one. Assert contiguity only where the arithmetic genuinely requires it — e.g. the *vector*
+operand of `ggml_vec_mad_f32`, where a strided read is not merely wrong but unrepresentable — and
+read everything else through its strides.
+
+## ⚠️ `mean_abs_asymm` divides by `(gn + ga)`, not `(|gn| + |ga|)`
+
+```c
+const float asymm = (a[i] - b[i]) / (a[i] + b[i]);
+```
+
+So **any output element whose true gradient is near zero sends that ratio to infinity**, and MAA is
+a *mean* — one bad element out of ninety is enough to fail a case whose kernel is exact.
+
+This is not theoretical. It is what `MUL_MAT_ID`'s grad test did (S1-26/S1-27). `d_as[k,j,e]` sums
+only over the slots that routed to expert `e`, so with 5 tokens and 3 experts each output element is
+a sum of **one or two** random products — which lands near zero often. Measured, with the kernel
+verified exact against a double-precision reference the entire time:
+
+| tokens | outcome |
+|---|---|
+| 5 | **3/10 runs fail**, MAA up to **7.9** |
+| 32 | **0/30 runs fail** |
+
+**Condition the test; do not widen the tolerance until the flapping stops.** An op whose output
+element is a sum over a *selected subset* (MoE routing, gathers, anything index-driven) needs enough
+terms per element that the sum is reliably far from zero. If you find yourself raising
+`max_maa_err()` to silence an intermittent failure, check the conditioning first — you may be hiding
+a real defect behind a bound wide enough to fit one.
+
+When a looser bound genuinely *is* right, measure both sides of it and say so. S1-26's:
+
+| | MAA |
+|---|---|
+| worst FD noise, 40 runs | 4.5e-4 |
+| kernel ignores `grad` entirely | 9.21 |
+| kernel ignores the broadcast | 3.39 |
+| kernel reads `grad` row 0 always | 4.41 |
+
+`5e-3` sits 10x above the noise and 200-1800x below every real defect. That is a tolerance with an
+argument behind it, not a number chosen to make a test go green.
+
+## ⚠️ MODE_GRAD cannot check a gradient that flows through a QUANTIZED weight
+
+ggml's quantized matmul **quantizes the activations on the fly** to `vec_dot_type` before the dot
+product. The forward is therefore a *staircase* in its activation input, and a finite difference of
+it measures quantization edges rather than a derivative. The analytic gradient is the gradient of
+the intended *smooth* function; the harness evaluates the *actual quantized* one. They disagree by
+construction — for `OUT_PROD_ID`, MAA 0.028-0.071 with the kernel bit-exact.
+
+Upstream knows, and encoded it with no comment at all (`test_mul_mat`):
+
+```c
+if (!ggml_is_quantized(type_a)) {
+    ggml_set_param(b);        // b is a param ONLY when the weight is not quantized
+}
+```
+
+So don't try. Verify the dequantize path by **direct equivalence** instead: run the op with the
+quantized weight, run it again with that same weight dequantized to F32, and require they agree.
+For `OUT_PROD_ID` they agree **bit-exactly** on q8_0, q4_K and q4_0. That is a stronger check than a
+finite difference, not a weaker one.
+
 ## The allowlist: what the vendor-bump gate runs today
 
 Genuinely grad-checked (the test class calls `ggml_set_param`) **and** green:
