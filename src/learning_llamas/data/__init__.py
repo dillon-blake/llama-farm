@@ -5,7 +5,12 @@ token count is wrong, and what this does instead.
 """
 
 from .mask import BoundaryMergeError, MaskedSample, build_masked_sample, completion_text
-from .template import ChatTemplate, Message
+from .template import (
+    ChatTemplate,
+    Message,
+    UnknownSpecialTokenError,
+    guard_special_tokens,
+)
 from .tokenize import Tokenizer
 
 __all__ = [
@@ -14,6 +19,8 @@ __all__ = [
     "MaskedSample",
     "Message",
     "Tokenizer",
+    "UnknownSpecialTokenError",
     "build_masked_sample",
     "completion_text",
+    "guard_special_tokens",
 ]

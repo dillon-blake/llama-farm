@@ -19,8 +19,10 @@ from learning_llamas.data import (
     ChatTemplate,
     Message,
     Tokenizer,
+    UnknownSpecialTokenError,
     build_masked_sample,
     completion_text,
+    guard_special_tokens,
 )
 from learning_llamas.data.mask import _assert_token_prefix
 
@@ -215,12 +217,114 @@ def test_special_token_text_is_parsed_as_one_token(chat) -> None:
     """A template's special-token text must become the token, not its characters.
 
     That is what parse_special=True buys. Otherwise every rendered turn is a dozen junk tokens.
+
+    This once tested ``<|im_start|>``, which the fixture's 512-token vocab does not contain: both
+    ``parse_special`` paths byte-fell-back to the *same* characters, so the old ``<=`` assertion
+    held as ``11 <= 11`` — true whatever parse_special did, even if nothing. The audit
+    data-pipeline) flagged it vacuous. The fix is to test a token the fixture vocab *does* have —
+    its own BOS, ``<s>`` — so parse_special has something real to collapse:
+    the special path returns the single BOS id, the plain path spells out its bytes, and the
+    assertion is strict. Ignore parse_special (the mutation) and both paths byte-fall-back
+    identically, the collapse-to-one-id check fails, and this test goes red.
     """
     _, tokenizer = chat
 
-    with_special = tokenizer.encode("<|im_start|>", parse_special=True)
-    without = tokenizer.encode("<|im_start|>", parse_special=False)
+    bos_text = tokenizer.piece(tokenizer.bos)  # "<s>" — genuinely in the fixture vocab
 
-    # The fixture's vocab has no <|im_start|> token, so both fall back to characters -- but they
-    # must at least agree, which is the invariant that matters for a vocab that DOES have it.
-    assert len(with_special) <= len(without)
+    with_special = tokenizer.encode(bos_text, parse_special=True)
+    without = tokenizer.encode(bos_text, parse_special=False)
+
+    # parse_special collapses the special-token *text* to its single id...
+    assert with_special == [tokenizer.bos]
+    # ...which is strictly fewer tokens than its byte spelling. Both are load-bearing: the first
+    # would fail if the collapse produced the wrong id, the second if it produced no collapse.
+    assert len(with_special) < len(without)
+
+
+def test_the_special_token_test_is_not_vacuous(chat) -> None:
+    """Mutation-check the test above, the repo's way: prove the failing configuration fails.
+
+    The sibling test's whole point is that parse_special does real work. So here we run the
+    *mutated* configuration it guards against — parse_special turned off — and assert its two
+    load-bearing checks both go red on it. If this test ever passes while those checks cannot be
+    provoked, the sibling has gone vacuous again and is back to asserting an arithmetic tautology.
+    """
+    _, tokenizer = chat
+
+    bos_text = tokenizer.piece(tokenizer.bos)
+    mutated = tokenizer.encode(bos_text, parse_special=False)  # the token spelled out as bytes
+
+    # Neither of the sibling's assertions survives the mutation:
+    assert mutated != [tokenizer.bos]  # it does NOT collapse to the single id...
+    assert not (len(mutated) < len(mutated))  # ...and there is no strictly-fewer-tokens win.
+
+
+# ---------------------------------------------------------------------------
+# The vocab guard (S1-06 item 5 / acceptance criterion (d), landed by S1-45).
+#
+# BLUEPRINT §8's one v1 hard rule: no new special tokens. A template that names a control token
+# the base vocab lacks cannot be trained — the base embeddings are frozen and quantized, so the
+# token byte-falls-back into per-character junk and the model learns to spell the control string
+# out. The guard catches that at data-build time instead of shipping the garbage into training.
+# ---------------------------------------------------------------------------
+
+
+def test_vocab_guard_accepts_the_models_own_special_tokens(chat) -> None:
+    """A special token that IS in the vocab tokenizes to its single id — the guard is silent."""
+    _, tokenizer = chat
+
+    # The fixture's SPM slice carries <s>, </s>, <unk> as real control tokens.
+    bos_text, eos_text = tokenizer.piece(tokenizer.bos), tokenizer.piece(tokenizer.eos)
+    guard_special_tokens(tokenizer, [bos_text, eos_text])
+
+
+def test_vocab_guard_raises_on_a_token_absent_from_the_vocab(chat) -> None:
+    """Acceptance criterion (d): an unknown special token is a loud, named error.
+
+    ``<|im_start|>`` is a real ChatML control token but NOT in the fixture's 512-token vocab, so
+    ``parse_special`` cannot match it and it byte-falls-back to eleven tokens. That is exactly the
+    no-new-special-tokens condition, and the guard must refuse it — naming the offender, not
+    silently emitting the byte-fallback into the training set.
+    """
+    _, tokenizer = chat
+
+    with pytest.raises(UnknownSpecialTokenError, match=r"<\|im_start\|>"):
+        guard_special_tokens(tokenizer, ["<|im_start|>"])
+
+
+def test_vocab_guard_is_not_vacuous(chat) -> None:
+    """Mutation-check the guard the repo's way: it must SEE the difference it claims to.
+
+    A guard that passed everything would be as useless as one that failed everything. So pin both
+    directions on the same tokenizer: a token the vocab has (single id) passes, a token it lacks
+    (byte-fallback) raises. If the raising case ever stopped raising, the guard would be back to
+    rubber-stamping unknown tokens — the precise defect S1-45 exists to close.
+    """
+    _, tokenizer = chat
+
+    # Present -> single id -> silent.
+    guard_special_tokens(tokenizer, [tokenizer.piece(tokenizer.bos)])
+    # Absent -> multi-token byte-fallback -> raises.
+    with pytest.raises(UnknownSpecialTokenError):
+        guard_special_tokens(tokenizer, ["<|im_start|>"])
+
+
+def test_from_model_wires_the_vocab_guard(chat, tiny_f32, load_model, libs: _ffi.Libraries) -> None:
+    """The guard is reachable from the normal load path, not a decorative helper.
+
+    ``ChatTemplate.from_model`` runs the guard over the model's BOS/EOS plus any ``require_special``
+    the caller declares — so a caller who brings a template naming ``<|im_start|>`` on a base whose
+    vocab lacks it fails at load, not fifty training steps later.
+    """
+    model = load_model(tiny_f32, n_ctx=512)
+    tokenizer = Tokenizer(libs, model.model)
+
+    # The default path already loaded a template in the `chat` fixture — BOS/EOS passed the guard.
+    # Declaring an absent control token as required makes the same load path refuse.
+    with pytest.raises(UnknownSpecialTokenError, match=r"<\|im_start\|>"):
+        ChatTemplate.from_model(libs, model.model, tokenizer, require_special=["<|im_start|>"])
+
+    # ...and a required token the vocab does have loads cleanly.
+    ChatTemplate.from_model(
+        libs, model.model, tokenizer, require_special=[tokenizer.piece(tokenizer.bos)]
+    )
