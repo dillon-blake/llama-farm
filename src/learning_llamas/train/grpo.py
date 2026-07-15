@@ -48,8 +48,9 @@ import numpy as np
 
 from .. import _ffi
 from ..logprobs import LmHead, sequence_logprobs
+from ..verify import SelfVerified, VerificationReport
 from .loop import TrainConfig, Trainer
-from .rollout import RewardFn, RolloutBatch, RolloutEngine
+from .rollout import RewardFn, RolloutBatch, RolloutEngine, captured_logp, recompute_logp
 
 log = logging.getLogger(__name__)
 
@@ -69,9 +70,17 @@ class GRPOConfig:
             because ggml-opt requires a fixed batch shape across the whole run.
         iterations: How many generate-then-update rounds.
         grad_clip: Global-norm gradient clip (S1-10). ``0.0`` disables it.
+        logp_old_tol: Tolerance for the sample-time ``logp_old`` cross-check (S1-16 §3). On the
+            first real batch the captured ``logp_old`` is compared against an independent S1-13
+            chunked recompute of the same tokens; within this tolerance the free capture is trusted
+            and used for the rest of the run, and outside it the run falls back — loudly — to the
+            recompute. The check needs ``lm_head`` (it is the same chunked pass the KL uses), so it
+            is silently skipped when ``lm_head`` is not passed; ``0.0`` disables it outright.
+            Observed capture-vs-recompute deviation on the CPU fixtures is ~1e-6.
 
     Raises:
-        ValueError: If ``clip_eps`` is not in ``(0, 1)`` or ``kl_coef`` is negative.
+        ValueError: If ``clip_eps`` is not in ``(0, 1)``, ``kl_coef`` is negative, or
+            ``logp_old_tol`` is negative.
     """
 
     lr: float = 1e-3
@@ -80,9 +89,10 @@ class GRPOConfig:
     seq_len: int = 64
     iterations: int = 5
     grad_clip: float = 0.0
+    logp_old_tol: float = 5e-3
 
     def __post_init__(self) -> None:
-        """Reject a clip epsilon or KL coefficient that cannot mean anything."""
+        """Reject a clip epsilon, KL coefficient, or tolerance that cannot mean anything."""
         if not 0.0 < self.clip_eps < 1.0:
             raise ValueError(
                 f"clip_eps must be in (0, 1), got {self.clip_eps}. At 0 the clipped branch is the "
@@ -91,6 +101,8 @@ class GRPOConfig:
             )
         if self.kl_coef < 0.0:
             raise ValueError(f"kl_coef must not be negative, got {self.kl_coef}")
+        if self.logp_old_tol < 0.0:
+            raise ValueError(f"logp_old_tol must not be negative, got {self.logp_old_tol}")
 
 
 @dataclass
@@ -119,9 +131,19 @@ class GRPOMetrics:
 
 @dataclass
 class GRPOResult:
-    """A whole run."""
+    """A whole run.
+
+    Attributes:
+        steps: One :class:`GRPOMetrics` per iteration.
+        logp_verification: What the sample-time ``logp_old`` cross-check found (S1-16 §3), or
+            ``None`` when it did not run (no ``lm_head``, or ``logp_old_tol == 0``). ``agreed`` is
+            the headline: ``False`` means the capture diverged from the S1-13 recompute and the run
+            fell back to the recompute — the update trained on correct numbers, but the fast path is
+            not to be trusted on this model.
+    """
 
     steps: list[GRPOMetrics] = field(default_factory=list)
+    logp_verification: VerificationReport | None = None
 
     def rewards(self) -> list[float]:
         """The mean group reward at each iteration — the curve that should be going up."""
@@ -417,6 +439,40 @@ def reference_logprobs(
             libs.llama.llama_set_adapters_lora(engine.ctx, adapters, 1, scales)
 
 
+def _logp_old_verifier(
+    engine: RolloutEngine, lm_head: LmHead, tolerance: float
+) -> SelfVerified[np.ndarray]:
+    """The self-verification harness wired to its first real customer (S1-16 §3).
+
+    ``fast`` is the sample-time capture (:func:`~learning_llamas.train.rollout.captured_logp`) —
+    already recorded as the tokens were drawn, so it costs nothing. ``naive`` is the S1-13 chunked
+    recompute (:func:`~learning_llamas.train.rollout.recompute_logp`) — a genuine second forward
+    that shares no code with the capture. On the first batch both run and are compared; thereafter
+    only the capture, unless it diverged once, in which case only the recompute, for the rest of the
+    process (:class:`~learning_llamas.verify.SelfVerified`).
+    """
+    return SelfVerified(
+        captured_logp,
+        lambda rollouts: recompute_logp(engine, rollouts, lm_head),
+        tolerance,
+        "grpo logp_old: sample-time capture vs S1-13 chunked recompute",
+    )
+
+
+def _apply_logp_old(rollouts: RolloutBatch, verified: np.ndarray) -> None:
+    """Write the verified ``logp_old`` back onto the rollouts the collator will read.
+
+    A no-op when the capture agreed — the verified values are the ones already on the rollouts. The
+    correction when it did not, so the update trains on the recompute the harness fell back to
+    rather than on the numbers a divergent fast path produced.
+    """
+    offset = 0
+    for rollout in rollouts.rollouts:
+        n = len(rollout.completion_tokens)
+        rollout.logp_old = np.asarray(verified[offset : offset + n], dtype=np.float32)
+        offset += n
+
+
 def train_grpo(
     libs: _ffi.Libraries,
     policy,  # noqa: ANN001 - the TRAINING context, adapter attached
@@ -442,7 +498,10 @@ def train_grpo(
             (:func:`~learning_llamas.logprobs.load_lm_head`). **Required when
             ``config.kl_coef > 0``**: the KL is measured against a reference pass that needs it.
             A ``kl_coef`` that quietly did nothing would be the worst of both worlds — a knob
-            that reads as if it regularizes and does not.
+            that reads as if it regularizes and does not. Also enables the sample-time ``logp_old``
+            cross-check (S1-16 §3, ``config.logp_old_tol``): given an ``lm_head``, the first batch's
+            captured ``logp_old`` is verified against the S1-13 recompute. Passing it with
+            ``kl_coef == 0`` is a valid way to ask for that check alone.
 
     Returns:
         One :class:`GRPOMetrics` per iteration.
@@ -501,9 +560,24 @@ def train_grpo(
 
     result = GRPOResult()
 
+    # The self-verification harness's first customer (S1-16 §3): sample-time logp_old capture (fast)
+    # vs the S1-13 chunked recompute (naive). It needs the lm_head to recompute against, so it runs
+    # only when one was passed -- the same lm_head the KL already requires.
+    verifier: SelfVerified[np.ndarray] | None = None
+    if config.logp_old_tol > 0.0 and lm_head is not None:
+        verifier = _logp_old_verifier(engine, lm_head, config.logp_old_tol)
+
     with GRPOTrainer(libs, policy, config) as trainer:
         for _ in range(config.iterations):
             rollouts = engine.generate(prompts, reward_fn)
+
+            # Cross-check the captured logp_old against the recompute on the first batch, then trust
+            # the capture (or, if it lied once, the recompute) for the rest of the run. Whichever
+            # the harness returns is what the update trains on -- a divergent capture never reaches
+            # the loss.
+            if verifier is not None:
+                _apply_logp_old(rollouts, verifier(rollouts))
+
             batch = collate(rollouts, config.seq_len)
 
             # The reference does not move, but the TOKENS do -- these are new rollouts every round,
@@ -517,5 +591,8 @@ def train_grpo(
                 batch, mean_reward=rollouts.mean_reward(), logp_ref=logp_ref
             )
             result.steps.append(metrics)
+
+    if verifier is not None:
+        result.logp_verification = verifier.report
 
     return result

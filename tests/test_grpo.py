@@ -33,14 +33,25 @@ import pytest
 
 from learning_llamas import _ffi
 from learning_llamas.adapter import create_zero_adapter
-from learning_llamas.logprobs import load_lm_head
+from learning_llamas.logprobs import load_lm_head, sequence_logprobs
 from learning_llamas.train import TrainConfig, Trainer
-from learning_llamas.train.grpo import GRPOConfig, GRPOTrainer, collate, train_grpo
+from learning_llamas.train.grpo import (
+    GRPOBatch,
+    GRPOConfig,
+    GRPOTrainer,
+    _apply_logp_old,
+    _logp_old_verifier,
+    collate,
+    reference_logprobs,
+    train_grpo,
+)
 from learning_llamas.train.rollout import (
     Rollout,
     RolloutBatch,
     RolloutEngine,
     SamplerConfig,
+    captured_logp,
+    recompute_logp,
     token_reward,
 )
 from learning_llamas.verify import SelfVerified
@@ -1067,3 +1078,244 @@ def test_the_kl_actually_reaches_the_loss(tiny_q4_k, tmp_path, load_model, libs)
     assert all(math.isfinite(m.loss) for m in result.steps), (
         f"the KL path produced a non-finite loss: {[m.loss for m in result.steps]}"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# The D6 reference pass: the adapter is actually detached, and it comes back.
+# ---------------------------------------------------------------------------------------------
+
+
+def _randomize_b(libs, adapter: int, sigma: float, seed: int) -> None:
+    """Fill an adapter's B tensors with noise, so its delta ``scale·B@A`` is no longer zero.
+
+    ``create_zero_adapter`` writes ``B = 0`` (a provable no-op at step 0). A test that needs the
+    adapter to actually *change* the logits — to tell "detached" apart from "did nothing" — has to
+    move B off zero first. A is already ``~N(0, 1/sqrt(r))``, so any nonzero B gives a real delta.
+    """
+    rng = np.random.default_rng(seed)
+    for i in range(libs.farm.ll_adapter_n_tensors(adapter)):
+        n = libs.farm.ll_adapter_get(adapter, i, True, None, 0)
+        values = rng.normal(0.0, sigma, size=n).astype(np.float32)
+        buf = (ctypes.c_float * n)(*values.tolist())
+        _ffi.check(libs.farm.ll_adapter_set(adapter, i, True, buf, n), "ll_adapter_set")
+
+
+def test_reference_logprobs_actually_detaches_the_adapter(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """The D6 reference is the base model with the adapter OFF — proven with a NONZERO adapter.
+
+    ``reference_logprobs`` detaches the adapter with ``llama_set_adapters_lora(ctx, NULL, 0,
+    NULL)``, scores, and re-attaches in a ``finally``. The only end-to-end test of that path built
+    its adapter with ``create_zero_adapter`` — ``B = 0``, so the delta is exactly zero and
+    adapter-on is bit-identical to adapter-off. It could not tell a real detach from a no-op: delete
+    the detach and it still passed.
+
+    So this makes the adapter nonzero first (``B`` filled with noise, delta ~0.55 on these tokens)
+    and pins three things the zero adapter could not:
+
+    * the reference differs from the policy by that whole margin — the detach really happened;
+    * the reference equals a context that never had an adapter at all — "off" means the base
+      (D6), not merely "a bit smaller";
+    * scoring the policy again afterwards reproduces it exactly — the ``finally`` re-attached.
+    """
+    adapter = tmp_path / "nonzero.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    model = load_model(tiny_q4_k, n_ctx=64, n_seq_max=2)
+    model.attach_adapter(adapter, scale=1.0)
+    _randomize_b(libs, model.adapter, sigma=0.05, seed=1)
+
+    engine = RolloutEngine(libs, model.ctx, model.model, n_rollouts=2, adapter=model.adapter)
+
+    # A fixed sequence, graded on a completion span. Any valid token ids (vocab is 512).
+    tokens = [1, 5, 9, 12, 4, 7, 3, 8]
+    n = len(tokens)
+    targets = tokens[1:] + [tokens[0]]
+    mask = np.array([0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0], dtype=np.float32)
+    positions = list(range(n))
+    seq_ids = [0] * n
+    batch = GRPOBatch(
+        tokens=tokens,
+        targets=targets,
+        mask=mask,
+        adv=np.zeros(n, dtype=np.float32),
+        logp_old=np.zeros(n, dtype=np.float32),
+        seq_ids=seq_ids,
+        positions=positions,
+        n_completion_tokens=int(mask.sum()),
+    )
+    lm_head = load_lm_head(tiny_q4_k)
+    live = mask > 0
+
+    def score_on(ctx) -> np.ndarray:  # noqa: ANN001
+        return sequence_logprobs(
+            libs, ctx, lm_head, tokens, targets, mask.tolist(), seq_ids, positions
+        )
+
+    policy_lp = score_on(model.ctx)  # adapter ON
+    ref_lp = reference_logprobs(libs, engine, lm_head, batch)  # adapter detached, then re-attached
+    policy_lp_again = score_on(model.ctx)  # adapter must be back ON
+
+    # An independent ground truth for "adapter off": a context that never had one at all.
+    base_model = load_model(tiny_q4_k, n_ctx=64, n_seq_max=2)
+    base_lp = score_on(base_model.ctx)
+
+    # 1. The detach actually changed the policy. With B == 0 this margin would be ~0 and the test
+    #    could not fail; measured here it is ~0.55.
+    margin = float(np.max(np.abs(policy_lp[live] - ref_lp[live])))
+    assert margin > 1e-1, (
+        f"the reference logprobs barely differ from the policy's ({margin:.2e}). Either the "
+        f"adapter is still (near) zero or the detach never happened — this is the vacuity the "
+        f"zero-adapter test hid."
+    )
+
+    # 2. "Off" means the base model, exactly (D6) — not a second set of weights, not a scaled-down
+    #    adapter. Detaching on this context reproduces a context that never had an adapter, to the
+    #    bit on this host (band 1e-5 for portability).
+    np.testing.assert_allclose(ref_lp[live], base_lp[live], atol=1e-5, rtol=0)
+
+    # 3. The finally re-attached: scoring the policy again gives back the adapter-on numbers,
+    #    exactly (same context, same shape). A missing re-attach would leave the base weights here
+    #    and this would collapse onto base_lp instead.
+    assert np.array_equal(policy_lp_again[live], policy_lp[live]), (
+        "the adapter was not re-attached after the reference pass: scoring the policy again did "
+        "not reproduce it."
+    )
+    assert float(np.max(np.abs(policy_lp_again[live] - base_lp[live]))) > 1e-1
+
+    # The masked slots carry no logprob, as ce_sparse's weighting guarantees.
+    assert (ref_lp[~live] == 0.0).all()
+
+
+# ---------------------------------------------------------------------------------------------
+# The self-verification harness, wired to its first customer (S1-16 §3).
+# ---------------------------------------------------------------------------------------------
+
+
+def _verify_setup(base, load_model, libs, *, seq_len=32, group=2, seed=5, max_new=8):  # noqa: ANN001
+    """A minimal two-context GRPO rig: one shared adapter, an engine, a training context."""
+    adapter_path = base.parent / f"verify-{seed}.gguf"
+    create_zero_adapter(base, adapter_path, r=RANK, seed=7)
+
+    n_seq = group
+    n_tok = n_seq * seq_len
+
+    rollout_model = load_model(base, n_ctx=128, n_seq_max=group)
+    rollout_model.attach_adapter(adapter_path, scale=1.0)
+
+    train_model = load_model(base, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    train_model.attach_adapter(adapter_path, scale=1.0, adapter=rollout_model.adapter)
+
+    engine = RolloutEngine(
+        libs,
+        rollout_model.ctx,
+        rollout_model.model,
+        n_rollouts=group,
+        sampler=SamplerConfig(temperature=1.0, seed=seed, max_new_tokens=max_new),
+        adapter=rollout_model.adapter,
+    )
+    return train_model, engine
+
+
+def test_train_grpo_cross_checks_logp_old_on_the_first_batch(tiny_q4_k, load_model, libs) -> None:
+    """The harness is wired, and a real run ran it (S1-16 §3).
+
+    An ``lm_head`` is all it takes to arm the check; ``kl_coef`` stays 0, so this isolates the
+    ``logp_old`` verification from the KL. After the run the report exists, both paths ran on the
+    first batch, they agreed, and the deviation is the ~1e-6 the recompute oracle measures — well
+    inside the 5e-3 default tolerance.
+    """
+    train_model, engine = _verify_setup(tiny_q4_k, load_model, libs, seed=5)
+
+    result = train_grpo(
+        libs,
+        train_model,
+        engine,
+        prompts=["hello"],
+        reward_fn=token_reward(set(range(100))),
+        config=GRPOConfig(lr=1e-3, seq_len=32, iterations=2, kl_coef=0.0),
+        lm_head=load_lm_head(tiny_q4_k),
+    )
+
+    report = result.logp_verification
+    assert report is not None, "the logp_old cross-check never ran — SelfVerified is not wired in"
+    assert report.verified, "the harness never compared the two paths"
+    assert report.agreed, f"the capture diverged from the recompute: {report.summary()}"
+    assert 0.0 < report.max_deviation < GRPOConfig().logp_old_tol
+    assert report.max_deviation < 1e-3, f"observed deviation was {report.max_deviation:.2e}"
+
+
+def test_train_grpo_falls_back_when_the_capture_cannot_meet_the_tolerance(
+    tiny_q4_k, load_model, libs
+) -> None:
+    """An impossibly tight tolerance forces the fallback, end to end, and the run still completes.
+
+    Capture and recompute differ by ~1e-6 (per-shape nondeterminism, ADR-0002), so a 1e-12 tolerance
+    can never be met. The harness must retire the capture and finish on the recompute — loudly, via
+    the report — without the run falling over. This exercises the ``logp_old_tol`` knob and the
+    end-to-end fallback path the default tolerance never triggers.
+    """
+    train_model, engine = _verify_setup(tiny_q4_k, load_model, libs, seed=6)
+
+    result = train_grpo(
+        libs,
+        train_model,
+        engine,
+        prompts=["hello"],
+        reward_fn=token_reward(set(range(100))),
+        config=GRPOConfig(lr=1e-3, seq_len=32, iterations=2, kl_coef=0.0, logp_old_tol=1e-12),
+        lm_head=load_lm_head(tiny_q4_k),
+    )
+
+    report = result.logp_verification
+    assert report is not None and report.verified
+    assert not report.agreed, "a 1e-12 tolerance should be impossible for the ~1e-6 capture gap"
+    assert report.max_deviation > 1e-12
+    assert all(math.isfinite(m.loss) for m in result.steps), (
+        "the run did not complete on the recompute fallback"
+    )
+
+
+def test_a_corrupted_logp_old_capture_is_caught_and_the_recompute_is_used(
+    tiny_q4_k, load_model, libs
+) -> None:
+    """If the sample-time capture were wrong, the update trains on the recompute — not the lie.
+
+    The wiring test proves the two paths agree; this proves the guard around them is not vacuous. A
+    capture corrupted by a large offset must be caught (``using_fallback``), and the values the
+    harness returns — and that ``_apply_logp_old`` writes back onto the rollouts the collator
+    reads — must be the recompute (the true logprobs), never the poisoned capture.
+    """
+    model = load_model(tiny_q4_k, n_ctx=256, n_seq_max=4)
+    engine = RolloutEngine(
+        libs,
+        model.ctx,
+        model.model,
+        n_rollouts=4,
+        sampler=SamplerConfig(temperature=1.0, seed=8, max_new_tokens=8),
+    )
+    batch = engine.generate(["hello"], token_reward(set(range(100))))
+    lm_head = load_lm_head(tiny_q4_k)
+
+    # The recompute ignores logp_old entirely (it re-scores from the tokens), so it is the ground
+    # truth even after the capture is poisoned. Grab it before corrupting, to compare against.
+    truth = recompute_logp(engine, batch, lm_head)
+
+    # Poison the capture with a large, unmistakable offset.
+    for rollout in batch.rollouts:
+        rollout.logp_old = rollout.logp_old - 7.0
+    poisoned = captured_logp(batch)
+    assert float(np.max(np.abs(poisoned - truth))) > 1.0, "the corruption did not take"
+
+    verifier = _logp_old_verifier(engine, lm_head, tolerance=1e-3)
+    returned = verifier(batch)
+
+    assert verifier.using_fallback, "a capture off by 7.0 was not caught"
+    # What came back is the recompute, not the poison.
+    np.testing.assert_allclose(returned, truth, atol=1e-4, rtol=0)
+    assert float(np.max(np.abs(returned - poisoned))) > 1.0
+
+    # ...and _apply_logp_old puts those verified numbers where collate() will read them.
+    _apply_logp_old(batch, returned)
+    assert float(np.max(np.abs(captured_logp(batch) - truth))) < 1e-4
