@@ -269,4 +269,10 @@ def test_default_preset_is_the_blueprint_set() -> None:
         "ffn_up_exps",
         "ffn_gate_exps",
         "ffn_down_exps",
+        # S1-47: Mamba's four LoRA-able projections. Same story -- a non-mamba model has no tensor
+        # with these names, and a mamba adapter comes out empty without them.
+        "ssm_in",
+        "ssm_x",
+        "ssm_dt",
+        "ssm_out",
     )
