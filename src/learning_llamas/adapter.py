@@ -68,6 +68,14 @@ except ImportError as exc:  # pragma: no cover - environment problem, not a code
 # backward at all: build_lora_mm_id computes mul_mat_id(B, mul_mat_id(A, cur, ids), ids), so the
 # trainable A/B tensors ARE the expert operand.
 #
+# The `ssm_*` entries are Mamba's four LoRA-able projections (S1-47). They are plain MUL_MAT through
+# build_lora_mm (models/mamba-base.cpp), so they need no new kernel -- but a mamba GGUF names them
+# ssm_in/ssm_x/ssm_dt/ssm_out, none of which the attention/FFN preset matches, so without these a
+# mamba adapter would come out empty and create_zero_adapter would (correctly) refuse it. The frozen
+# SSM tensors -- ssm_a, ssm_d (no `.weight` suffix), ssm_conv1d, and the biases -- are deliberately
+# absent: A and the conv weight take no gradient (the backward switch asserts as much), and
+# enumerate_targets only matches `*.weight` regardless.
+#
 # A dense model simply has no tensor with these names, so listing them costs nothing there.
 DEFAULT_PRESET: tuple[str, ...] = (
     "attn_q",
@@ -81,6 +89,10 @@ DEFAULT_PRESET: tuple[str, ...] = (
     "ffn_up_exps",
     "ffn_gate_exps",
     "ffn_down_exps",
+    "ssm_in",
+    "ssm_x",
+    "ssm_dt",
+    "ssm_out",
 )
 
 TOKEN_EMBD = "token_embd"
