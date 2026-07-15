@@ -18,6 +18,7 @@ Both of those are easy to get subtly wrong in ways a synthetic test cannot show:
 
 import math
 
+import numpy as np
 import pytest
 
 from learning_llamas import _ffi
@@ -96,9 +97,10 @@ def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) 
     * the accumulator still holds the unclipped global gradient after a clipped step — the clip
       nodes scale a copy on the way into AdamW, they do not rewrite the accumulator. A clip applied
       in place would instead collapse this norm toward the clip;
-    * a clip set just *above* the measured global norm is the exact identity, bit for bit, across
-      **every** trainable tensor — ``factor = clip / clamp(norm, clip, INF) == 1`` there. That
-      boundary sits at the global norm, not at any per-tensor one, which is the whole point.
+    * any two clips set *above* the measured global norm are bit-identical to each other across
+      **every** trainable tensor — ``factor = clip / clamp(norm, clip, INF) == 1`` for both — and
+      match the clip-disabled run up to graph-layout ulp jitter. That boundary sits at the global
+      norm, not at any per-tensor one, which is the whole point.
 
     The earlier version of this test asserted ``min(raw, clip) == clip`` after establishing
     ``raw > clip`` — a pure tautology that never observed the clip at all.
@@ -138,11 +140,24 @@ def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) 
         f"the clip must scale a copy into AdamW, not rewrite the accumulator"
     )
 
-    # A clip set above the measured GLOBAL norm is the exact identity, across every tensor.
+    # A clip set above the measured GLOBAL norm acts as factor exactly 1: two DIFFERENT above-norm
+    # clips must land on bit-identical weights, because clip/clamp(norm, clip, INF) == 1 for both.
+    # The boundary sits at the global norm, not any per-tensor one — which is the whole point.
     _, w_slack = _run(norm_off + 1.0)
-    assert w_slack == w_off, (
-        "a clip set just above the measured global norm changed the weights; with "
-        "factor = clip/clamp(norm, clip, INF) == 1 it must be the identity, bit for bit"
+    _, w_slack2 = _run(norm_off + 2.0)
+    assert w_slack == w_slack2, (
+        "two clips both above the measured global norm produced different weights; "
+        "factor = clip/clamp(norm, clip, INF) == 1 for both, so they must be bit-identical"
+    )
+
+    # Against the clip-DISABLED run the comparison cannot be bitwise: grad_clip=0 builds a graph
+    # without the clip nodes, and the different allocation/alignment shifts SIMD reduction splits
+    # by an ulp on some hosts (first seen on macos-14 arm64 — ADR-0002's caveat, in miniature).
+    # Near-identity at 1e-6 relative still rules out any real scaling; a binding clip moves
+    # weights at the 1e-3 scale (see the test below).
+    assert np.allclose(w_slack, w_off, rtol=1e-6, atol=1e-9), (
+        "a clip set above the measured global norm changed the weights beyond alignment-level "
+        "ulp noise; factor == 1 must be a no-op up to graph-layout jitter"
     )
 
 
