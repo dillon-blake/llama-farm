@@ -127,9 +127,7 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def conv1d_causal(
-    x_in: np.ndarray, conv_w: np.ndarray, conv_bias: np.ndarray
-) -> np.ndarray:
+def conv1d_causal(x_in: np.ndarray, conv_w: np.ndarray, conv_bias: np.ndarray) -> np.ndarray:
     """Depthwise causal conv1d + bias.
 
     ``out[t, c] = bias[c] + sum_{k<K} x_pad[t+k, c] * conv_w[c, k]`` with ``x_pad`` = ``x_in``
@@ -340,8 +338,14 @@ def _mamba_block_back(
     d_resid = dx
 
     d_y_gated = linear_back(
-        dx, lc["y_gated"], tensors[p + "ssm_out.weight"], loras.get(p + "ssm_out.weight"),
-        lc["z_out"], scale, grads, p + "ssm_out.weight",
+        dx,
+        lc["y_gated"],
+        tensors[p + "ssm_out.weight"],
+        loras.get(p + "ssm_out.weight"),
+        lc["z_out"],
+        scale,
+        grads,
+        p + "ssm_out.weight",
     )
 
     # y_gated = silu(z) * y
@@ -363,8 +367,14 @@ def _mamba_block_back(
 
     # dt = ssm_dt(dt_slice) + bias  (bias frozen)
     d_dt_slice = linear_back(
-        d_dt, lc["dt_slice"], tensors[p + "ssm_dt.weight"], loras.get(p + "ssm_dt.weight"),
-        lc["z_dt"], scale, grads, p + "ssm_dt.weight",
+        d_dt,
+        lc["dt_slice"],
+        tensors[p + "ssm_dt.weight"],
+        loras.get(p + "ssm_dt.weight"),
+        lc["z_dt"],
+        scale,
+        grads,
+        p + "ssm_dt.weight",
     )
 
     # x_db = [dt_slice | B | C] = ssm_x(x_conv)
@@ -374,8 +384,14 @@ def _mamba_block_back(
     d_x_db[:, dt_rank + d_state : dt_rank + 2 * d_state] = d_c
 
     d_x_conv_x = linear_back(
-        d_x_db, x_conv, tensors[p + "ssm_x.weight"], loras.get(p + "ssm_x.weight"),
-        lc["z_x"], scale, grads, p + "ssm_x.weight",
+        d_x_db,
+        x_conv,
+        tensors[p + "ssm_x.weight"],
+        loras.get(p + "ssm_x.weight"),
+        lc["z_x"],
+        scale,
+        grads,
+        p + "ssm_x.weight",
     )
     d_x_conv = d_x_conv + d_x_conv_x
 
@@ -386,8 +402,14 @@ def _mamba_block_back(
     # xz = ssm_in(h); xz = [x_in | z]
     d_xz = np.concatenate([d_x_in, d_z], axis=1)
     d_h = linear_back(
-        d_xz, lc["h"], tensors[p + "ssm_in.weight"], loras.get(p + "ssm_in.weight"),
-        lc["z_in"], scale, grads, p + "ssm_in.weight",
+        d_xz,
+        lc["h"],
+        tensors[p + "ssm_in.weight"],
+        loras.get(p + "ssm_in.weight"),
+        lc["z_in"],
+        scale,
+        grads,
+        p + "ssm_in.weight",
     )
 
     d_resid = d_resid + rms_norm_back(d_h, lc["resid"], tensors[p + "attn_norm.weight"], lc["inv"])
