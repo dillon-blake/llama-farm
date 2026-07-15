@@ -83,3 +83,110 @@ jobs:
           cd $env:TEMP
           python -c "from learning_llamas import _ffi; _ffi.load(); print('wheel imports outside the source tree')"
         shell: pwsh
+
+  # test-backend-ops on MSVC (S1-43). MODE_GRAD coverage of the project's kernel VJPs.
+  #
+  # The Linux/macOS lanes build and drive the vendored test-backend-ops (ci-cpu `ops`, ci-metal
+  # `grad`); this lane never did. So the 18 project-kernel VJPs in tests/project_ops.py had ZERO
+  # gradient coverage on MSVC — a genuinely different compiler, whose CPU kernels lean on
+  # compiler-sensitive intrinsics — and CI was green (audit 2026-07-15, ci-docs major).
+  #
+  # This job closes that. It builds the vendored binary with MSVC and drives MODE_GRAD through the
+  # SAME pytest wrapper (tests/test_backend_ops_grad.py) the other lanes use, so the ONE op registry
+  # and the vacuity guards apply identically: the verdict is parsed, not assumed — a `grad -o <op>`
+  # that compares zero gradients is a FAILURE here, not a green "OK". Never an inline op list, never
+  # a guessed `-b`. See docs/dev/backward-coverage.md and docs/dev/ci-metal.md.
+  #
+  # A dedicated job (not more steps on `build`) so it runs in parallel and adds a `ci-windows / ops`
+  # check that matches the ci-<backend>/<job> naming the other lanes use.
+  ops:
+    name: ops
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash   # -eo pipefail: multi-command steps fail on the FIRST error, not the last.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      # The grad wrapper cannot even be COLLECTED without the package: tests/conftest.py imports
+      # learning_llamas at module load, and the ggml_device fixture asks the loaded libs for the name
+      # ggml actually registered the device under. So install the extension exactly as the build job
+      # does — scikit-build-core drives Ninja + MSVC + sccache — with GGML_NATIVE=OFF keeping it an
+      # oracle build (the determinism argument in ci-cpu's header).
+      - name: Install the package (for the grad wrapper)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install scikit-build-core cmake ninja pytest
+          python -m pip install -e . --no-build-isolation
+          python -m pip install -e vendor/llama.cpp/gguf-py
+        env:
+          CMAKE_ARGS: >-
+            -DGGML_NATIVE=OFF
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+          SCCACHE_GHA_ENABLED: "true"
+
+      # Build the vendored test-backend-ops with MSVC. windows-latest's default generator is the
+      # Visual Studio MULTI-CONFIG generator, which changes two things from the Linux recipe:
+      #
+      #   * the build type is chosen at BUILD time with `--config Release`, because multi-config
+      #     generators ignore `-DCMAKE_BUILD_TYPE`;
+      #   * the binary lands in bin/RELEASE/, not bin/ — CMake appends the config to
+      #     CMAKE_RUNTIME_OUTPUT_DIRECTORY for multi-config generators. TEST_BACKEND_OPS below points
+      #     at that exact path, so nothing downstream has to guess the layout.
+      #
+      # The VS generator locates the MSVC toolchain itself (no vcvars dance), but it does NOT honour
+      # CMAKE_<LANG>_COMPILER_LAUNCHER — that is a Ninja/Make feature — so sccache is not wired into
+      # this build. GGML_NATIVE=OFF for the same oracle-determinism reason as every other lane.
+      - name: Build test-backend-ops (MSVC)
+        run: |
+          cmake -S vendor/llama.cpp -B build/vendor-tests \
+            -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_METAL=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF
+          cmake --build build/vendor-tests --config Release --target test-backend-ops -j 2
+
+      # Per-PR, quick tier. A targeted forward subset (a crash-smoke that the MSVC-compiled kernels
+      # at least run and self-agree) plus the full MODE_GRAD registry through the wrapper. `-b CPU`
+      # is an exact strcmp and CPU is unsuffixed, so — unlike the GPU lanes — it needs no device-name
+      # resolution and no `Skipping` guard.
+      - name: test-backend-ops — test (targeted, CPU)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: ./build/vendor-tests/bin/Release/test-backend-ops.exe test -b CPU -o MUL_MAT,OUT_PROD,SOFT_MAX,RMS_NORM,CROSS_ENTROPY_LOSS
+
+      # MODE_GRAD through the pytest wrapper — the registry-driven, vacuity-guarded path, identical
+      # to the Linux lane. TEST_BACKEND_OPS is the EXACT built path (.exe, under bin/Release/), so
+      # _binary() uses it verbatim and never has to guess the multi-config layout.
+      - name: test-backend-ops — grad (MODE_GRAD, ops from tests/project_ops.py)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/Release/test-backend-ops.exe
+        run: python -m pytest tests/test_backend_ops_grad.py -v
+
+      # Nightly, detailed tier — the full forward sweep, the grad wrapper, and MUL_MAT's grad (the
+      # only thing that exercises OUT_PROD's gradient path at all; it is nightly-only because it is
+      # slow). Mirrors ci-cpu's nightly. Split into one command per step so each exit code is checked.
+      - name: test-backend-ops — full forward sweep (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: ./build/vendor-tests/bin/Release/test-backend-ops.exe test -b CPU
+
+      - name: test-backend-ops — grad wrapper (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/Release/test-backend-ops.exe
+        run: python -m pytest tests/test_backend_ops_grad.py -v
+
+      - name: test-backend-ops — MUL_MAT grad (nightly)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: ./build/vendor-tests/bin/Release/test-backend-ops.exe grad -b CPU -o MUL_MAT

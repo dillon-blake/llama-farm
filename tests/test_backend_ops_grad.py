@@ -38,8 +38,13 @@ import pytest
 
 from .project_ops import PROJECT_ADDED_OPS
 
-# Where S0-07's CI puts it, and where docs/dev/backward-coverage.md says to build it.
-_BUILD_DIRS = ("build/vendor-tests/bin", "build/vendor-tests")
+# Where S0-07's CI puts it, and where docs/dev/backward-coverage.md says to build it. The
+# `bin/Release` entry and the `.exe` name are for Windows (S1-43): MSVC's multi-config generators
+# nest the binary under the build type (`bin/Release/test-backend-ops.exe`), where single-config
+# generators (Ninja, Make) drop it straight in `bin/`. CI points TEST_BACKEND_OPS at the exact
+# path, so this fallback only matters for a bare local run — but a Windows dev deserves one too.
+_BUILD_DIRS = ("build/vendor-tests/bin", "build/vendor-tests/bin/Release", "build/vendor-tests")
+_EXE_NAMES = ("test-backend-ops", "test-backend-ops.exe")
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -48,15 +53,28 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _CASE = re.compile(r"^\s*[A-Z_0-9]+\((.*)\):\s*(.*?)\s*$")
 
 
+def _discover_in(root: pathlib.Path) -> pathlib.Path | None:
+    """The built binary under ``root``, across generators and platforms.
+
+    Single-config generators (Ninja, Make) drop it in ``bin/``; MSVC's multi-config generators nest
+    it under the build type (``bin/Release/``), and Windows suffixes it ``.exe``. So the search is
+    the cross product of :data:`_BUILD_DIRS` and :data:`_EXE_NAMES`, not the one Linux path.
+    """
+    for d in _BUILD_DIRS:
+        for name in _EXE_NAMES:
+            candidate = root / d / name
+            if candidate.exists():
+                return candidate
+    return None
+
+
 def _binary() -> pathlib.Path:
     if override := os.environ.get("TEST_BACKEND_OPS"):
         return pathlib.Path(override)
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    for d in _BUILD_DIRS:
-        candidate = root / d / "test-backend-ops"
-        if candidate.exists():
-            return candidate
+    if found := _discover_in(root):
+        return found
 
     if found := shutil.which("test-backend-ops"):
         return pathlib.Path(found)
@@ -196,3 +214,36 @@ def test_the_harness_runs_on_the_device_we_asked_for(ggml_device: str) -> None:
         f"'Skipping {ggml_device}', the name matched no device and the run is worthless: -b takes "
         f"ggml_backend_dev_name()'s exact string (MTL0, not Metal; CUDA0, not CUDA)."
     )
+
+
+def test_the_binary_override_is_respected_verbatim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The override is returned untouched — ``.exe``, ``bin/Release/`` and all.
+
+    CI hands ``_binary()`` the exact built path, so it must not re-derive a layout of its own.
+    This is precisely what lets the Windows lane (S1-43) point ``TEST_BACKEND_OPS`` at
+    ``build/vendor-tests/bin/Release/test-backend-ops.exe`` without ``_binary()`` needing to know a
+    thing about MSVC's multi-config output tree.
+    """
+    exe = tmp_path / "anywhere" / "test-backend-ops.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.setenv("TEST_BACKEND_OPS", str(exe))
+
+    assert _binary() == exe
+
+
+def test_the_windows_multiconfig_binary_is_discovered(tmp_path: pathlib.Path) -> None:
+    """With no override, discovery must still find MSVC's ``bin/Release/test-backend-ops.exe``.
+
+    A local ``cmake --build --config Release`` on Windows produces exactly that layout — nested
+    under the build type and suffixed ``.exe`` — where the Linux build produces ``bin/test-backend-
+    ops``. Before S1-43 the fallback knew only the Linux path, so a Windows dev running the wrapper
+    bare would have been told the binary "is not built" while it sat right there.
+    """
+    exe = tmp_path / "build" / "vendor-tests" / "bin" / "Release" / "test-backend-ops.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+
+    assert _discover_in(tmp_path) == exe
