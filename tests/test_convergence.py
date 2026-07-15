@@ -135,6 +135,52 @@ def test_the_reference_backward_is_itself_correct(tiny_f32, tmp_path, conv_data)
         f"the float64 reference's own backward disagrees with its own forward: {worst:.2e}"
     )
 
+    # S1-48: the SAME audit for the base-weight gradients the full-finetune backward now emits.
+    # An oracle nobody audited is not an oracle, and the base-weight VJPs (the RMSNorm weight sums,
+    # the dy.T @ x at each projection, the output head, and the embedding scatter) were derived by
+    # hand exactly like the LoRA ones. A sample of each *kind* is finite-differenced against this
+    # file's own forward, at the same h and the same tolerance. The LoRA assertion above stands
+    # untouched.
+    base_grads = ref.backward(base, hp, loras, scale, cache, dlogits, base_grads=True)
+
+    def base_loss_at(name: str, idx: tuple, delta: float) -> float:
+        original = base[name][idx]
+        base[name][idx] = original + delta
+        lg, _ = ref.forward(base, hp, loras, scale, tokens[0])
+        value, _ = ref.loss_from_logits(lg, targets[0], weights[0])
+        base[name][idx] = original
+        return value
+
+    # One of every kind: the embedding scatter, the output head, a trainable norm, an attention
+    # projection, and an FFN projection.
+    sampled = [
+        "token_embd.weight",
+        "output.weight",
+        "output_norm.weight",
+        "blk.0.attn_norm.weight",
+        "blk.0.attn_q.weight",
+        "blk.1.attn_v.weight",
+        "blk.0.ffn_gate.weight",
+        "blk.1.ffn_down.weight",
+    ]
+    base_worst = 0.0
+    for name in sampled:
+        arr = base_grads[name]
+        if name == "token_embd.weight":
+            # A random vocab row is almost never one this 32-token sample looked up, so its
+            # gradient — and the FD — would both be a vacuous zero. Pick a row a token selected.
+            idx = (int(tokens[0][3]), int(rng.integers(0, arr.shape[1])))
+        else:
+            idx = tuple(int(rng.integers(0, s)) for s in arr.shape)
+        numeric = (base_loss_at(name, idx, h) - base_loss_at(name, idx, -h)) / (2 * h)
+        analytic = float(arr[idx])
+        rel = abs(analytic - numeric) / max(abs(analytic), abs(numeric), 1e-12)
+        base_worst = max(base_worst, rel)
+
+    assert base_worst < 1e-5, (
+        f"the reference's base-weight backward disagrees with its own forward: {base_worst:.2e}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # One step: the loss, and every gradient. This is the strongest check in the suite.

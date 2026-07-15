@@ -179,6 +179,32 @@ int32_t validate_adapter_tensor(const ggml_tensor * tensor) {
     return LL_OK;
 }
 
+// Flag one BASE model weight as trainable, if it can be (S1-48, full fine-tuning).
+//
+// Skips, silently and by design: a null slot (most llama_layer fields are unused by any one arch),
+// a non-F32 tensor (a quantized base weight cannot receive a gradient), a non-leaf, the precomputed
+// rope_freqs table (a constant, not a learnable), a tensor whose buffer cannot run its backward
+// (repacked -- avoided entirely by full_finetune's use_extra_bufts=false), and a tensor already
+// flagged (tied embeddings alias output == tok_embd, and ggml_set_param must not run twice).
+void try_flag_base_tensor(ggml_tensor * t, ll_train_state * state) {
+    if (t == nullptr || t->type != GGML_TYPE_F32 || t->op != GGML_OP_NONE) {
+        return;
+    }
+    if (std::strcmp(ggml_get_name(t), "rope_freqs.weight") == 0) {
+        return;
+    }
+    if (!base_tensor_supports_backward(t)) {
+        return;
+    }
+    for (ggml_tensor * seen : state->param_tensors) {
+        if (seen == t) {
+            return;
+        }
+    }
+    ggml_set_param(t);
+    state->param_tensors.push_back(t);
+}
+
 } // namespace
 
 int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter_lora ** adapters, size_t n_adapters,
@@ -301,6 +327,73 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     train_states()[ctx] = std::move(state);
 
     return (int32_t)n_tensors;
+}
+
+int32_t ll_opt_init_full(llama_context * ctx, llama_model * model, ll_opt_params * params, int32_t opt_period,
+                         float grad_clip) {
+    if (ctx == nullptr || model == nullptr || params == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    if (opt_period < 1 || grad_clip < 0.0f) {
+        return LL_ERR_INVALID_ARG;
+    }
+    if (train_states().count(ctx) != 0) {
+        return LL_ERR_ALREADY_INIT;
+    }
+
+    auto state = std::make_unique<ll_train_state>();
+    state->params = params;
+
+    state->opt_pars.adamw.alpha = params->alpha;
+    state->opt_pars.adamw.beta1 = params->beta1;
+    state->opt_pars.adamw.beta2 = params->beta2;
+    state->opt_pars.adamw.eps = params->eps;
+    state->opt_pars.adamw.wd = params->wd;
+    state->opt_pars.sgd.alpha = params->alpha;
+    state->opt_pars.sgd.wd = params->wd;
+
+    // Everything below mirrors ll_opt_init_lora exactly -- the training flag, the SUM-loss opt
+    // context, the caller-owned hyperparameters, the graph-fused clip -- because full fine-tuning
+    // differs from LoRA in one place only: WHICH leaves are flagged. See ll_train_state::opt_ctx
+    // for why the loss type is SUM rather than llama_opt_init's hardcoded cross-entropy.
+    ctx->set_training(true);
+
+    ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
+    opt_params.opt_period = opt_period;
+    opt_params.grad_clip = grad_clip;
+    opt_params.get_opt_pars = ggml_opt_get_constant_optimizer_params;
+    opt_params.get_opt_pars_ud = &state->opt_pars;
+    opt_params.optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+
+    state->sched = ctx->get_sched();
+    state->opt_ctx = ggml_opt_init(opt_params);
+
+    // Flag the base weights. This traversal mirrors llama_context::opt_init's (llama-context.cpp),
+    // with two deliberate differences: it flags the token embedding (whose gradient is GET_ROWS's
+    // VJP, which this fork implements), and it builds our own SUM opt context so the masked-CE
+    // ll_train_step works unchanged. The whole-struct reinterpret over each layer is llama.cpp's
+    // own idiom (llama_layer is a flat run of ggml_tensor * fields), so any arch's per-block
+    // weights are covered without an arch-specific list.
+    try_flag_base_tensor(model->tok_embd, state.get());
+    try_flag_base_tensor(model->output_norm, state.get());
+    try_flag_base_tensor(model->output, state.get());
+    for (llama_layer & layer : model->layers) {
+        const size_t n_fields = sizeof(layer) / sizeof(ggml_tensor *);
+        for (size_t i = 0; i < n_fields; ++i) {
+            try_flag_base_tensor(reinterpret_cast<ggml_tensor **>(&layer)[i], state.get());
+        }
+    }
+
+    if (state->param_tensors.empty()) {
+        // Nothing trainable -- an all-quantized base, or a model with no F32 leaves. Refuse rather
+        // than stand up an optimizer that would step on nothing.
+        return LL_ERR_INVALID_ARG;
+    }
+
+    const int32_t n_tensors = (int32_t)state->param_tensors.size();
+    train_states()[ctx] = std::move(state);
+
+    return n_tensors;
 }
 
 int32_t ll_opt_free(llama_context * ctx) {
@@ -1105,6 +1198,19 @@ ll_train_state * state_for(llama_context * ctx) {
     return it == train_states().end() ? nullptr : it->second.get();
 }
 
+// A flagged parameter tensor addressed by its EXACT ggml name -- the full-finetune analogue of
+// find_adapter_tensor, which instead builds "<base>.lora_a/b". Base weights carry their GGUF name
+// unchanged ("blk.0.attn_q.weight", "output.weight", "token_embd.weight"), so an exact match is all
+// that is needed.
+ggml_tensor * find_param_by_name(ll_train_state * state, const char * name) {
+    for (ggml_tensor * t : state->param_tensors) {
+        if (std::strcmp(ggml_get_name(t), name) == 0) {
+            return t;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace
 
 int64_t ll_debug_n_elements(llama_context * ctx, const char * base_name, bool is_b) {
@@ -1196,6 +1302,53 @@ int64_t ll_debug_grad(llama_context * ctx, const char * base_name, bool is_b, fl
     if (grad == nullptr) {
         return LL_ERR_NOT_INITIALIZED;
     }
+
+    const int64_t n = ggml_nelements(grad);
+    if (n > n_max) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    ggml_backend_tensor_get(grad, out, 0, n * sizeof(float));
+    return n;
+}
+
+int64_t ll_debug_base_n_elements(llama_context * ctx, const char * name) {
+    if (ctx == nullptr || name == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_param_by_name(state, name);
+    if (t == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    return ggml_nelements(t);
+}
+
+int64_t ll_debug_base_grad(llama_context * ctx, const char * name, float * out, int64_t n_max) {
+    if (ctx == nullptr || name == nullptr || out == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->opt_ctx == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+
+    ggml_tensor * t = find_param_by_name(state, name);
+    if (t == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // The cached accumulator, keyed by the base tensor's own name -- same window and same reason as
+    // ll_debug_grad (see capture_grad_accs).
+    const auto git = state->grad_accs.find(std::string(name));
+    if (git == state->grad_accs.end() || git->second == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+    ggml_tensor * grad = git->second;
 
     const int64_t n = ggml_nelements(grad);
     if (n > n_max) {
