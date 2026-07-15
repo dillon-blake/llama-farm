@@ -330,3 +330,248 @@ def test_an_adapter_for_another_model_is_refused(
 
     with pytest.raises(ValueError, match="architecture"):
         merge(tiny_q4_k, bad, tmp_path / "out.gguf", libs)
+
+
+# ---------------------------------------------------------------------------
+# The token_embd flipped-convention merge (S1-44).
+#
+# Every default-preset target folds `delta = B @ A`. `token_embd.weight` does NOT: the loader
+# applies it A-transposed (llama-adapter.cpp:356-368), and no existing test touches it, because the
+# default preset excludes token_embd. A wrong transpose here yields a merged model whose embeddings
+# are garbage -- and nothing would have caught it. These tests pin the convention numerically.
+# ---------------------------------------------------------------------------
+
+# alpha/rank == 2: a non-trivial token_embd scale, so a merge that (wrongly) dropped the alpha/rank
+# factor -- effective 1.0 -- would MISS the oracle rather than coincide with it at 1.0.
+TE_ALPHA = 2.0 * RANK
+
+
+def _write_adapter(
+    path, arch: str, alpha: float, pairs: list[tuple[str, np.ndarray, np.ndarray]]
+) -> None:
+    """Write a LoRA adapter GGUF from explicit ``(name, A, B)`` numpy pairs.
+
+    Mirrors :func:`learning_llamas.adapter._write_adapter_gguf`, spelled out here so a test can put
+    a chosen B into the file (``create_zero_adapter`` only ever writes ``B == 0``). A and B are in
+    numpy layout -- the GGUF ``ne`` reversed -- and ``add_tensor`` reverses them back, so the ne
+    that lands in the file is exactly the one the loader validates.
+    """
+    import gguf
+
+    writer = gguf.GGUFWriter(str(path), arch=arch)
+    writer.add_type(gguf.GGUFType.ADAPTER)
+    writer.add_string(gguf.Keys.Adapter.TYPE, "lora")
+    writer.add_float32(gguf.Keys.Adapter.LORA_ALPHA, alpha)
+    for name, a, b in pairs:
+        writer.add_tensor(f"{name}.lora_a", a)
+        writer.add_tensor(f"{name}.lora_b", b)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+
+def _read_ab(path) -> tuple[str, float, dict[str, tuple[np.ndarray, np.ndarray]]]:
+    """Read an adapter GGUF back into ``arch, alpha, {base_name: (A, B)}`` numpy arrays.
+
+    numpy shapes are the GGUF ``ne`` reversed, so an A written from ``(n_vocab, r)`` comes back as
+    ``(n_vocab, r)`` -- the shape the oracle below reasons about.
+    """
+    import gguf
+
+    reader = gguf.GGUFReader(str(path), "r")
+    arch = str(reader.get_field(gguf.Keys.General.ARCHITECTURE).contents())
+    alpha = float(reader.get_field(gguf.Keys.Adapter.LORA_ALPHA).contents())
+
+    parts: dict[str, dict[str, np.ndarray]] = {}
+    for t in reader.tensors:
+        for suffix, role in ((".lora_a", "a"), (".lora_b", "b")):
+            if t.name.endswith(suffix):
+                base = t.name[: -len(suffix)]
+                arr = np.array(t.data, dtype=np.float32).reshape(tuple(t.shape)[::-1])
+                parts.setdefault(base, {})[role] = arr
+    return arch, alpha, {name: (ab["a"], ab["b"]) for name, ab in parts.items()}
+
+
+def _tensor(path, name: str):
+    """One tensor of a GGUF, by name."""
+    import gguf
+
+    return {t.name: t for t in gguf.GGUFReader(str(path), "r").tensors}[name]
+
+
+def _npshape(tensor) -> tuple[int, ...]:
+    """A GGUF tensor's numpy shape -- its ``ne`` reversed."""
+    return tuple(int(x) for x in tensor.shape)[::-1]
+
+
+def _nonzero_token_embd_adapter(
+    base_path, out_path, seed: int = 3
+) -> tuple[np.ndarray, np.ndarray]:
+    """A ``token_embd``-only adapter with nonzero A *and* B, plus the exact (A, B) it holds.
+
+    ``create_zero_adapter`` writes ``A ~ N(0, sigma)`` and ``B == 0`` in the loader's flipped
+    token_embd convention. We keep that A, fill B with real values, rewrite, and read both back --
+    so the caller's oracle uses the bytes actually in the file, not the ones it meant to write.
+    """
+    zero = out_path.parent / (out_path.stem + "-zero.gguf")
+    create_zero_adapter(
+        base_path, zero, r=RANK, alpha=TE_ALPHA, preset=(), include_token_embd=True, seed=seed
+    )
+    arch, alpha, ab = _read_ab(zero)
+    a, b_zero = ab["token_embd.weight"]
+    assert not b_zero.any(), "a fresh adapter must have B == 0"
+
+    b = (np.random.default_rng(seed + 1).standard_normal(b_zero.shape) * 0.02).astype(np.float32)
+    _write_adapter(out_path, arch, alpha, [("token_embd.weight", a, b)])
+
+    _, _, ab2 = _read_ab(out_path)
+    return ab2["token_embd.weight"]
+
+
+def test_token_embd_merge_uses_the_flipped_convention(tiny_f32, tmp_path, libs: _ffi.Libraries):
+    """token_embd merges A-transposed -- checked against a numpy oracle, not against export._delta.
+
+    The loader applies the token_embd LoRA in ``llm_build_inp_embd``
+    (vendor/llama.cpp/src/llama-graph.cpp:2268-2273) as::
+
+        delta_row(t) = scale * mul_mat(B, get_rows(A, tokens))
+
+    so for token ``t`` and embedding component ``i`` the added value is ``sum_k B[i,k] * A[t,k]`` --
+    the whole delta is ``D = A @ B.T`` of shape ``(n_vocab, n_embd)``, with A stored
+    ``(n_vocab, r)`` and B stored ``(n_embd, r)`` (the flipped shape the loader validates at
+    llama-adapter.cpp:356-368). This oracle is that math written out from first principles. Because
+    the base is F32 the merge is exact (dequantize/quantize are identities), so the check is a
+    strict equality, not a tolerance to hide in.
+    """
+    adapter_path = tmp_path / "te.gguf"
+    a, b = _nonzero_token_embd_adapter(tiny_f32, adapter_path)
+
+    n_vocab, r = a.shape
+    n_embd, r_b = b.shape
+    assert (r, r_b) == (RANK, RANK)
+    assert n_vocab != n_embd, "the fixture must be non-square, so orientation errors cannot hide"
+
+    scale = 1.0
+    merged_path = tmp_path / "merged.gguf"
+    touched = merge(tiny_f32, adapter_path, merged_path, libs, scale=scale)
+    assert set(touched) == {"token_embd.weight"}
+
+    # ---- the oracle, transcribed from the graph above (NOT by calling export._delta) ----
+    rank = r  # llama.cpp reads the rank from B.ne[0] == r (llama-adapter.h:53)
+    effective = scale * TE_ALPHA / rank  # alpha != 0, so the alpha/rank factor applies
+    delta = a @ b.T
+    assert delta.shape == (n_vocab, n_embd)
+
+    base_te = _tensor(tiny_f32, "token_embd.weight")
+    base_vals = dequantize(base_te.data, base_te.tensor_type, _npshape(base_te))
+    expected = base_vals + effective * delta
+
+    merged_te = _tensor(merged_path, "token_embd.weight")
+    merged_vals = dequantize(merged_te.data, merged_te.tensor_type, _npshape(merged_te))
+
+    tol = 1e-6
+    off = float(np.abs(merged_vals - expected).max())
+    # Observed: 0.0 (bit-exact) -- F32 in, F32 out, identical float ops on both sides.
+    assert off < tol, f"merged token_embd is {off:.3g} from the flipped-convention oracle"
+
+    # ---- can-fail: a transposed delta could not survive this test ----
+    # (1) shape: n_vocab != n_embd, so the transpose D.T is (n_embd, n_vocab) and does not even fit
+    #     the base tensor -- a `b @ a.T` / `(a @ b.T).T` mix-up RAISES in merge, it does not pass.
+    assert delta.T.shape != base_vals.shape
+    # (2) value: on the overlapping square block, A @ B.T is strongly non-symmetric, so had the fold
+    #     used the transpose the merged tensor would differ from this oracle by ~1e5x `tol`.
+    k = min(delta.shape)
+    block = delta[:k, :k]
+    asymmetry = float(np.abs(block - block.T).max())  # observed ~0.15
+    assert asymmetry > 1e4 * tol, (
+        f"the delta is nearly symmetric ({asymmetry:.3g}); this oracle could not tell A @ B.T from "
+        "its transpose, so it would not catch a flipped-convention bug"
+    )
+
+
+def test_the_token_embd_merged_model_matches_base_plus_adapter(
+    tiny_f32, tmp_path, load_model, libs: _ffi.Libraries
+):
+    """The token_embd merge is not just arithmetic on paper: the merged GGUF runs and agrees.
+
+    A merged model folds the embedding delta into ``token_embd.weight``; base+adapter applies it at
+    ``get_rows`` time. On an F32 base those are the same computation reordered, so the logits must
+    agree to float32 round-off -- while both sit far from the bare base, proving the delta is really
+    present. (tiny_f32 is not tied, so ``output.weight`` is untouched and the comparison is clean.)
+    """
+    adapter_path = tmp_path / "te.gguf"
+    _nonzero_token_embd_adapter(tiny_f32, adapter_path)
+
+    merged_path = tmp_path / "merged.gguf"
+    merge(tiny_f32, adapter_path, merged_path, libs, scale=1.0)
+
+    bare = load_model(tiny_f32, n_ctx=N_CTX)
+    logits_base = np.array(bare.logits(PROMPT))
+
+    with_adapter = load_model(tiny_f32, n_ctx=N_CTX)
+    with_adapter.attach_adapter(adapter_path, scale=1.0)
+    logits_adapter = np.array(with_adapter.logits(PROMPT))
+
+    merged_model = load_model(merged_path, n_ctx=N_CTX)
+    logits_merged = np.array(merged_model.logits(PROMPT))
+
+    moved = float(np.abs(logits_adapter - logits_base).max())
+    assert moved > 1e-2, f"the token_embd adapter barely moves the logits ({moved:.3g})"
+
+    to_adapter = float(np.abs(logits_merged - logits_adapter).max())
+    # Observed: 8.2e-05, against a bare-base distance of ~0.89 -- float32 associativity, not a
+    # modelling difference. A transposed or mis-scaled embedding delta lands nowhere near here.
+    assert to_adapter < 1e-3, (
+        f"the merged model diverges from base+adapter by {to_adapter:.3g}; on an F32 base the "
+        "flipped-convention fold should reproduce it to round-off"
+    )
+    assert int(logits_merged.argmax()) == int(logits_adapter.argmax()), (
+        "the merged model and base+adapter disagree on the very next token"
+    )
+
+
+def test_a_q8_0_merge_preserves_every_tensors_quant_type(tiny_q8_0, tmp_path, libs: _ffi.Libraries):
+    """S1-08 AC, the Q8_0 half: a merged Q8_0 base stays Q8_0 -- no silent F16 fallback.
+
+    ``test_merging_at_scale_zero...`` pins type preservation for Q4_K only; Q8_0 is a *named* S1-08
+    acceptance criterion that had no test. A real (nonzero) delta is folded into every
+    default-preset target so the re-quantize path runs on merged data, not a pass-through.
+    """
+    import gguf
+
+    zero = tmp_path / "zero.gguf"
+    create_zero_adapter(tiny_q8_0, zero, r=RANK, alpha=ALPHA, seed=5)
+
+    arch, alpha, ab = _read_ab(zero)
+    rng = np.random.default_rng(7)
+    pairs = [
+        (name, a, (rng.standard_normal(b.shape) * 0.01).astype(np.float32))
+        for name, (a, b) in ab.items()
+    ]
+    nonzero = tmp_path / "nz.gguf"
+    _write_adapter(nonzero, arch, alpha, pairs)
+
+    merged_path = tmp_path / "merged.gguf"
+    touched = merge(tiny_q8_0, nonzero, merged_path, libs, scale=1.0)
+    assert touched, "the adapter matched nothing"
+
+    base_types = {t.name: t.tensor_type for t in gguf.GGUFReader(str(tiny_q8_0), "r").tensors}
+    merged_types = {t.name: t.tensor_type for t in gguf.GGUFReader(str(merged_path), "r").tensors}
+
+    assert set(base_types) == set(merged_types)
+    # Every tensor keeps its exact type: Q8_0 weights re-quantize to Q8_0, the F32 norms pass
+    # through as F32. Nothing here is an F32 *target*, so there is no legitimate type change to
+    # exempt -- and FALLBACK_TYPE (F16) must appear nowhere, since that is what an unimplemented
+    # re-quantizer would emit, quadrupling the file.
+    for name, base_type in base_types.items():
+        assert merged_types[name] == base_type, (
+            f"{name}: base is {base_type.name}, merged is {merged_types[name].name}"
+        )
+    assert gguf.GGMLQuantizationType.F16 not in merged_types.values()
+
+    # ...and the Q8_0 path was genuinely exercised -- not vacuously true over an all-F32 base.
+    q8 = gguf.GGMLQuantizationType.Q8_0
+    q8_touched = [n for n in touched if base_types[n] == q8]
+    assert q8_touched, "no Q8_0 tensor was folded; this test would prove nothing about Q8_0"
+    assert all(merged_types[n] == q8 for n in q8_touched)
