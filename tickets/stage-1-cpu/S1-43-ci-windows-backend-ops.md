@@ -5,7 +5,7 @@ stage: 1
 track: infra
 size: S
 deps: [S1-33]
-status: in-progress
+status: done
 pr: null
 ---
 
@@ -66,7 +66,7 @@ exits 0, and a `grad -o <op>` that compared nothing still prints `OK`.
       sweep + grad registry + `grad -o MUL_MAT`.
 - [x] `_binary()` resolves the MSVC multi-config `.exe` path (override respected verbatim; fallback
       discovers `bin/Release/test-backend-ops.exe`), with unit tests for both.
-- [ ] `ci-windows / ops` observed green on a real windows-latest run — **unverifiable on this Linux
+- [x] `ci-windows / ops` observed green on a real windows-latest run — **unverifiable on this Linux
       host; unproven until CI runs** (see below).
 
 ## Testing & verification
