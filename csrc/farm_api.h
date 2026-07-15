@@ -167,6 +167,34 @@ LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model *
                                 struct llama_adapter_lora ** adapters, size_t n_adapters, struct ll_opt_params * params,
                                 int32_t opt_period, float grad_clip);
 
+// Full fine-tuning (S1-48): flag the BASE model's own weights as the trainable parameters, and
+// put the context into training mode.
+//
+// The mirror image of ll_opt_init_lora. Where LoRA flags the adapter's A/B tensors and leaves the
+// base frozen, this flags the base weights themselves and there is no adapter at all. Everything
+// downstream is identical: the same masked-CE ll_train_step, the same gradient/momentum capture,
+// the same ll_debug_* readback (via ll_debug_base_grad) -- because ggml_build_backward_expand does
+// not care WHICH leaves were flagged, only that they were.
+//
+// Which tensors are flagged, for a llama-family arch: the token embedding table, the output norm,
+// the output projection, and every RMSNorm weight and attention/FFN projection in every block --
+// i.e. every F32 leaf weight the forward graph reaches. rope_freqs (a precomputed constant, not a
+// learnable) is skipped by name, and any non-F32 or already-flagged tensor is skipped. Unlike
+// llama.cpp's own llama_opt_init, the token embedding IS trained here: its gradient is GET_ROWS's
+// VJP (GET_ROWS_BACK), which the fork implements and the CPU backend schedules.
+//
+// Because the base weights are written in place by the AdamW step, the model MUST have been loaded
+// with mmap disabled (Model(full_finetune=True)) -- a read-only mapping segfaults inside the
+// optimizer step, after forward and backward have both already succeeded.
+//
+// The same lifetime rule as ll_opt_init_lora applies to `params`: the shim stores the pointer and
+// re-reads it every step. Do not call this directly from Python -- `_ffi.opt_init_full` holds the
+// reference for you.
+//
+// Returns the number of base tensors flagged, or a negative LL_ERR_* code.
+LL_API int32_t ll_opt_init_full(struct llama_context * ctx, struct llama_model * model, struct ll_opt_params * params,
+                                int32_t opt_period, float grad_clip);
+
 // Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
 LL_API int32_t ll_opt_free(struct llama_context * ctx);
 
@@ -509,6 +537,13 @@ LL_API int64_t ll_debug_set_tensor(struct llama_context * ctx, const char * base
 // Only valid after a training step has built the backward graph; before that there is no
 // accumulator and this returns LL_ERR_NOT_INITIALIZED.
 LL_API int64_t ll_debug_grad(struct llama_context * ctx, const char * base_name, bool is_b, float * out, int64_t n_max);
+
+// The full-finetune counterparts (S1-48): address a flagged BASE weight by its exact ggml name
+// (e.g. "blk.0.attn_q.weight", "output.weight", "token_embd.weight") rather than an adapter's
+// base_name + is_b. Same contract as the adapter accessors above; ll_debug_base_grad reads the
+// same cached ggml-opt accumulator and is likewise only valid after a training step.
+LL_API int64_t ll_debug_base_n_elements(struct llama_context * ctx, const char * name);
+LL_API int64_t ll_debug_base_grad(struct llama_context * ctx, const char * name, float * out, int64_t n_max);
 
 #ifdef __cplusplus
 }

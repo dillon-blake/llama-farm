@@ -131,12 +131,52 @@ def opt_init_lora(
     return n_flagged
 
 
+def opt_init_full(
+    libs,
+    ctx: int,
+    model: int,
+    params: ll_opt_params,
+    opt_period: int = 1,
+    grad_clip: float = 0.0,
+) -> int:
+    """Flag the base model's own weights as the trainable parameters (S1-48, full fine-tuning).
+
+    The mirror image of :func:`opt_init_lora`: no adapter, the base weights themselves train, and
+    the model must have been loaded with ``full_finetune=True`` (mmap off) so the AdamW step can
+    write them back in place.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: A ``llama_context *``.
+        model: The ``llama_model *`` whose weights will be trained.
+        params: The AdamW hyperparameters. **Kept alive by this module** for as long as ``ctx`` is
+            initialized, exactly as for :func:`opt_init_lora` — the shim holds a pointer and reads
+            it every step.
+        opt_period: How many ``ll_train_step`` calls make one optimizer step.
+        grad_clip: Clip the gradients to this global norm before every optimizer step. 0 disables.
+
+    Returns:
+        The number of base tensors flagged.
+
+    Raises:
+        RuntimeError: If the shim rejects the call (see :class:`LLError`).
+    """
+    n_flagged = check(
+        libs.farm.ll_opt_init_full(ctx, model, ctypes.byref(params), opt_period, grad_clip),
+        "ll_opt_init_full",
+    )
+
+    _LIVE_PARAMS[int(ctx)] = params
+
+    return n_flagged
+
+
 def opt_free(libs, ctx: int) -> None:
     """Release the shim's training state for ``ctx``, and the params struct it was reading.
 
     Args:
         libs: The loaded native libraries.
-        ctx: The ``llama_context *`` passed to :func:`opt_init_lora`.
+        ctx: The ``llama_context *`` passed to :func:`opt_init_lora` or :func:`opt_init_full`.
     """
     libs.farm.ll_opt_free(ctx)
     _LIVE_PARAMS.pop(int(ctx), None)
@@ -184,6 +224,19 @@ SYMBOLS = [
         ],
         ctypes.c_int32,
     ),
+    # S1-48: flag the base model's own weights as the trainable parameters (full fine-tuning).
+    Symbol(
+        Library.FARM,
+        "ll_opt_init_full",
+        [
+            ctypes.c_void_p,  # llama_context *
+            ctypes.c_void_p,  # llama_model *
+            ctypes.POINTER(ll_opt_params),
+            ctypes.c_int32,  # opt_period
+            ctypes.c_float,  # grad_clip (0 disables)
+        ],
+        ctypes.c_int32,
+    ),
     Symbol(Library.FARM, "ll_opt_free", [ctypes.c_void_p], ctypes.c_int32),
     # S1-03 debug accessors. Outside any API-stability promise; superseded by S1-08.
     Symbol(
@@ -223,6 +276,24 @@ SYMBOLS = [
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_bool,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int64,
+        ],
+        ctypes.c_int64,
+    ),
+    # S1-48: the full-finetune debug accessors -- a flagged BASE weight by its exact ggml name.
+    Symbol(
+        Library.FARM,
+        "ll_debug_base_n_elements",
+        [ctypes.c_void_p, ctypes.c_char_p],
+        ctypes.c_int64,
+    ),
+    Symbol(
+        Library.FARM,
+        "ll_debug_base_grad",
+        [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
             ctypes.POINTER(ctypes.c_float),
             ctypes.c_int64,
         ],

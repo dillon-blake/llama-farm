@@ -184,9 +184,14 @@ def rms_norm(x: np.ndarray, weight: np.ndarray, eps: float) -> tuple[np.ndarray,
 
 
 def rms_norm_back(
-    dy: np.ndarray, x: np.ndarray, weight: np.ndarray, inv_rms: np.ndarray
+    dy: np.ndarray,
+    x: np.ndarray,
+    weight: np.ndarray,
+    inv_rms: np.ndarray,
+    grads: dict[str, np.ndarray] | None = None,
+    name: str | None = None,
 ) -> np.ndarray:
-    """VJP of :func:`rms_norm` with respect to ``x`` (the weight is frozen, so it takes none).
+    """VJP of :func:`rms_norm` with respect to ``x`` (and, optionally, to the weight).
 
     With ``s = inv_rms`` and ``g = dy * weight``::
 
@@ -194,10 +199,19 @@ def rms_norm_back(
 
     The second term is the one that is easy to drop: it is the gradient flowing through the *norm*
     itself, and without it the gradient is still plausible, still descends, and is wrong.
+
+    The weight gradient is needed only when the norm is *trainable* (full fine-tuning, S1-48). In
+    LoRA the norm weight is frozen and takes none, so it is accumulated into ``grads[name]`` only
+    when both ``grads`` and ``name`` are given. With ``x_hat = x * inv_rms`` (the normalized input,
+    before the weight multiply)::
+
+        dL/dweight = sum_rows dy * x_hat
     """
     n = x.shape[-1]
     g = dy * weight
     dot = np.sum(g * x, axis=-1, keepdims=True)
+    if grads is not None and name is not None:
+        grads[name] = grads.get(name, 0.0) + np.sum(dy * (x * inv_rms), axis=0)
     return inv_rms * (g - (inv_rms**2 / n) * x * dot)
 
 
@@ -310,14 +324,21 @@ def linear_back(
     scale: float,
     grads: dict[str, np.ndarray],
     name: str,
+    base_grads: bool = False,
 ) -> np.ndarray:
     """VJP of :func:`linear`. Accumulates ``dA``/``dB`` into ``grads``; returns ``dx``.
 
-    The base weight is frozen and takes no gradient — but it still *carries* one, because ``dx``
-    must flow back through ``W`` to reach whatever is upstream. Dropping that term would isolate
-    each LoRA from every other and the model would still train.
+    The base weight is frozen in LoRA and takes no gradient — but it still *carries* one, because
+    ``dx`` must flow back through ``W`` to reach whatever is upstream. Dropping that term would
+    isolate each LoRA from every other and the model would still train.
+
+    Under full fine-tuning (S1-48) the base weight *is* trainable, and its gradient for
+    ``y = x @ W.T`` is ``dW = dy.T @ x``. When ``base_grads`` is set it is accumulated into
+    ``grads[name]`` (the plain base name, never colliding with the ``.lora_a`` / ``.lora_b`` keys).
     """
     dx = dy @ w
+    if base_grads:
+        grads[name] = grads.get(name, 0.0) + dy.T @ x
     if lora is None:
         return dx
 
@@ -483,24 +504,37 @@ def backward(
     scale: float,
     cache: dict[str, object],
     dlogits: np.ndarray,
+    base_grads: bool = False,
 ) -> dict[str, np.ndarray]:
-    """Backpropagate to the LoRA tensors, and to nothing else.
+    """Backpropagate to the LoRA tensors — and, under full fine-tuning, to the base weights too.
 
-    The base weights are frozen — but every one of them still *transports* a gradient, and the
-    embedding table is where the chain finally stops.
+    The base weights are frozen in LoRA — but every one of them still *transports* a gradient, and
+    the embedding table is where the chain finally stops. When ``base_grads`` is set (S1-48), the
+    gradient each base weight *carries* is also *recorded*, keyed by its plain tensor name (e.g.
+    ``blk.0.attn_q.weight``, ``output_norm.weight``, ``token_embd.weight``) and never colliding with
+    the ``.lora_a`` / ``.lora_b`` keys: the output head (``dlogits.T @ xf``), every RMSNorm weight
+    (``sum_rows dy * x_hat``), every attention/FFN projection (``dy.T @ x``), and the embedding
+    table (a scatter-add of the residual-stream gradient into the rows the tokens selected —
+    ``get_rows``'s VJP).
 
     Returns:
-        ``dA``/``dB`` keyed by ``<base name>.lora_a`` / ``<base name>.lora_b``.
+        ``dA``/``dB`` keyed by ``<base name>.lora_a`` / ``<base name>.lora_b``, plus (when
+        ``base_grads``) every trainable base weight's gradient keyed by its plain name.
     """
     d, n_h, g = hp.head_dim, hp.n_head, hp.n_rep
     grads: dict[str, np.ndarray] = {}
 
     dxf = dlogits @ tensors["output.weight"]
+    if base_grads:
+        # logits = xf @ output.weight.T  =>  d(output.weight) = dlogits.T @ xf.
+        grads["output.weight"] = dlogits.T @ cache["xf"]
     dx = rms_norm_back(
         dxf,
         cache["x_final"],
         tensors["output_norm.weight"],
         cache["inv_f"],  # type: ignore[arg-type]
+        grads if base_grads else None,
+        "output_norm.weight",
     )
 
     for il in reversed(range(hp.n_layer)):
@@ -519,6 +553,7 @@ def backward(
             scale,
             grads,
             p + "ffn_down.weight",
+            base_grads,
         )
 
         d_gate = d_act * lc["up"] * silu_back(lc["gate"])
@@ -533,6 +568,7 @@ def backward(
             scale,
             grads,
             p + "ffn_gate.weight",
+            base_grads,
         )
         d_h2 += linear_back(
             d_up,
@@ -543,9 +579,17 @@ def backward(
             scale,
             grads,
             p + "ffn_up.weight",
+            base_grads,
         )
 
-        dx = dx + rms_norm_back(d_h2, lc["resid_ffn"], tensors[p + "ffn_norm.weight"], lc["inv2"])
+        dx = dx + rms_norm_back(
+            d_h2,
+            lc["resid_ffn"],
+            tensors[p + "ffn_norm.weight"],
+            lc["inv2"],
+            grads if base_grads else None,
+            p + "ffn_norm.weight",
+        )
 
         # --- attention --------------------------------------------------------------------
         d_attn = linear_back(
@@ -557,6 +601,7 @@ def backward(
             scale,
             grads,
             p + "attn_output.weight",
+            base_grads,
         )
         d_attn = d_attn.reshape(t_len, n_h, d)
 
@@ -590,6 +635,7 @@ def backward(
             scale,
             grads,
             p + "attn_q.weight",
+            base_grads,
         )
         d_h += linear_back(
             d_k.reshape(t_len, -1),
@@ -600,6 +646,7 @@ def backward(
             scale,
             grads,
             p + "attn_k.weight",
+            base_grads,
         )
         d_h += linear_back(
             d_v.reshape(t_len, -1),
@@ -610,9 +657,25 @@ def backward(
             scale,
             grads,
             p + "attn_v.weight",
+            base_grads,
         )
 
-        dx = dx + rms_norm_back(d_h, lc["resid_attn"], tensors[p + "attn_norm.weight"], lc["inv1"])
+        dx = dx + rms_norm_back(
+            d_h,
+            lc["resid_attn"],
+            tensors[p + "attn_norm.weight"],
+            lc["inv1"],
+            grads if base_grads else None,
+            p + "attn_norm.weight",
+        )
+
+    if base_grads:
+        # The embedding table is where the chain stops: x = token_embd[tokens], so its VJP is a
+        # scatter-add of the residual-stream gradient into the rows the tokens selected. This is
+        # ggml's GET_ROWS backward (GET_ROWS_BACK), and a token that appears twice accumulates.
+        d_embed = np.zeros_like(tensors["token_embd.weight"])
+        np.add.at(d_embed, np.asarray(cache["tokens"]), dx)
+        grads["token_embd.weight"] = d_embed
 
     return grads
 

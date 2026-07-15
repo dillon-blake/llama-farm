@@ -19,7 +19,15 @@ Typical use::
 
 from __future__ import annotations
 
-from .farm import LLError, check, ll_grpo_inputs, ll_opt_params, opt_free, opt_init_lora
+from .farm import (
+    LLError,
+    check,
+    ll_grpo_inputs,
+    ll_opt_params,
+    opt_free,
+    opt_init_full,
+    opt_init_lora,
+)
 from .ggml import ggml_init_params
 from .ggml_opt import (
     AdamWParams,
@@ -87,6 +95,7 @@ __all__ = [
     "ggml_init_params",
     "ll_opt_params",
     "opt_free",
+    "opt_init_full",
     "opt_init_lora",
     "llama_opt_params",
     "llama_token",
