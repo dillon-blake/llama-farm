@@ -46,6 +46,30 @@ class Status(IntEnum):
     """It will train — but not the way you think."""
 
 
+class PreflightError(RuntimeError):
+    """Training was refused because an op on the gradient path has no backward rule.
+
+    Raised by :class:`~learning_llamas.train.loop.Trainer` before the first step. The whole point is
+    that this arrives *early and legible* — before the model has loaded a batch, before anything has
+    been differentiated — instead of the raw ``GGML_ABORT`` deep inside ``ggml_compute_backward``
+    that names an op enum and nothing else, on the first backward pass, after the user has waited.
+
+    Attributes:
+        report: The full :class:`Report`, so a caller can inspect every blocker programmatically
+            rather than scraping the message.
+    """
+
+    def __init__(self, report: Report) -> None:
+        self.report = report
+        super().__init__(
+            f"{report.summary()}\n\n"
+            "This model will not train: the backward pass would abort at the op(s) above, which is "
+            "what this preflight exists to catch before a long run rather than during one. If you "
+            "mean to try anyway — to reach the raw GGML_ABORT for debugging, or because you think "
+            "the table is wrong — build the trainer with a config whose preflight=False."
+        )
+
+
 @dataclass(frozen=True)
 class Finding:
     """One thing wrong with the graph.
@@ -171,3 +195,79 @@ def preflight(libs: _ffi.Libraries, ctx: int, tokens: list[int]) -> Report:
     )
 
     return Report(findings=findings, n_blocked=n_blocked.value)
+
+
+def representative_tokens(libs: _ffi.Libraries, ctx: int) -> list[int]:
+    """A throwaway batch the shape of a training batch.
+
+    Only the *length* shapes the graph the walker reads — which ops appear is fixed by the
+    architecture, not the token values — so the contents are irrelevant and token 0 (always a valid
+    id) is used throughout. The length is the context's ``n_ubatch``: a training batch goes through
+    the graph in one piece, so one ubatch of it is exactly the graph a real step would build.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: A ``llama_context *``.
+
+    Returns:
+        ``n_ubatch`` copies of token 0.
+    """
+    n_ubatch = libs.llama.llama_n_ubatch(ctx)
+    return [0] * max(1, int(n_ubatch))
+
+
+def preflight_context(libs: _ffi.Libraries, ctx: int) -> Report:
+    """Run the preflight over a context that already carries optimizer state.
+
+    A convenience over :func:`preflight` that builds the representative batch itself. The context
+    must already have optimizer state (``opt_init_lora`` has run): the walk is seeded from the
+    trainable tensors. Most callers want :func:`preflight_adapter`, which manages that state.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: A ``llama_context *`` with optimizer state.
+
+    Returns:
+        What is wrong, if anything.
+
+    Raises:
+        RuntimeError: If the context has no training state, or the graph could not be built.
+    """
+    return preflight(libs, ctx, representative_tokens(libs, ctx))
+
+
+def preflight_adapter(libs: _ffi.Libraries, ctx: int, model: int, adapters: list[int]) -> Report:
+    """Preflight a model+adapter on **throwaway** optimizer state, leaving the context untouched.
+
+    The walk has to be seeded from a set of flagged trainable tensors, so optimizer state must
+    exist — but it must not be the *training* optimizer state, and this is the subtle part.
+    ``opt_step_custom`` sizes an optimizer context from the first graph it is handed, and the
+    preflight's forward-only graph is not the training graph. Run the walk on the very context a
+    trainer will then step through and that context is mis-sized: the first real backward aborts
+    inside ``ggml_build_backward_expand`` (``GGML_ASSERT(ggml_is_scalar(b))``), which is precisely
+    the kind of late, cryptic abort the preflight exists to replace.
+
+    So this stands up its own optimizer state, walks, and tears it down in a ``finally``. The
+    context is left exactly as it was found — and a trainer that builds its real optimizer state
+    afterwards gets to hand it the training graph first, as ggml-opt requires.
+
+    Args:
+        libs: The loaded native libraries.
+        ctx: A ``llama_context *`` in training mode.
+        model: The ``llama_model *`` the adapters were loaded against.
+        adapters: The ``llama_adapter_lora *`` whose A/B tensors seed the walk.
+
+    Returns:
+        What is wrong, if anything.
+
+    Raises:
+        RuntimeError: If the optimizer state cannot be set up (e.g. no trainable tensors), or the
+            graph could not be built.
+    """
+    # Hyperparameters are irrelevant: no step is ever taken, only a forward pass at train=false.
+    params = _ffi.ll_opt_params(alpha=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.0)
+    _ffi.opt_init_lora(libs, ctx, model, adapters, params, opt_period=1, grad_clip=0.0)
+    try:
+        return preflight_context(libs, ctx)
+    finally:
+        _ffi.opt_free(libs, ctx)

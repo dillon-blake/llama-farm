@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from learning_llamas import _ffi
+from learning_llamas.preflight import PreflightError, preflight_adapter
 
 from .schedule import constant, warmup_cosine
 
@@ -113,6 +114,12 @@ class TrainConfig:
         schedule: ``"constant"`` or ``"cosine"`` (linear warmup, then cosine decay).
         warmup_steps: Optimizer steps to ramp the LR over. Only used by ``"cosine"``.
         min_lr: The floor the cosine decays to.
+        preflight: Run the trainability preflight (S1-11) before the first step, and refuse to train
+            a model whose gradient path has an op ggml cannot differentiate. Leave it on: the
+            alternative is a raw ``GGML_ABORT`` inside ``ggml_compute_backward`` on the first
+            backward pass, naming an op enum and nothing else, after the data has tokenized and the
+            user has waited. ``False`` is the escape hatch — for reaching that abort deliberately
+            (debugging), or when you have reason to believe the op table itself is wrong.
     """
 
     lr: float = 1e-4
@@ -124,6 +131,7 @@ class TrainConfig:
     schedule: str = "constant"
     warmup_steps: int = 0
     min_lr: float = 0.0
+    preflight: bool = True
 
     def __post_init__(self) -> None:
         """Reject a nonsensical config here, rather than mid-run."""
@@ -224,6 +232,19 @@ class Trainer:
         self._hooks = hooks or Hooks()
         self._state = _State()
         self._closed = False
+
+        # The gate, and it runs BEFORE the training optimizer state exists -- deliberately. The walk
+        # needs flagged trainable tensors to seed from, so it stands up throwaway optimizer state of
+        # its own and tears it down (preflight_adapter); it must not borrow the training context,
+        # because opt_step_custom sizes an optimizer context from the first graph it sees and the
+        # preflight's forward-only graph is not the training graph -- sharing it aborts the first
+        # real backward. Gating first also leaves the training context below free to see the
+        # training graph first, as ggml-opt requires. A blocker here is the whole reason S1-11 built
+        # the preflight; S1-42 is what finally calls it. preflight=False is the escape hatch.
+        if config.preflight:
+            report = preflight_adapter(libs, model.ctx, model.model, [model.adapter])
+            if not report.trainable:
+                raise PreflightError(report)
 
         self._params = _ffi.ll_opt_params(
             alpha=config.lr,

@@ -34,7 +34,7 @@ from .data import ChatTemplate, MaskedSample, Message, Tokenizer, build_masked_s
 from .export import merge
 from .logprobs import LmHead, load_lm_head, sequence_logprobs
 from .model import Model, libraries
-from .preflight import Report, Status, preflight
+from .preflight import PreflightError, Report, Status, preflight
 from .verify import SelfVerified
 
 __version__ = "0.0.1"
@@ -48,6 +48,7 @@ __all__ = [
     "MaskedSample",
     "Message",
     "Model",
+    "PreflightError",
     "Report",
     "SelfVerified",
     "Status",
