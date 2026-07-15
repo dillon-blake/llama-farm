@@ -162,9 +162,7 @@ def opt_init_full(
         RuntimeError: If the shim rejects the call (see :class:`LLError`).
     """
     n_flagged = check(
-        libs.farm.ll_opt_init_full(
-            ctx, model, ctypes.byref(params), opt_period, grad_clip
-        ),
+        libs.farm.ll_opt_init_full(ctx, model, ctypes.byref(params), opt_period, grad_clip),
         "ll_opt_init_full",
     )
 
