@@ -192,8 +192,8 @@ LL_API int32_t ll_opt_init_lora(struct llama_context * ctx, struct llama_model *
 // reference for you.
 //
 // Returns the number of base tensors flagged, or a negative LL_ERR_* code.
-LL_API int32_t ll_opt_init_full(struct llama_context * ctx, struct llama_model * model,
-                                struct ll_opt_params * params, int32_t opt_period, float grad_clip);
+LL_API int32_t ll_opt_init_full(struct llama_context * ctx, struct llama_model * model, struct ll_opt_params * params,
+                                int32_t opt_period, float grad_clip);
 
 // Release the shim's training state for `ctx`. Idempotent. The context itself is not freed.
 LL_API int32_t ll_opt_free(struct llama_context * ctx);
