@@ -97,10 +97,11 @@ def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) 
     * the accumulator still holds the unclipped global gradient after a clipped step — the clip
       nodes scale a copy on the way into AdamW, they do not rewrite the accumulator. A clip applied
       in place would instead collapse this norm toward the clip;
-    * any two clips set *above* the measured global norm are bit-identical to each other across
-      **every** trainable tensor — ``factor = clip / clamp(norm, clip, INF) == 1`` for both — and
-      match the clip-disabled run up to graph-layout ulp jitter. That boundary sits at the global
-      norm, not at any per-tensor one, which is the whole point.
+    * a clip set *above* the measured global norm is a no-op to within last-ulp arithmetic
+      residue, across **every** trainable tensor — while a *binding* clip moves weights four
+      orders of magnitude more. That boundary sits at the global norm, not at any per-tensor
+      one, which is the whole point. (Why not bitwise: see the comment at the assertion — the
+      answer is different on two hosts, and instructive.)
 
     The earlier version of this test asserted ``min(raw, clip) == clip`` after establishing
     ``raw > clip`` — a pure tautology that never observed the clip at all.
@@ -140,24 +141,27 @@ def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) 
         f"the clip must scale a copy into AdamW, not rewrite the accumulator"
     )
 
-    # A clip set above the measured GLOBAL norm acts as factor exactly 1: two DIFFERENT above-norm
-    # clips must land on bit-identical weights, because clip/clamp(norm, clip, INF) == 1 for both.
-    # The boundary sits at the global norm, not any per-tensor one — which is the whole point.
+    # A clip set above the measured GLOBAL norm must be a no-op — but not a BITWISE one, and the
+    # two failed attempts at a stronger claim are worth recording. (1) Against the clip-DISABLED
+    # run, bitwise fails because grad_clip=0 builds a graph without the clip nodes, and the
+    # allocation shift moves SIMD reduction splits by an ulp on macos-14 arm64. (2) Even two
+    # DIFFERENT above-norm clips differ bitwise there: the graph does not form a literal
+    # factor == 1.0 and scale once — the clip constant participates in the arithmetic
+    # (scale-then-divide / FMA), so each clip value leaves its own last-ulp residue. Linux merely
+    # cancels by coincidence. ADR-0002's caveat, twice in one test.
+    #
+    # What IS host-invariant: a non-binding clip perturbs weights only at rounding scale (~1e-7
+    # relative), while a BINDING clip moves them at the 1e-3 scale — four orders of magnitude of
+    # separation, asserted here and in the binding-clip test below.
     _, w_slack = _run(norm_off + 1.0)
     _, w_slack2 = _run(norm_off + 2.0)
-    assert w_slack == w_slack2, (
-        "two clips both above the measured global norm produced different weights; "
-        "factor = clip/clamp(norm, clip, INF) == 1 for both, so they must be bit-identical"
+    assert np.allclose(w_slack, w_slack2, rtol=1e-6, atol=1e-9), (
+        "two clips both above the measured global norm disagree beyond rounding residue; "
+        "the clip is doing real work in a regime where factor must be 1"
     )
-
-    # Against the clip-DISABLED run the comparison cannot be bitwise: grad_clip=0 builds a graph
-    # without the clip nodes, and the different allocation/alignment shifts SIMD reduction splits
-    # by an ulp on some hosts (first seen on macos-14 arm64 — ADR-0002's caveat, in miniature).
-    # Near-identity at 1e-6 relative still rules out any real scaling; a binding clip moves
-    # weights at the 1e-3 scale (see the test below).
     assert np.allclose(w_slack, w_off, rtol=1e-6, atol=1e-9), (
-        "a clip set above the measured global norm changed the weights beyond alignment-level "
-        "ulp noise; factor == 1 must be a no-op up to graph-layout jitter"
+        "a clip set above the measured global norm changed the weights beyond rounding residue; "
+        "a non-binding clip must be a no-op up to last-ulp arithmetic jitter"
     )
 
 
