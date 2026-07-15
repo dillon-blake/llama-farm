@@ -349,6 +349,12 @@ def test_the_report_records_the_device_it_actually_ran_on(
     }
     (report_dir / f"convergence-{device}.json").write_text(json.dumps(report, indent=2) + "\n")
 
+    # The report is only worth writing if the curve in it is a real training curve. The sibling
+    # tests pin its exact shape; this one at least refuses to archive a curve that did not fall.
+    assert curve[-1] < curve[0], (
+        f"the recorded convergence curve does not fall ({curve[0]:.4f} -> {curve[-1]:.4f}); "
+        f"the artifact would be meaningless"
+    )
     assert device in report["devices_available"]
 
 

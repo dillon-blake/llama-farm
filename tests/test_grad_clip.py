@@ -83,27 +83,67 @@ def test_an_unclipped_gradient_can_exceed_the_threshold(trainable, libs) -> None
     )
 
 
-def test_the_clip_bounds_the_global_norm(trainable, libs) -> None:
-    """The gradient the optimizer steps on has a global norm no greater than the clip.
+def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """The clip's threshold is the global norm over every tensor, and it scales a copy.
 
-    Read from the accumulators after the step — i.e. what the graph actually produced, not what a
-    host-side helper would have computed. The accumulators hold the *unclipped* sum (the clip nodes
-    scale a copy on its way into the AdamW node), so this asserts the relationship the clip
-    guarantees: the norm the optimizer saw is ``min(norm, clip)``.
+    The accumulator the optimizer reads back is therefore left unclipped. There is no getter for the
+    post-clip norm (S1-10 left ``ll_step_result``'s pre/post-clip fields
+    unimplemented), and AdamW's step-1 update is nearly invariant to a *uniform* scaling of the
+    gradient — so a single-step assertion cannot read the clipped magnitude directly. The
+    closed-form magnitude proof lives in the fork's ``test-opt``. What is observable here, and
+    asserted, are the two properties that pin the clip to the *global* norm:
+
+    * the accumulator still holds the unclipped global gradient after a clipped step — the clip
+      nodes scale a copy on the way into AdamW, they do not rewrite the accumulator. A clip applied
+      in place would instead collapse this norm toward the clip;
+    * a clip set just *above* the measured global norm is the exact identity, bit for bit, across
+      **every** trainable tensor — ``factor = clip / clamp(norm, clip, INF) == 1`` there. That
+      boundary sits at the global norm, not at any per-tensor one, which is the whole point.
+
+    The earlier version of this test asserted ``min(raw, clip) == clip`` after establishing
+    ``raw > clip`` — a pure tautology that never observed the clip at all.
     """
-    model = trainable
+    import ctypes
+
+    def _run(clip: float):
+        adapter_path = tmp_path / f"a-{clip}.gguf"
+        create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+        model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+        model.attach_adapter(adapter_path, scale=1.0)
+        model.targets = enumerate_targets(tiny_q4_k)
+
+        with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=clip)) as trainer:
+            trainer.step(_batch())
+            norm = _global_grad_norm(libs, model)
+            weights: list[float] = []
+            for target in model.targets:
+                for is_b in (False, True):
+                    n = libs.farm.ll_debug_n_elements(model.ctx, target.name.encode(), is_b)
+                    buf = (ctypes.c_float * n)()
+                    libs.farm.ll_debug_get_tensor(model.ctx, target.name.encode(), is_b, buf, n)
+                    weights.extend(buf)
+        return norm, weights
+
     clip = 0.01
+    norm_off, w_off = _run(0.0)
+    assert norm_off > clip, (
+        f"the unclipped global norm ({norm_off:.4f}) is under the clip; nothing would be clipped"
+    )
 
-    with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=clip)) as trainer:
-        trainer.step(_batch())
+    # A clipped step must leave the accumulator's global norm untouched: the clip scaled a copy
+    # into AdamW, it did not rewrite what the accumulator holds.
+    norm_on, _ = _run(clip)
+    assert norm_on == pytest.approx(norm_off), (
+        f"a clipped step changed the accumulator's global norm ({norm_on:.4f} vs {norm_off:.4f}); "
+        f"the clip must scale a copy into AdamW, not rewrite the accumulator"
+    )
 
-        raw = _global_grad_norm(libs, model)
-
-    # The accumulator still holds the raw gradient; the clip acts between it and the step.
-    assert raw > clip, f"the raw norm ({raw:.4f}) is already under the clip; nothing was clipped"
-
-    effective = min(raw, clip)
-    assert effective == pytest.approx(clip)
+    # A clip set above the measured GLOBAL norm is the exact identity, across every tensor.
+    _, w_slack = _run(norm_off + 1.0)
+    assert w_slack == w_off, (
+        "a clip set just above the measured global norm changed the weights; with "
+        "factor = clip/clamp(norm, clip, INF) == 1 it must be the identity, bit for bit"
+    )
 
 
 def test_clipping_changes_the_step_and_a_clip_above_the_norm_does_not(
