@@ -101,8 +101,10 @@ def _wake_up_reference(loras: dict[str, ref_llama.Lora]) -> None:
     rng = np.random.default_rng(11)
 
     def wake(arr: np.ndarray) -> np.ndarray:
-        return (arr + rng.normal(0.0, WAKE_SIGMA, size=arr.shape)).astype(np.float32).astype(
-            np.float64
+        return (
+            (arr + rng.normal(0.0, WAKE_SIGMA, size=arr.shape))
+            .astype(np.float32)
+            .astype(np.float64)
         )
 
     for lora in loras.values():
