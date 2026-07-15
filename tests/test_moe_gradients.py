@@ -201,7 +201,9 @@ def test_one_step_matches_the_moe_reference(tiny_moe_f32, tmp_path, libs) -> Non
                     n_compared += 1
             # 14 LoRA tensors on the 2-layer MoE fixture (per layer: attn_q/k/v/output +
             # ffn_{gate,up,down}_exps), each compared for lora_a and lora_b -> 28 comparisons.
-            assert n_compared == 28, f"expected 28 LoRA comparisons on the MoE fixture, {n_compared}"
+            assert n_compared == 28, (
+                f"expected 28 LoRA comparisons on the MoE fixture, {n_compared}"
+            )
     finally:
         model.close()
 
