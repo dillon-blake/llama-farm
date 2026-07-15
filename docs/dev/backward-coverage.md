@@ -1,7 +1,9 @@
 # MODE_GRAD backward coverage, measured
 
 *Measured on the CPU backend at vendor commit `a089900d` (= upstream `4f37f51` + the S0-10
-harness fix). Reproduce with the script in the "How this was measured" section.*
+harness fix). Reproduce with the script in the "How this was measured" section. Rows that a later
+fork commit has since changed (`MUL_MAT` f16/bf16 after S1-18, `mean_abs_asymm` after S1-37) say so
+inline.*
 
 ROADMAP §2 has a coverage matrix. This is the *empirical* version — what `test-backend-ops grad`
 actually does today, run op by op. It exists because two assumptions the plan rests on turned out
@@ -76,7 +78,8 @@ ticket until it is the whole table and the qualifier can be deleted.
 
 | Op | Symptom | Assessment |
 |---|---|---|
-| `MUL_MAT` | a handful of cases marginally over the bound (`MAA = 0.0001004 > 0.0001`) | Finite-difference precision at large `k`, not a gradient bug. 360 F32 cases pass. Candidate for a per-op `max_maa_err()` override. |
+| `MUL_MAT` (F32) | a handful of cases marginally over the bound (`MAA = 0.0001004 > 0.0001`) | Finite-difference precision at large `k`, not a gradient bug. 360 F32 cases pass. Candidate for a per-op `max_maa_err()` override. |
+| `MUL_MAT` (F16 / BF16) | **~75 cases fail at MAA ≈ 3.7e-4 — nearly 4x the bound**, an order worse than the F32 "marginal" cases | **Not FD noise, and not F32-only** — do not let the F32 row above stand in for these. They are exactly the cases S1-18 (`2126ae199`) introduced when it routed F16/BF16 `out_prod` through the `_q_f32` path: `MUL_MAT`'s backward *is* `ggml_out_prod`, so an F16/BF16 weight exercises the new kernel here and nowhere else (`grad -o OUT_PROD` checks zero gradients). Open finding — the S1-18 out_prod path still has no *passing* grad check. |
 | `CPY`, `SCALE`, `SUM` | marginal | Not investigated. None is on the LoRA training path. |
 
 ### Two entries this table got wrong, and what they cost
@@ -250,14 +253,30 @@ the wrong one. Assert contiguity only where the arithmetic genuinely requires it
 operand of `ggml_vec_mad_f32`, where a strided read is not merely wrong but unrepresentable — and
 read everything else through its strides.
 
-## ⚠️ `mean_abs_asymm` divides by `(gn + ga)`, not `(|gn| + |ga|)`
+## `mean_abs_asymm` used to divide by `(gn + ga)`, not `(|gn| + |ga|)` — fixed in S1-37
+
+Until fork commit `eda3a57c0` (S1-37) the metric was:
 
 ```c
-const float asymm = (a[i] - b[i]) / (a[i] + b[i]);
+const float asymm = (a[i] - b[i]) / (a[i] + b[i]);   // the OLD, signed denominator
 ```
 
-So **any output element whose true gradient is near zero sends that ratio to infinity**, and MAA is
-a *mean* — one bad element out of ninety is enough to fail a case whose kernel is exact.
+So **any output element whose true gradient was near zero sent that ratio to infinity**, and MAA is
+a *mean* — one bad element out of ninety was enough to fail a case whose kernel is exact. S1-37
+replaced it with a real symmetric relative error — `denom = |a| + |b|; asymm = denom > 0 ? (a-b)/denom : 0` —
+bounded in `[-1, 1]`, and since `|a|+|b| >= |a+b|` it can only ever make MAA *smaller*, so the change
+could not turn a passing case red. The conditioning lesson below is independent of the denominator, so
+it stands.
+
+**And a zero–zero gradient pair used to be an unconditional PASS.** `gn == ga == 0` gave `0/0 = NaN`,
+`NaN > max_maa_err()` is `false`, and the case passed having compared nothing. Not hypothetical, and
+this is the record S1-37 AC#4 asks for: **`TANH`, `SIGMOID` and `CROSS_ENTROPY_LOSS` were on the
+vendor-bump allowlist on the strength of that NaN.** `tanh(150)` and `sigmoid(150)` are `1.0` to float
+precision so their derivatives are exactly zero, and `test_unary` initialises in `[-150, 150]`;
+`CROSS_ENTROPY_LOSS` at `[-100, 100]` is one-hot to float precision. With `0/0 -> 0` all three were
+checked for the first time and *failed* — MAA 0.15 / 0.35 / 0.59 on rounding noise in their saturated
+tails, kernels fine — so each needed a co-designed range and FD step (or a float64 oracle) before it
+could rejoin the allowlist as a check that can actually fail.
 
 This is not theoretical. It is what `MUL_MAT_ID`'s grad test did (S1-26/S1-27). `d_as[k,j,e]` sums
 only over the slots that routed to expert `e`, so with 5 tokens and 3 experts each output element is

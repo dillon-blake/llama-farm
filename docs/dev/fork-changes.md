@@ -1,37 +1,54 @@
 # The carried llama.cpp diff
 
 ADR-0001 commits this project to rebasing its llama.cpp fork against upstream on a **monthly**
-cadence. Until now that rebase had no map: eighteen merged fork PRs, and no single document saying
-what they change, why, or which of them belong upstream rather than here.
+cadence. Until now that rebase had no map: a stack of carried fork commits, and no single document
+saying what they change, why, or which of them belong upstream rather than here.
 
-This is that map. Regenerate its facts with:
+This is that map. Regenerate — and *verify* — its facts with the commands below. Run each one; each
+reproduces exactly one number cited in the next section, so the doc audits itself:
 
 ```bash
 cd vendor/llama.cpp
-git log --oneline 4f37f51..HEAD          # the carried commits
-git diff --stat 4f37f51..HEAD            # the carried diff
+git merge-base HEAD 4f37f51                             # 4f37f519722a...  (must equal the pin)
+git log --oneline --no-merges 4f37f51..HEAD | wc -l     # 31   substantive commits
+git log --oneline           4f37f51..HEAD | wc -l       # 49   = 31 + 18 early-PR merge commits
+git diff --stat        4f37f51..HEAD | tail -1          # 22 files changed, +4900 / -97
+git diff --name-status 4f37f51..HEAD | grep -c '^A'     # 2    new files
 ```
+
+> **The count depends on `--no-merges`, and the old regenerate recipe left it off.** The first
+> eighteen fork changes each landed through a squash-merged PR, so the plain `git log 4f37f51..HEAD`
+> carries **18 merge commits** on top of the substantive ones; the thirteen kernel-era commits
+> (S1-24 … S1-47) were committed straight onto the base branch and have no merge commit. So the bare
+> log prints **49**, not the 31 substantive changes the inventory is about — which is precisely how
+> the previous version of this doc came to disagree with its own regenerate command. Count with
+> `--no-merges`.
 
 ## What is carried
 
 | | |
 |---|---|
 | Upstream base (pinned) | `4f37f51` |
-| Fork | `dillon-blake/llama.cpp`, branch `learning-llamas-base` |
+| Fork | `dillon-blake/llama.cpp`, branch `learning-llamas-base` (HEAD `555c446` on `ticket/S1-24-chunked-attention`) |
 | Merge-base with the pin | **exactly `4f37f51`** — a clean linear stack, no upstream merges mixed in |
-| Carried commits | **18** substantive (one squashed commit per fork PR #1–#18) |
-| Diff | **18 files changed, +2342 / −52** |
-| New files | **zero** |
+| Carried commits | **31** substantive (18 via early squash-merged PRs #1–#18, then 13 committed straight onto the branch as the kernel work landed) |
+| Diff | **22 files changed, +4900 / −97** |
+| New files | **2** — both are *test* files: `tests/test-glu-back.cpp` (S1-28) and `tests/test-soft-max-back-inplace.cpp` (S1-41) |
 
-That last row is the finding. ADR-0001 §2 states its own rebase-hygiene rule — *"new functionality
-goes in **new files** wherever it plausibly can"* — and **the fork has not followed it once**. The
-sparse-CE kernels (202 lines) went into `ggml/src/ggml-cpu/ops.cpp`, a file upstream has touched 66
-times in the last twelve months, rather than into a new `ops-ce-sparse.cpp` that would rebase for
-free. Every one of the 18 files is a modification to a file upstream already owns.
+That last row is still most of the finding. ADR-0001 §2 states its own rebase-hygiene rule — *"new
+functionality goes in **new files** wherever it plausibly can"* — and for **kernels** the fork has
+not followed it once: `ggml-cpu/ops.cpp` alone has grown by **+1020 lines** (sparse-CE, `OUT_PROD_ID`,
+`OUT_PROD_ID_GRP`, `GLU_BACK`, `SSM_CONV_BACK`, `SSM_SCAN_BACK`), a file upstream has touched 66 times
+in the last twelve months, rather than into new `ops-*.cpp` files that would rebase for free. The two
+new files that *do* exist are both regression tests, not kernels — so the rule is honoured only where
+it costs nothing and broken everywhere it would actually save rebase work. Every carried *kernel* is a
+modification to a file upstream already owns.
 
-The rule that *is* being followed: the new op enums (`GGML_OP_CROSS_ENTROPY_LOSS_SPARSE` and its
-`_BACK`) are appended at the enum tail immediately before `GGML_OP_COUNT`, with an in-code comment
-citing the reason.
+The rule that *is* being followed: the seven new op enums the fork appends —
+`GGML_OP_CROSS_ENTROPY_LOSS_SPARSE` and its `_BACK`, `GGML_OP_OUT_PROD_ID`, `GGML_OP_OUT_PROD_ID_GRP`,
+`GGML_OP_GLU_BACK`, `GGML_OP_SSM_CONV_BACK`, `GGML_OP_SSM_SCAN_BACK` — all sit at the enum tail
+immediately before `GGML_OP_COUNT` (ggml.h:592–605), with in-code comments citing the reason, so a
+rebase never has to renumber an upstream op.
 
 ## The commits
 
@@ -60,10 +77,32 @@ ticket's declared disposition describes its deliverable and not the fix.
 | `78c3e18bc` | S1-14 | `opt_step_custom` left `gf_res_prev` (a one-entry graph cache) pointing at nodes in `ctx_compute_opt`, which is freed each step — so a later `llama_decode` on the same context walked freed memory. Fixes fork-local code. | fork-local | LOW |
 | `ffb7d06e7` | S1-33 | `LLAMA_API_INTERNAL` on the nine internals the shim links against. A PE DLL exports nothing it was not told to, so the same source that links fine on ELF produced eight `LNK2019`s on Windows. | fork-local | LOW–MED |
 
-**Nine of eighteen are upstream-early**: general bug fixes upstream would plausibly want, six of
-them found incidentally. ADR-0001's own rule is *"PR to mainline **first**"*, and it has been
-followed **zero times**. That is real value sitting in a private fork, and it is permanent rebase
-cost paid monthly for defects that are not this project's to own.
+The thirteen kernel-era commits (committed straight onto the branch, no PR merge commit):
+
+| Hash | Ticket | What it changes, and why | Disposition | Rebase risk |
+|---|---|---|---|---|
+| `c8165770a` | S1-25 | **`MUL_MAT_ID` / `ADD_ID` backward wiring.** MoE's expert matmul and its per-expert bias-add had no VJP, so any MoE arch fell through `ggml_compute_backward`'s `default:` abort. Adds the backward rules and the `OUT_PROD_ID` / `OUT_PROD_ID_GRP` op enums at the tail. | fork-local | MED |
+| `0d0afcb91` | S1-26 | **`OUT_PROD_ID` CPU kernel** — the activation half of `MUL_MAT_ID`'s backward (dL/d expert inputs). New op; scalar reference kernel. | fork-local (upstream-later) | MED–HIGH |
+| `7b700fe19` | S1-27 | **`OUT_PROD_ID_GRP` CPU kernel** — the weight half (dL/d expert weights), reduced per expert. New op. | fork-local (upstream-later) | MED–HIGH |
+| `b8e007507` | S1-26/27 | Both new kernels read `grad` and `ids` through a hard-coded 4-byte stride; a TRANSPOSE-node grad has `nb[0]==8` and `ggml_mul_mat_id` puts no contiguity constraint on `ids` — 24/36 elements wrong, no assert fires. Now read through `nb[0]`. Fixes fork-local code. | fork-local | LOW |
+| `74a1db10b` | S1-28 | **`GLU_BACK`** — one VJP covering every gated-linear-unit variant (`REGLU`/`GEGLU`/`GEGLU_ERF`/`GEGLU_QUICK`/`SWIGLU_OAI`); only plain `SWIGLU` had a backward, so every other gated-FFN arch aborted. New op enum, and the fork's first genuinely-new source file, `tests/test-glu-back.cpp`. | fork-local (upstream-later) | MED |
+| `8857bc8d4` | S1-28 | **Two more upstream ggml bugs that made every MoE model untrainable**, found incidentally while wiring `GLU_BACK`. Plain correctness fixes to existing code. | upstream-early | MED |
+| `eda3a57c0` | S1-37 | Fixes `mean_abs_asymm`'s **signed** denominator (`(a−b)/(a+b)`, which sends any near-zero-gradient element to ±∞) and the `nvalid==0` NaN free-pass it was hiding in the MODE_GRAD harness. A test-harness correctness fix. | upstream-early | MED |
+| `cc0116f03` | S1-29b | The `SSM_CONV_BACK` / `SSM_SCAN_BACK` op enums and backward-switch wiring that S1-29's squashed commit was supposed to carry and did not. | fork-local (upstream-later) | MED |
+| `5fdae0c36` | S1-30 | **`SSM_CONV_BACK` CPU kernel** — the causal-conv backward for Mamba. New op. | fork-local (upstream-later) | MED–HIGH |
+| `2c8091797` | S1-31 | **`SSM_SCAN_BACK` CPU kernel** — the selective-scan backward; Mamba has a backward at last. New op. | fork-local (upstream-later) | MED–HIGH |
+| `2a276de8f` | S1-24 | **Chunked attention** — a kernel-free long-context path (2.17x less backward memory at n_ctx 4096, bit-identical to naive), built entirely in shim-side graph construction (`llama-graph.cpp` + a `cparams` flag), no new kernel. | fork-local | HIGH |
+| `41141dd4f` | S1-41 | **`ggml_compute_forward_soft_max_ext_back_f32` was not in-place-safe onto `src1`** (it overwrites `dst` before its last read of `src1`). `SOFT_MAX_BACK` is on `ggml_op_can_inplace`, and gallocr aliases `dst` onto the softmax output `y` exactly when the back-op is `y`'s **sole** gradient consumer — never in attention, **always** in a Mixtral router — so `d_logits≈0` and every LoRA upstream of an MoE block trained on a gradient wrong by 5–25 %, loss falling the whole time. The S1-41 MoE oracle caught it; `tests/test-soft-max-back-inplace.cpp` forces the alias (0.22 error pre-fix, 9.6e-9 post). | **upstream-early** | **HIGH** |
+| `555c44643` | S1-47 | **Two Mamba-training fixes.** (a) `ggml_ssm_scan`'s initial-state input is a *view of the recurrent-state cache*, which the forward overwrites in place; the scan backward recomputes intermediate states from it and so started from the **final** state — every Mamba layer but the last trained on a corrupted scan gradient. Fix: `ggml_cont` the initial state. (b) the VIEW-backward handed `ggml_acc` a non-contiguous grad (`nb[0]!=sizeof(float)`), aborting **every** Mamba training graph at backward — `ggml_cont` before `acc_or_set`, matching the neighbouring `RESHAPE` guard. Also adds the loud `n_group>1` refusal (unproven routing — see B-10). | fork-local (a); **upstream-early** (b) | **HIGH** |
+
+**Twelve of the thirty-one are upstream-early**: general bug fixes upstream would plausibly want,
+most of them found incidentally while building a product feature. ADR-0001's own rule is *"PR to
+mainline **first**"*, and it has been followed **zero times**. That is real value sitting in a
+private fork, and it is permanent rebase cost paid monthly for defects that are not this project's to
+own. The kernel-era additions (`OUT_PROD_ID*`, `GLU_BACK`, `SSM_*_BACK`) are dispositioned
+*fork-local for now, upstream-later*: they fill real gaps in ggml's autodiff, but they carry new op
+enums and want to be proposed to upstream as one RFC once the whole MoE/SSM backward set is stable,
+not cherry-picked piecemeal.
 
 > ⚠️ **Upstreaming has a constraint ADR-0001 does not account for.** llama.cpp's `AGENTS.md` states:
 > *"This project does **not** accept pull requests that are fully or predominantly AI-generated."*
@@ -76,21 +115,28 @@ cost paid monthly for defects that are not this project's to own.
 ## Where a rebase will hurt
 
 Risk is upstream churn (commits touching the file in the last 12 months) against the fork's
-footprint in it.
+footprint in it (lines / hunks from `git diff 4f37f51..HEAD`). Churn is measured against the pin and
+so is unchanged since S1-36; the footprints have roughly doubled with the kernel work.
 
-| | Files |
+| | Files (churn · fork footprint) |
 |---|---|
-| **HIGH** | `tests/test-backend-ops.cpp` (churn **221**, 16 hunks) · `src/llama-context.cpp` (111, 4) · `src/llama-graph.cpp` (103, 6) · `ggml/src/ggml-cpu/ops.cpp` (66, 4) · `ggml/src/ggml.c` (51, 13) |
-| **MED** | `src/llama-model.h` (63) · `src/llama-graph.h` (48) · `ggml/src/ggml-cpu/ggml-cpu.c` (44) · `ggml/include/ggml.h` (43) · `src/llama-context.h` (31) · `src/llama-cparams.h` (16, **a shared struct**) |
-| **LOW** | `ops.h` (12) · `ggml-cpu.cpp` (11) · `llama-impl.h` (8) · `test-opt.cpp` (5) · `unary-ops.cpp` (4) · `ggml-opt.cpp` (**2**) · `ggml-opt.h` (**2**) |
+| **HIGH** | `tests/test-backend-ops.cpp` (churn **221** · **+1065, 37 hunks**) · `ggml/src/ggml-cpu/ops.cpp` (66 · **+1020, 8**) · `ggml/src/ggml.c` (51 · +849, 17) · `src/llama-context.cpp` (111 · +268, 4) · `src/llama-graph.cpp` (103 · +280, 7) |
+| **MED** | `ggml/include/ggml.h` (43 · +179, 7) · `src/llama-model.h` (63 · +3) · `src/llama-graph.h` (48 · +3) · `ggml/src/ggml-cpu/ggml-cpu.c` (44 · +81, 8) · `src/llama-context.h` (31 · +83) · `src/llama-cparams.h` (16 · +25, **a shared struct**) |
+| **LOW** | `ggml-opt.cpp` (**2** · +209, 11) · `test-opt.cpp` (**5** · +526, 3) · `ggml-cpu.cpp` (11 · +53) · `unary-ops.cpp` (4 · +21) · `llama-impl.h` (8 · +22) · `ops.h` (12 · +7) · `ggml-opt.h` (**2** · +44) · `models/mamba-base.cpp` (small · +14) · `tests/test-glu-back.cpp`, `tests/test-soft-max-back-inplace.cpp` (**new files, churn 0**) |
 
-The counterintuitive one: **`ggml-opt.cpp` carries the fork's single largest footprint — 17 hunks,
-209 lines — and is its *lowest* rebase risk.** Upstream touched it twice in a year. ggml-opt is
-close to unmaintained, which is precisely why the fork found four real bugs in it.
+The counterintuitive ones still hold, and there are now two of them. **`ggml-opt.cpp` (+209, 11 hunks)
+and `test-opt.cpp` (+526) are both large footprints at the *lowest* rebase risk** — upstream touched
+each about twice in a year. ggml-opt is close to unmaintained, which is precisely why the fork found
+four real bugs in it. And the fork's two brand-new files (`test-glu-back.cpp`,
+`test-soft-max-back-inplace.cpp`) rebase for free by construction — the argument for the new-files
+rule the kernels ignore.
 
-Conversely `tests/test-backend-ops.cpp` is the most rebase-exposed file by a factor of two, and the
-`grad_loss` hook is an invasive change to the harness's `test_case` base class. That is where a
-rebase will hurt first, and it is a *test* file — so it will hurt without the compiler's help.
+Conversely `tests/test-backend-ops.cpp` (+1065) and `ggml-cpu/ops.cpp` (+1020) are now the two
+largest footprints *and* two of the highest-churn files — test-backend-ops the most rebase-exposed
+file in the tree by a wide margin, with the `grad_loss` hook an invasive change to the harness's
+`test_case` base class, and ops.cpp carrying six new kernels in a file upstream reworks constantly.
+That is where a rebase will hurt first, and for the test harness it will hurt without the compiler's
+help.
 
 ## An ABI landmine, found and defused
 
