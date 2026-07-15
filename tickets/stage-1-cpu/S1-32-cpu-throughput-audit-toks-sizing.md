@@ -5,8 +5,8 @@ stage: 1
 track: docs
 size: S
 deps: ["S1-12"]
-status: pr-open
-pr: https://github.com/dillon-blake/llama-farm/pull/29
+status: open
+pr: null
 ---
 
 # S1-32 — CPU throughput audit + published tok/s sizing (P4)
@@ -15,6 +15,38 @@ pr: https://github.com/dillon-blake/llama-farm/pull/29
 CPUs confirms the dequant-per-row `out_prod` path and threadpool scaling are adequate, and
 `docs/perf/cpu.md` publishes expected tok/s classes plus a memory-sizing worksheet so
 GPU-less users can size runs.
+
+## Status — 2026-07-16 (S1-49 doc-refresh audit): OPEN, remainder carried to B-11
+
+The S1-32 audit was closed as `pr-open` against PR #29, but most of its deliverables never
+landed — confirmed by the 2026-07-15 audit (`docs/dev/audit-2026-07-15.md`, ci-docs major).
+The orchestrator's decision for the doc-refresh: **do not build the full benchmark suite now.**
+Record the honest state here and carry the rest to backlog **B-11**.
+
+**What exists:**
+- `benches/cpu_train_step.py` — drives a dense-LoRA SFT step through the S1-12 harness, sweeps
+  thread count, and reports tok/s, the forward/backward split, and per-thread scaling. It runs.
+- `benches/ops_perf.sh` — a per-op `test-backend-ops` perf-mode runner skeleton.
+- `benches/grad_checkpointing.py` — a memory bench (S1-17).
+- A recorded bench pass on the CI-class box (Intel N100, AVX2) in
+  `docs/dev/cpu-throughput-audit.md` — the cheap half, captured during S1-49 since this box is the
+  target hardware class.
+
+**What does NOT exist (→ B-11):**
+- No machine-readable (JSON) report from either runner — output is print-formatted tables only.
+- No `src/learning_llamas/sizing.py` memory worksheet (BLUEPRINT §10 risk 5) and no worked
+  examples, and so no predicted-vs-measured peak-RSS comparison, and no worksheet unit tests.
+- No `docs/perf/cpu.md`: no tok/s tables across ≥2 CPU classes (x86 + arm64), no per-op breakdown
+  table, no SIMD-attention flag list.
+- No `examples/training/finetune` baseline comparison (BLUEPRINT §9 P1).
+- No nightly `ci-cpu` report-only job uploading the artifact.
+
+**Why deferred:** the remaining work is a genuine benchmark-suite build (sizing formula +
+worksheet tests, JSON schema, per-op microbench harness, a realistic ~1B Q4_K fixture for
+meaningful thread-scaling, a second CPU class, CI wiring) — out of scope for a doc-refresh pass,
+and report-only work that gates nothing in Stage 1. It is carried whole into B-11.
+
+The original ticket body is retained below for B-11 to draw its acceptance criteria from.
 
 ## Why (context)
 

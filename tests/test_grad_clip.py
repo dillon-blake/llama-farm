@@ -18,6 +18,7 @@ Both of those are easy to get subtly wrong in ways a synthetic test cannot show:
 
 import math
 
+import numpy as np
 import pytest
 
 from learning_llamas import _ffi
@@ -83,27 +84,85 @@ def test_an_unclipped_gradient_can_exceed_the_threshold(trainable, libs) -> None
     )
 
 
-def test_the_clip_bounds_the_global_norm(trainable, libs) -> None:
-    """The gradient the optimizer steps on has a global norm no greater than the clip.
+def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """The clip's threshold is the global norm over every tensor, and it scales a copy.
 
-    Read from the accumulators after the step — i.e. what the graph actually produced, not what a
-    host-side helper would have computed. The accumulators hold the *unclipped* sum (the clip nodes
-    scale a copy on its way into the AdamW node), so this asserts the relationship the clip
-    guarantees: the norm the optimizer saw is ``min(norm, clip)``.
+    The accumulator the optimizer reads back is therefore left unclipped. There is no getter for the
+    post-clip norm (S1-10 left ``ll_step_result``'s pre/post-clip fields
+    unimplemented), and AdamW's step-1 update is nearly invariant to a *uniform* scaling of the
+    gradient — so a single-step assertion cannot read the clipped magnitude directly. The
+    closed-form magnitude proof lives in the fork's ``test-opt``. What is observable here, and
+    asserted, are the two properties that pin the clip to the *global* norm:
+
+    * the accumulator still holds the unclipped global gradient after a clipped step — the clip
+      nodes scale a copy on the way into AdamW, they do not rewrite the accumulator. A clip applied
+      in place would instead collapse this norm toward the clip;
+    * a clip set *above* the measured global norm is a no-op to within last-ulp arithmetic
+      residue, across **every** trainable tensor — while a *binding* clip moves weights four
+      orders of magnitude more. That boundary sits at the global norm, not at any per-tensor
+      one, which is the whole point. (Why not bitwise: see the comment at the assertion — the
+      answer is different on two hosts, and instructive.)
+
+    The earlier version of this test asserted ``min(raw, clip) == clip`` after establishing
+    ``raw > clip`` — a pure tautology that never observed the clip at all.
     """
-    model = trainable
+    import ctypes
+
+    def _run(clip: float):
+        adapter_path = tmp_path / f"a-{clip}.gguf"
+        create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+        model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+        model.attach_adapter(adapter_path, scale=1.0)
+        model.targets = enumerate_targets(tiny_q4_k)
+
+        with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=clip)) as trainer:
+            trainer.step(_batch())
+            norm = _global_grad_norm(libs, model)
+            weights: list[float] = []
+            for target in model.targets:
+                for is_b in (False, True):
+                    n = libs.farm.ll_debug_n_elements(model.ctx, target.name.encode(), is_b)
+                    buf = (ctypes.c_float * n)()
+                    libs.farm.ll_debug_get_tensor(model.ctx, target.name.encode(), is_b, buf, n)
+                    weights.extend(buf)
+        return norm, weights
+
     clip = 0.01
+    norm_off, w_off = _run(0.0)
+    assert norm_off > clip, (
+        f"the unclipped global norm ({norm_off:.4f}) is under the clip; nothing would be clipped"
+    )
 
-    with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=clip)) as trainer:
-        trainer.step(_batch())
+    # A clipped step must leave the accumulator's global norm untouched: the clip scaled a copy
+    # into AdamW, it did not rewrite what the accumulator holds.
+    norm_on, _ = _run(clip)
+    assert norm_on == pytest.approx(norm_off), (
+        f"a clipped step changed the accumulator's global norm ({norm_on:.4f} vs {norm_off:.4f}); "
+        f"the clip must scale a copy into AdamW, not rewrite the accumulator"
+    )
 
-        raw = _global_grad_norm(libs, model)
-
-    # The accumulator still holds the raw gradient; the clip acts between it and the step.
-    assert raw > clip, f"the raw norm ({raw:.4f}) is already under the clip; nothing was clipped"
-
-    effective = min(raw, clip)
-    assert effective == pytest.approx(clip)
+    # A clip set above the measured GLOBAL norm must be a no-op — but not a BITWISE one, and the
+    # two failed attempts at a stronger claim are worth recording. (1) Against the clip-DISABLED
+    # run, bitwise fails because grad_clip=0 builds a graph without the clip nodes, and the
+    # allocation shift moves SIMD reduction splits by an ulp on macos-14 arm64. (2) Even two
+    # DIFFERENT above-norm clips differ bitwise there: the graph does not form a literal
+    # factor == 1.0 and scale once — the clip constant participates in the arithmetic
+    # (scale-then-divide / FMA), so each clip value leaves its own last-ulp residue. Linux merely
+    # cancels by coincidence. ADR-0002's caveat, twice in one test.
+    #
+    # What IS host-invariant: a non-binding clip perturbs weights only at rounding scale (~1e-7
+    # relative), while a BINDING clip moves them at the 1e-3 scale — four orders of magnitude of
+    # separation, asserted here and in the binding-clip test below.
+    _, w_slack = _run(norm_off + 1.0)
+    _, w_slack2 = _run(norm_off + 2.0)
+    assert np.allclose(w_slack, w_slack2, rtol=1e-6, atol=1e-9), (
+        "two clips both above the measured global norm disagree beyond rounding residue; "
+        "the clip is doing real work in a regime where factor must be 1"
+    )
+    assert np.allclose(w_slack, w_off, rtol=1e-6, atol=1e-9), (
+        "a clip set above the measured global norm changed the weights beyond rounding residue; "
+        "a non-binding clip must be a no-op up to last-ulp arithmetic jitter"
+    )
 
 
 def test_clipping_changes_the_step_and_a_clip_above_the_norm_does_not(
