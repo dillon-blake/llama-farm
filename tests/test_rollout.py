@@ -27,8 +27,10 @@ from learning_llamas.train.rollout import (
     Rollout,
     RolloutEngine,
     SamplerConfig,
+    captured_logp,
     group_advantages,
     length_reward,
+    recompute_logp,
     substring_reward,
     token_reward,
 )
@@ -181,6 +183,53 @@ def test_logp_old_matches_an_independent_recompute(tiny_q4_k, load_model, libs) 
     # ...and they are real logprobs, not zeros that would trivially agree.
     assert (captured < 0.0).all()
     assert np.isfinite(captured).all()
+
+
+@pytest.mark.parametrize("temperature", [0.0, 1.0])
+def test_recompute_logp_agrees_with_the_capture_over_a_whole_batch(
+    tiny_q4_k, load_model, libs, temperature: float
+) -> None:
+    """``recompute_logp`` vs ``captured_logp`` on a full batch (S1-15 §4) — S1-16's cross-check.
+
+    The manual check above proves it for one greedy rollout with the last token dropped. This is the
+    helper GRPO actually uses: every rollout in the batch, every completion token graded, greedy and
+    sampled. It is the ``naive`` path of :class:`~learning_llamas.verify.SelfVerified`'s first
+    customer, exercised here on its own.
+
+    The two paths share no code — the capture reads one raw logits row per drawn token off a chain
+    of one-token incremental decodes; the recompute scores each finished rollout in a single forward
+    and log-softmaxes through ``ce_sparse``. Deterministic per shape (ADR-0002) makes them
+    numerically-close, not bitwise. Observed here: max ``|capture − recompute|`` ~1e-6, band 1e-4.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    engine = RolloutEngine(
+        libs,
+        model.ctx,
+        model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=temperature, seed=13, max_new_tokens=MAX_NEW),
+    )
+    batch = engine.generate(PROMPTS, length_reward(10))
+    lm_head = load_lm_head(tiny_q4_k)
+
+    captured = captured_logp(batch)
+    recomputed = recompute_logp(engine, batch, lm_head)
+
+    # Aligned slot-for-slot: one entry per completion token, concatenated in rollout order.
+    n_completion = sum(len(r.completion_tokens) for r in batch.rollouts)
+    assert captured.shape == recomputed.shape == (n_completion,)
+    assert n_completion > 0
+
+    deviation = float(np.max(np.abs(captured - recomputed)))
+    assert deviation < 1e-4, (
+        f"the sample-time capture and the S1-13 recompute diverged by {deviation:.2e} over the "
+        f"batch (temperature={temperature}). One of them is scoring the wrong policy."
+    )
+
+    # ...and they are real logprobs, not zeros that would trivially agree.
+    assert (captured < 0.0).all()
+    assert np.isfinite(recomputed).all()
+    assert (recomputed < 0.0).all()
 
 
 def test_logp_old_is_one_per_generated_token(engine) -> None:

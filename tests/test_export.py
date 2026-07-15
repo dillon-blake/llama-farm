@@ -531,9 +531,7 @@ def test_the_token_embd_merged_model_matches_base_plus_adapter(
     )
 
 
-def test_a_q8_0_merge_preserves_every_tensors_quant_type(
-    tiny_q8_0, tmp_path, libs: _ffi.Libraries
-):
+def test_a_q8_0_merge_preserves_every_tensors_quant_type(tiny_q8_0, tmp_path, libs: _ffi.Libraries):
     """S1-08 AC, the Q8_0 half: a merged Q8_0 base stays Q8_0 -- no silent F16 fallback.
 
     ``test_merging_at_scale_zero...`` pins type preservation for Q4_K only; Q8_0 is a *named* S1-08

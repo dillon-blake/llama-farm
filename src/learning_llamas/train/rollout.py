@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .. import _ffi
+from ..logprobs import LmHead, LoRADelta, sequence_logprobs
 
 #: A reward function: given the prompt and the whole rollout, how good was it?
 #:
@@ -527,3 +528,103 @@ def _logprob(row: np.ndarray, token: int) -> float:
     peak = logits.max()
     lse = peak + math.log(np.exp(logits - peak).sum())
     return float(logits[token] - lse)
+
+
+# ---------------------------------------------------------------------------------------------
+# logp_old, the other way: the S1-13 chunked recompute (S1-15 §4).
+#
+# The capture above reads the policy's logprob off the raw logits row as each token is *drawn* --
+# one incremental decode per token, no extra forward. This recompute scores the finished rollouts
+# in a single pass through the SAME context, and it is the documented fallback and cross-check: the
+# `fast` sample-time capture is only trustworthy if it agrees with the `naive` recompute, and S1-16
+# wires exactly that comparison (verify.SelfVerified) as its first customer.
+# ---------------------------------------------------------------------------------------------
+
+
+def captured_logp(rollouts: RolloutBatch) -> np.ndarray:
+    """The sample-time ``logp_old`` of every completion token, concatenated in rollout order.
+
+    The ``fast`` side of the cross-check: it costs nothing, because the numbers were already
+    recorded as the tokens were drawn. Aligned slot-for-slot with :func:`recompute_logp` on the same
+    batch, so the two can be compared directly.
+
+    Args:
+        rollouts: What the engine generated.
+
+    Returns:
+        ``[sum_i len(completion_i)]`` F32 — each rollout's ``logp_old`` array, end to end.
+    """
+    parts = [np.asarray(r.logp_old, dtype=np.float32) for r in rollouts.rollouts]
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+
+def recompute_logp(
+    engine: RolloutEngine,
+    rollouts: RolloutBatch,
+    lm_head: LmHead,
+    *,
+    lora: LoRADelta | None = None,
+) -> np.ndarray:
+    """Recompute every completion token's ``logp_old`` with the S1-13 chunked no-grad pass.
+
+    The ``naive`` side of the cross-check, and the definition of correct (S1-15 §4). The sample-time
+    capture and this recompute share **no code**: the capture reads one raw logits row per drawn
+    token off a chain of one-token incremental decodes, while this scores each rollout in a single
+    forward and does the log-softmax through :func:`~learning_llamas.logprobs.sequence_logprobs`. So
+    agreement is real evidence the capture is faithful, and it is not free evidence — the two paths
+    genuinely differ.
+
+    They are **not** bitwise equal, and should not be: llama.cpp is deterministic per *shape*
+    (ADR-0002), and a one-token incremental decode is a different shape from a full forward. They
+    must agree *numerically*.
+
+    Scored on the engine's own inference context, with the adapter still attached — so it is the
+    same policy the tokens were drawn from. The output projection uses the base ``lm_head`` alone
+    unless ``lora`` is given: pass the adapter's output delta
+    (:func:`~learning_llamas.logprobs.output_lora`) only if the attached adapter targets
+    ``output.weight``. For an adapter that does not (the common case — attention and MLP projections
+    only), the base projection is exactly the policy's, because the adapter's effect on every
+    earlier layer is already baked into the hidden states this decode returns.
+
+    Args:
+        engine: The rollout engine, for its inference context and native libraries.
+        rollouts: The rollouts whose ``logp_old`` to recompute.
+        lm_head: The base model's output projection
+            (:func:`~learning_llamas.logprobs.load_lm_head`).
+        lora: The adapter's output-projection delta, or None when it does not target ``output``.
+
+    Returns:
+        ``[sum_i len(completion_i)]`` F32 — aligned slot-for-slot with :func:`captured_logp`.
+    """
+    parts: list[np.ndarray] = []
+    for rollout in rollouts.rollouts:
+        n_comp = len(rollout.completion_tokens)
+        if n_comp == 0:
+            continue
+
+        n_prompt = len(rollout.prompt_tokens)
+        full = rollout.prompt_tokens + rollout.completion_tokens
+
+        # Position i predicts token i+1, so the completion token at generation step t is the target
+        # of position `n_prompt - 1 + t`. Scoring the whole sequence in one shape and reading the
+        # exact positions back reproduces the capture's per-token logprob.
+        tokens = full[:-1]
+        targets = full[1:]
+        weights = [0.0] * len(tokens)
+        for t in range(n_comp):
+            weights[n_prompt - 1 + t] = 1.0
+
+        recomputed = sequence_logprobs(
+            engine.libs,
+            engine.ctx,
+            lm_head,
+            tokens,
+            targets,
+            weights,
+            lora=lora,
+        )
+        parts.append(
+            np.array([recomputed[n_prompt - 1 + t] for t in range(n_comp)], dtype=np.float32)
+        )
+
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
