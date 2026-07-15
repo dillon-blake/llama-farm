@@ -35,6 +35,11 @@ namespace {
 // will train and then the abort happens anyway -- so it is worth re-deriving on a vendor bump:
 //
 //   awk '/^static void ggml_compute_backward/,/^}$/' ggml/src/ggml.c | grep -oE 'case GGML_OP_[A-Z_0-9]+'
+//
+// And it no longer relies on anyone remembering to: tests/test_preflight_freshness.py parses that
+// same switch out of the vendored source and fails if this table disagrees with it in EITHER
+// direction (S1-42) -- a case gained upstream that is missing here (blocks a model that would
+// train), or a case listed here that upstream dropped (promises a run that then aborts).
 bool op_has_backward(ggml_op op) {
     switch (op) {
     case GGML_OP_NONE:
@@ -90,6 +95,15 @@ bool op_has_backward(ggml_op op) {
     case GGML_OP_OUT_PROD_ID:
     case GGML_OP_OUT_PROD_ID_GRP:
     case GGML_OP_GLU_BACK:
+    // learning-llamas: Mamba / state-space (S1-29b..S1-31). ggml_compute_backward now differentiates
+    // both the causal conv (SSM_CONV -> ssm_conv_back) and the selective scan (SSM_SCAN ->
+    // ssm_scan_back), so a Mamba adapter's gradient path no longer aborts here. These belonged on the
+    // BLOCKED side until the fork landed those VJPs, and nothing flipped them when it did -- the exact
+    // silent-drift the freshness guard now forbids. The scan's backward is Mamba-1 / n_group=1 today
+    // (SSM_SCAN's own case asserts on the A-matrix and ids gradients), but that is a numerical scope
+    // question, not an abort: the preflight only predicts whether the backward pass COMPLETES.
+    case GGML_OP_SSM_CONV:
+    case GGML_OP_SSM_SCAN:
         return true;
     default:
         return false;
@@ -155,10 +169,9 @@ const char * blocker_detail(ggml_op op) {
                "SWIGLU_OAI variants (Gemma, gpt-oss), have none. Unblocked by S1-28.";
     case GGML_OP_OUT_PROD:
         return "OUT_PROD is a backward-only op; seeing it on the forward graph is unexpected.";
-    case GGML_OP_SSM_CONV:
-        return "state-space convolution has no backward yet. Unblocked by S1-30.";
-    case GGML_OP_SSM_SCAN:
-        return "the state-space scan has no backward yet. Unblocked by S1-31.";
+    // SSM_CONV / SSM_SCAN are no longer here on purpose: S1-30/S1-31 gave them backwards, op_has_backward
+    // returns true for both, and so neither can reach this table. A message claiming "no backward yet"
+    // would now be a lie -- exactly the kind the freshness guard exists to prevent.
     case GGML_OP_ARGSORT:
     case GGML_OP_TOP_K:
     case GGML_OP_ARGMAX:

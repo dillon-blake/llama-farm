@@ -29,10 +29,14 @@ from __future__ import annotations
 import ctypes
 import logging
 import pathlib
+from typing import TYPE_CHECKING
 
 from . import _ffi
 from .data.template import ChatTemplate
 from .data.tokenize import Tokenizer
+
+if TYPE_CHECKING:
+    from .preflight import Report
 
 log = logging.getLogger("llama.cpp")
 
@@ -233,6 +237,38 @@ class Model:
         self.adapter = adapter
         self._owns_adapter = owned
         return adapter
+
+    def preflight(self) -> Report:
+        """Would this model train through the attached adapter, and if not, what stops it?
+
+        Builds the forward graph once and walks its nodes against the ops ggml can differentiate,
+        returning a structured :class:`~learning_llamas.preflight.Report` — ``report.trainable`` for
+        the verdict, ``report.summary()`` for a line a human should see before a long run, and
+        ``report.findings`` for the blockers and warnings individually.
+
+        This stands up a throwaway optimizer state, walks, and tears it down, so it answers the
+        question *before* committing to a run. A :class:`~learning_llamas.train.Trainer` runs the
+        very same gate automatically at construction (and raises
+        :class:`~learning_llamas.preflight.PreflightError` on a blocker), so there is no need to
+        call this during training — and doing so while a trainer holds this context would disturb
+        the optimizer state it depends on.
+
+        Returns:
+            What the preflight found.
+
+        Raises:
+            RuntimeError: If no adapter is attached — the walk is seeded from the trainable tensors,
+                and without an adapter there are none.
+        """
+        from .preflight import preflight_adapter
+
+        if not self.adapter:
+            raise RuntimeError(
+                "attach an adapter before preflight(): the walk is seeded from the trainable "
+                "tensors, and a model with no adapter attached has none to seed it with"
+            )
+
+        return preflight_adapter(self._libs, self.ctx, self.model, [self.adapter])
 
     def chat_template(self, name: str | None = None) -> ChatTemplate:
         """The chat template this GGUF embeds, compiled.
