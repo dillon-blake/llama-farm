@@ -116,7 +116,11 @@ def test_summed_sparse_ce_matches_dense_and_float64(
     finally:
         if buf:
             base.ggml_backend_buffer_free(buf)
-        ggml.ggml_backend_free(backend)
+        # ggml_backend_free is exported by libggml-base, so it must go through `base`. The `ggml`
+        # handle resolves the symbol too (via the library dependency) but with no argtypes attached,
+        # so ctypes marshals the 64-bit backend pointer as a 32-bit C int and truncates it -- a wild
+        # free() on any build whose allocator hands back an address above 4 GiB (ASan, and CI).
+        base.ggml_backend_free(backend)
         base.ggml_free(ctx)
 
     reference = _dense_ce_reference(logits, labels)
@@ -174,7 +178,11 @@ def test_the_parity_check_is_not_vacuous(libs: _ffi.Libraries) -> None:
     finally:
         if buf:
             base.ggml_backend_buffer_free(buf)
-        ggml.ggml_backend_free(backend)
+        # ggml_backend_free is exported by libggml-base, so it must go through `base`. The `ggml`
+        # handle resolves the symbol too (via the library dependency) but with no argtypes attached,
+        # so ctypes marshals the 64-bit backend pointer as a 32-bit C int and truncates it -- a wild
+        # free() on any build whose allocator hands back an address above 4 GiB (ASan, and CI).
+        base.ggml_backend_free(backend)
         base.ggml_free(ctx)
 
     reference_mean = _dense_ce_reference(logits, labels)
