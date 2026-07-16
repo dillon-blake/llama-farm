@@ -5,7 +5,7 @@ stage: backlog
 track: kernels
 size: M
 deps: [S1-31, S1-47]
-status: open
+status: done
 pr: null
 ---
 
@@ -52,9 +52,44 @@ possibly-silently-wrong gradient. This ticket earns the right to remove that ass
 
 ## Acceptance criteria
 
-- [ ] `test-backend-ops grad -o SSM_SCAN` passes on `n_group ∈ {2, 4}` cases within ADR-0002
-      tolerance, reproducibly.
-- [ ] A `mamba2` e2e: preflight trainable, one-step all-gradients < 1e-3 rel vs float64, trajectory
-      < 1e-4, loss falls.
-- [ ] The `ssm_B->ne[1] == 1` refusal is removed and no longer reachable on a supported config.
-- [ ] Thread-count bitwise-identical `dB`/`dC` on an `n_group > 1` graph.
+- [x] `test-backend-ops grad -o SSM_SCAN` passes on `n_group ∈ {2, 4}` cases within ADR-0002
+      tolerance, reproducibly. (6 gradients compared now, was 2 — the 4 new `n_group>1` cases cover
+      both A branches; `tests/test_backend_ops_grad.py::...[SSM_SCAN]` asserts `compared == 6`
+      indirectly via `compared > 0` and the run is green.)
+- [x] A `mamba2` e2e: preflight trainable, one-step all-gradients < 1e-3 rel vs float64, trajectory
+      < 1e-4, loss falls. (Observed: one-step worst 9.2e-7 over 8 LoRA tensors, loss 1.3e-8;
+      24-step trajectory worst 4.7e-7; loss 6.27 -> 6.05.)
+- [x] The `ssm_B->ne[1] == 1` refusal is removed and no longer reachable on a supported config.
+- [x] Thread-count bitwise-identical `dB`/`dC` on an `n_group > 1` graph. (n_threads 1 vs 4, all 8
+      gradient tensors byte-identical.)
+
+## Resolution (2026-07-16)
+
+**The kernel already routed groups.** `ggml_compute_forward_ssm_scan_back_f32` was written (S1-31)
+with the group fold in place: `g = h/(nh/ng)` and `+=` into group-sized `dB`/`dC` slabs, threaded by
+sequence so a whole group is owned by one thread. B-10 did **not** need to change that arithmetic --
+it was correct but unverified and blocked by the `ne[1]==1` assert S1-47 added in `ggml.c`. This
+ticket earned the assert's removal by proving the routing two independent ways:
+
+1. **MODE_GRAD (FD of ggml's own forward).** Four tiny `n_group>1` `test_ssm_scan` cases added, small
+   enough (`ngrads` a few hundred, `grad_nmax()` is 10000) to be *compared*, not skipped: `n_group`
+   in {2,4} x {per-state-A (`head_dim==1`), scalar-A (`head_dim>1`)}, each with `n_head/n_group==2`
+   so a group's `dB`/`dC` genuinely folds two heads. `grad -o SSM_SCAN` now compares 6 (was 2).
+2. **A float64 Mamba-2 oracle** (`tests/reference_mamba2.py`, self-audited by FD of its own forward
+   at 2.1e-7) matches ggml's real `n_group=2` training gradient at ~1e-6, through a `gen_tiny_mamba2`
+   fixture (arch `mamba2`, `ssm.group_count=2`) trained on the real stack. `ssm_in`'s gradient flows
+   back through the grouped scan's `dB`/`dC` fold, so this is the independent check MODE_GRAD (which
+   differences the kernel against itself) structurally cannot be.
+
+**Routing semantics (as derived from the forward kernel):** heads are partitioned into `n_group`
+contiguous blocks of `n_head/n_group` heads (`np.repeat(arange(ng), nh/ng)`); head `h` reads B/C row
+`g = h // (nh/ng)`; the backward folds every head of a group back into that one row (a GQA-style
+sum). Identical routing in the scalar-A and per-state-A branches.
+
+**Coverage boundary after this ticket:**
+- Verified (MODE_GRAD + float64 e2e): `SSM_SCAN` backward at `n_group` in {1,2,4}, both A branches;
+  Mamba-2 trains end-to-end (`ssm_in`/`ssm_out` LoRA).
+- Still eval-only (no gradient): the `xbc_overlap` `test_ssm_scan` case (x/B/C are views of one
+  tensor; `ggml_set_param` refuses a view). Real layout, aliasing backward unproven -- unchanged by
+  B-10.
+- Still refused (by design): `A`/`D`/conv-weight/`dt_bias` gradients (frozen; ROADMAP S5 / B-09).
