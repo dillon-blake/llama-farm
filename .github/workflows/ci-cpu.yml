@@ -248,12 +248,18 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
           TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
+          # Deterministic MODE_GRAD draws (S1-50): the SSM scan's FD is the worst-conditioned
+          # in the suite, and an unseeded run makes a marginal draw unreproducible.
+          GGML_TEST_SEED: "20260716"
         run: pytest tests/test_backend_ops_grad.py -v
 
       - name: test-backend-ops — full sweep (nightly)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
+          # Deterministic MODE_GRAD draws (S1-50): the SSM scan's FD is the worst-conditioned
+          # in the suite, and an unseeded run makes a marginal draw unreproducible.
+          GGML_TEST_SEED: "20260716"
         run: |
           ./build/vendor-tests/bin/test-backend-ops test -b CPU
           pytest tests/test_backend_ops_grad.py -v

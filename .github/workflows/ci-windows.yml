@@ -172,6 +172,9 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
           TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/Release/test-backend-ops.exe
+          # Deterministic MODE_GRAD draws (S1-50): the SSM scan's FD is the worst-conditioned
+          # in the suite, and an unseeded run makes a marginal draw unreproducible.
+          GGML_TEST_SEED: "20260716"
         run: python -m pytest tests/test_backend_ops_grad.py -v
 
       # Nightly, detailed tier — the full forward sweep, the grad wrapper, and MUL_MAT's grad (the
@@ -185,6 +188,9 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/Release/test-backend-ops.exe
+          # Deterministic MODE_GRAD draws (S1-50): the SSM scan's FD is the worst-conditioned
+          # in the suite, and an unseeded run makes a marginal draw unreproducible.
+          GGML_TEST_SEED: "20260716"
         run: python -m pytest tests/test_backend_ops_grad.py -v
 
       - name: test-backend-ops — MUL_MAT grad (nightly)
