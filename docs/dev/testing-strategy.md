@@ -71,7 +71,9 @@ device:
 
 ## Current verified state (2026-07-16)
 
-SFT, DPO, GRPO, MoE, Mamba-1, full-finetune, quantized-base LoRA: all oracle-verified on CPU
-(worst observed one-step gradient deviations 1e-6..4e-6; trajectories 5e-7..1e-5 with mechanisms
-named). Known boundaries: SSM `n_group>1` refused loudly (B-10); Mamba-2 e2e deferred (B-10);
-throughput audit deferred (B-11). 369 tests, ~75 s on a 4-core N100.
+SFT, DPO, GRPO, MoE, Mamba-1, Mamba-2 (`n_group>1`), full-finetune, quantized-base LoRA: all
+oracle-verified on CPU (worst observed one-step gradient deviations 1e-6..4e-6; trajectories
+5e-7..1e-5 with mechanisms named). B-10 lifted the SSM `n_group>1` refusal: the `SSM_SCAN` backward's
+group-index fold is now MODE_GRAD-checked at `n_group` in {2,4} and e2e-verified against a float64
+Mamba-2 oracle. Known boundaries: `A`/`D`/conv-weight grads still frozen (B-09); the `xbc_overlap`
+SSM_SCAN aliasing case is still eval-only; throughput audit deferred (B-11). 373 tests.

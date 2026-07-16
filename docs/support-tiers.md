@@ -45,7 +45,7 @@ no LoRA injection. The model still trains; the warning names the target tensor w
 ## Blocked (neither tier)
 
 A model is `blocked` when some op on its grad path has no backward rule. The preflight names the op,
-the first offending node, and the ticket that unlocks it — e.g. an `n_group > 1` SSM arch (Mamba-2 /
-Falcon-H1) aborts loudly today because its group-index routing has no gradient oracle (B-10). Blocked
-is a *reported* state, never a silent `GGML_ABORT` mid-step, and it flips to tier-2 the moment the
-unlocking ticket lands, with no change here.
+the first offending node, and the ticket that unlocks it. Blocked is a *reported* state, never a
+silent `GGML_ABORT` mid-step, and it flips to tier-2 the moment the unlocking ticket lands, with no
+change here. (`n_group > 1` SSM archs — Mamba-2 / Falcon-H1 — were blocked this way until B-10 gave
+the `SSM_SCAN` backward's group-index routing its gradient oracle; they are trainable now.)
