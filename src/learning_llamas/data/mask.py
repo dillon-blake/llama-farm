@@ -111,13 +111,34 @@ def build_masked_sample(
             "generation target, so there is no well-defined completion span to train on."
         )
 
-    # add_special=False on both: the template already emits BOS/EOS as text, and letting the
-    # tokenizer add its own too would double them -- and would do so only on the full text, not
-    # the prefix, breaking the prefix property for a reason that has nothing to do with merges.
-    prompt_tokens = tokenizer.encode(prompt_text, add_special=False, parse_special=True)
-    full_tokens = tokenizer.encode(full_text, add_special=False, parse_special=True)
+    # The token-prefix property is checked at EVERY message boundary, not only the one that moves
+    # the loss mask (S1-06 item 4). The chain of rendered prefixes, in order:
+    #   render(m[:1]), render(m[:2]), ..., render(m[:-1])   -- each complete turn, no opener,
+    #   prompt_text (= render(m[:-1]) + the assistant opener) -- the pre-completion prefix,
+    #   full_text                                             -- the whole conversation.
+    # Each must be a TOKEN-prefix of the next. A BPE/SPM merge at any boundary is exactly the bug
+    # this module exists to catch; naming which boundary merged is far more useful than only
+    # checking the one boundary the mask happens to fall on. add_special=False throughout: the
+    # template already emits BOS/EOS as text, and letting the tokenizer add its own would double
+    # them on the full text but not the prefixes, breaking the property for an unrelated reason.
+    stages: list[tuple[str, str]] = [
+        (f"message {k}", template.render(messages[:k], add_generation_prompt=False))
+        for k in range(1, len(messages))
+    ]
+    stages.append(("prompt/completion", prompt_text))
+    stages.append(("full conversation", full_text))
 
-    _assert_token_prefix(prompt_tokens, full_tokens, "prompt/completion", tokenizer)
+    tokenized: dict[str, list[int]] = {}
+    prev_tokens: list[int] = []
+    prev_label = "start"
+    for label, text in stages:
+        toks = tokenizer.encode(text, add_special=False, parse_special=True)
+        _assert_token_prefix(prev_tokens, toks, f"{prev_label} -> {label}", tokenizer)
+        tokenized[label] = toks
+        prev_tokens, prev_label = toks, label
+
+    prompt_tokens = tokenized["prompt/completion"]
+    full_tokens = tokenized["full conversation"]
 
     weights = [0.0] * len(prompt_tokens) + [1.0] * (len(full_tokens) - len(prompt_tokens))
 

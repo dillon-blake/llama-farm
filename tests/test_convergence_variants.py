@@ -39,6 +39,7 @@ asserted, not assumed.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import numpy as np
 import pytest
@@ -46,7 +47,8 @@ import pytest
 from learning_llamas import create_zero_adapter
 
 from .convergence import config, harness
-from .test_convergence import GRAD_TOL
+from .fixtures import gen_tiny_llama
+from .test_convergence import GRAD_TOL, PEFT_TOL
 
 # (spec, curve band). Every band is a measurement with the observed number beside it.
 VARIANTS = (
@@ -136,4 +138,50 @@ def test_the_curve_stays_in_its_band_off_the_recorded_config(
         f"the loss curve left the float64 reference at step {worst}: "
         f"{got[worst]:.8f} vs {want[worst]:.8f} (worst |diff| {diff.max():.2e} > {band:.0e}). "
         f"The knob(s) under test: {moved}."
+    )
+
+
+def test_the_weight_decay_curve_matches_the_recorded_peft_reference(
+    tiny_f32, tmp_path, libs, conv_data
+) -> None:
+    """The decoupled decay term, cross-checked against transformers + peft (S1-50).
+
+    The recorded ``reference_curve.json`` has ``weight_decay == 0``, so AdamW's ``w *= 1 - lr*wd``
+    term multiplies by exactly 1 and the committed PEFT curve never exercises it. The ``wd=1.0``
+    variant above moves the knob, but its only oracle is the float64 reference — which shares this
+    codebase's understanding of what decoupled decay *is*. This is the one check that could catch
+    the graph and that reference being wrong about decay *together*: a SECOND PEFT curve, recorded
+    once at ``wd == 1.0`` (``reference_curve_wd.json``, its own identity), by an implementation
+    nobody here wrote.
+
+    Observed: the ggml curve tracks the PEFT-with-decay curve to well within ``PEFT_TOL`` — the same
+    band the ``wd == 0`` recorded gate holds — so ggml's decay convention and torch AdamW's agree.
+    """
+    recorded = json.loads(config.WD_CURVE_PATH.read_text())
+
+    assert recorded["identity"] == config.variant_identity(
+        config.WD_SPEC, gen_tiny_llama.HPARAMS.n_vocab
+    ), (
+        "reference_curve_wd.json was recorded against a different fixture, dataset or config. "
+        "Regenerate it: `record_reference.py --wd` (see tests/convergence/README.md)."
+    )
+
+    # The decay must actually MOVE the curve, or matching it would prove nothing about the decay
+    # term. Compared against the no-decay PEFT curve, the two must separate.
+    no_decay = np.array(json.loads(config.CURVE_PATH.read_text())["curve"])
+    with_decay = np.array(recorded["curve"])
+    assert np.abs(with_decay - no_decay).max() > SEPARATION_MARGIN * PEFT_TOL, (
+        "the wd=1.0 PEFT curve is indistinguishable from the wd=0 one; the decay term is not being "
+        "exercised and this gate could not catch a stack that ignored it"
+    )
+
+    adapter = tmp_path / "a.gguf"
+    got = np.array(harness.train(libs, tiny_f32, adapter, conv_data, spec=config.WD_SPEC))
+
+    diff = np.abs(got - with_decay)
+    worst = int(diff.argmax())
+    assert diff.max() < PEFT_TOL, (
+        f"the wd=1.0 loss curve left the PEFT-with-decay reference at step {worst}: "
+        f"{got[worst]:.8f} vs {with_decay[worst]:.8f} (worst |diff| {diff.max():.2e} > "
+        f"{PEFT_TOL:.0e}). ggml's decoupled decay and torch AdamW's disagree."
     )

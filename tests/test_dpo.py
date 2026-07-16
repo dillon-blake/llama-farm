@@ -20,10 +20,11 @@ the same claim), and the reference genuinely does not move.
 import ctypes
 import math
 
+import numpy as np
 import pytest
 
 from learning_llamas import _ffi
-from learning_llamas.adapter import create_zero_adapter
+from learning_llamas.adapter import create_zero_adapter, enumerate_targets
 from learning_llamas.data import MaskedSample
 from learning_llamas.train import DPOConfig, Preference, reference_logratios, train_dpo
 from learning_llamas.train.dpo import LOG_2, DPOTrainer, to_batch
@@ -166,6 +167,81 @@ def test_the_reference_is_the_model_with_the_adapter_off(trainable, libs: _ffi.L
     reference_again = reference_logratios(libs, model, [batch])[0]
     assert reference_again == pytest.approx(reference, abs=1e-5), (
         "the reference model moved. It is supposed to be the frozen base with the adapter off."
+    )
+
+
+def _lora_grads(libs, model, tiny_q4_k) -> dict[tuple[str, bool], np.ndarray]:
+    """Every LoRA A/B gradient accumulator, keyed by (base name, is_b)."""
+    out: dict[tuple[str, bool], np.ndarray] = {}
+    for target in enumerate_targets(tiny_q4_k):
+        for is_b in (False, True):
+            n = libs.farm.ll_debug_n_elements(model.ctx, target.name.encode(), is_b)
+            assert n > 0
+            buf = (ctypes.c_float * n)()
+            got = libs.farm.ll_debug_grad(model.ctx, target.name.encode(), is_b, buf, n)
+            assert got == n
+            out[(target.name, is_b)] = np.frombuffer(buf, dtype=np.float32, count=n).copy()
+    return out
+
+
+def test_a_fully_masked_pair_contributes_zero_gradient(trainable, tiny_q4_k, libs) -> None:
+    """S1-14 §6d: a preference pair with no graded token moves nothing.
+
+    With every weight 0, ``ce_sparse`` is 0 at every position, so both log-probs are 0, the DPO
+    bracket is ``β·(0 - 0) == 0``, the loss is exactly ``log 2``, and -- the claim under test --
+    every
+    gradient is bitwise zero. A stray nonzero anywhere (a masked position that still leaked a
+    gradient) would show up here and nowhere else.
+    """
+    model = trainable
+    pair = Preference(chosen=_sample(8, 0, start=7), rejected=_sample(9, 0, start=30))
+    batch = to_batch(pair, seq_len=SEQ_LEN)
+
+    with DPOTrainer(libs, model, DPOConfig(lr=1e-2, beta=BETA, seq_len=SEQ_LEN)) as trainer:
+        loss = trainer.dpo_step(batch, ref_delta=0.0)
+        grads = _lora_grads(libs, model, tiny_q4_k)
+
+    assert loss == pytest.approx(LOG_2, abs=1e-6), (
+        f"a fully-masked pair should sit at exactly log 2, got {loss}"
+    )
+    for (name, is_b), g in grads.items():
+        assert np.array_equal(g, np.zeros_like(g)), (
+            f"{name}.{'b' if is_b else 'a'} took a nonzero gradient from a fully-masked pair: "
+            f"max |g| = {np.abs(g).max():.3e}"
+        )
+
+
+def test_a_dpo_step_moves_only_the_adapter(trainable, tiny_q4_k, libs) -> None:
+    """S1-14 §6c: the step trains the adapter and nothing else.
+
+    Two halves. (1) The base weights and the named-input buffers are *not* parameters in LoRA mode:
+    ggml-opt never flags them, so they have no gradient accumulator -- ``ll_debug_base_grad`` on a
+    base tensor errors rather than returning zeros, which is the machine-checkable form of "the
+    optimizer cannot touch them". (2) The adapter's own A/B *do* take a gradient. Together with the
+    sibling ``test_the_reference_is_the_model_with_the_adapter_off`` -- which shows the adapter-off
+    forward is byte-stable across a whole training run, i.e. the base weights did not move -- this
+    pins "only A/B move".
+    """
+    model = trainable
+    batch = to_batch(_pair(), seq_len=SEQ_LEN)
+    reference = reference_logratios(libs, model, [batch])[0]
+
+    with DPOTrainer(libs, model, DPOConfig(lr=5e-2, beta=BETA, seq_len=SEQ_LEN)) as trainer:
+        trainer.dpo_step(batch, reference)
+        grads = _lora_grads(libs, model, tiny_q4_k)
+
+        # A base weight has no gradient accumulator in LoRA mode: it is a constant input, not a
+        # parameter, so there is nothing for the optimizer to step.
+        for base in ("blk.0.attn_q.weight", "blk.0.ffn_down.weight", "output.weight"):
+            assert (
+                libs.farm.ll_debug_base_grad(model.ctx, base.encode(), (ctypes.c_float * 1)(), 1)
+                < 0
+            ), f"{base} has a gradient accumulator -- a named input is being trained as a parameter"
+
+    # The adapter DID take a gradient: at least one A/B tensor is nonzero, so the step trained the
+    # thing it is supposed to and the zero-gradient test above is not vacuous.
+    assert any(np.abs(g).max() > 0 for g in grads.values()), (
+        "no adapter tensor took a gradient; the DPO step trained nothing"
     )
 
 

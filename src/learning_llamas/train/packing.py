@@ -176,6 +176,8 @@ def _emit(pack_items: list[_Placed], seq_len: int, pad_id: int) -> Batch:
         weights=weights,
         seq_ids=seq_ids,
         positions=positions,
+        pad_count=pad,
+        n_samples=len(pack_items),
     )
 
 

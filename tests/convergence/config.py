@@ -102,6 +102,18 @@ class RunSpec:
 
 RECORDED = RunSpec()
 
+# A SECOND recorded run, the only one with decoupled weight decay turned on (S1-50). The recorded
+# config's `weight_decay == 0` means AdamW's `w *= 1 - lr*wd` term multiplies by exactly 1, so the
+# committed PEFT curve never exercises it; the wd=1.0 variant in test_convergence_variants.py moved
+# the knob but had only the float64 reference to check against. This spec gets its OWN PEFT curve
+# (reference_curve_wd.json, its own identity), so the decay term is finally cross-checked against
+# the independent transformers+peft oracle and not just the reference that shares the codebase's
+# understanding of what AdamW is. alpha == rank still, so the LoRA scale is 1.0 and the only thing
+# moved off the recorded run is the decay. (ggml asserts wd <= 1.0, so 1.0 is also its ceiling.)
+WD_SPEC = RunSpec(weight_decay=1.0)
+
+WD_CURVE_PATH = pathlib.Path(__file__).parent / "reference_curve_wd.json"
+
 
 # ---------------------------------------------------------------------------
 # The dataset
@@ -168,6 +180,44 @@ def identity(n_vocab: int) -> str:
             "epochs": EPOCHS,
             "shuffle": SHUFFLE,
             "adapter_seed": ADAPTER_SEED,
+            "targets": HF_TARGET_MODULES,
+            "data": hashlib.sha256(
+                tokens.tobytes() + targets.tobytes() + weights.tobytes()
+            ).hexdigest(),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def variant_identity(spec: RunSpec, n_vocab: int) -> str:
+    """Identity for a recorded VARIANT curve (S1-50), sourced from its :class:`RunSpec`.
+
+    Kept separate from :func:`identity` on purpose: that function reproduces the committed
+    ``reference_curve.json`` hash byte for byte and must never move, so it reads the module
+    constants directly. This one reads the spec, so a variant recorded at a different weight decay,
+    rank or alpha carries a hash that says so, and the gate re-checks it before comparing.
+    """
+    from ..fixtures import gen_tiny_llama
+
+    tokens, targets, weights = dataset(n_vocab)
+    payload = json.dumps(
+        {
+            "fixture": gen_tiny_llama.cache_key(),
+            "rank": spec.rank,
+            "alpha": spec.alpha,
+            "user_scale": spec.user_scale,
+            "lr": spec.lr,
+            "betas": list(spec.betas),
+            "eps": spec.eps,
+            "weight_decay": spec.weight_decay,
+            "lora_dropout": LORA_DROPOUT,
+            "seq_len": SEQ_LEN,
+            "n_samples": N_SAMPLES,
+            "epochs": spec.epochs,
+            "grad_accum": spec.grad_accum,
+            "shuffle": SHUFFLE,
+            "adapter_seed": spec.adapter_seed,
             "targets": HF_TARGET_MODULES,
             "data": hashlib.sha256(
                 tokens.tobytes() + targets.tobytes() + weights.tobytes()

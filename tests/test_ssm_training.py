@@ -585,3 +585,52 @@ def test_the_mamba2_group_scan_gradient_is_thread_count_deterministic(
             f"{key}: the n_group > 1 scan gradient changed with thread count -- the dB/dC group "
             f"fold is not thread-order-deterministic"
         )
+
+
+def _mamba_curve(libs, fixture, adapter, n_threads: int) -> list[float]:
+    """A Mamba-1 training curve at a fixed thread count, for the determinism check below."""
+    tokens, targets, weights = _dataset()
+    create_zero_adapter(fixture, adapter, r=RANK, alpha=ALPHA, seed=ADAPTER_SEED)
+    model = Model(
+        fixture, libs=libs, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True, n_threads=n_threads
+    )
+    try:
+        model.attach_adapter(adapter, scale=1.0)
+        samples = [
+            MaskedSample(
+                tokens=[int(t) for t in tokens[i]] + [int(targets[i][-1])],
+                weights=[0.0] + [float(w) for w in weights[i]],
+            )
+            for i in range(N_SAMPLES)
+        ]
+        result = train_sft(
+            libs,
+            model,
+            samples,
+            SFTConfig(lr=LR, seq_len=SEQ_LEN, epochs=EPOCHS, shuffle=False, schedule="constant"),
+        )
+        return [s.loss for s in result.steps]
+    finally:
+        model.close()
+
+
+def test_the_mamba_curve_is_bit_identical_across_thread_counts(
+    tiny_mamba_f32, tmp_path, libs
+) -> None:
+    """Same host, same inputs, 1 vs 2 vs 4 threads: exactly equal (S1-50, extending S1-38).
+
+    B-10's sibling above pins the *n_group>1 scan gradient* bitwise for one step; this pins the
+    whole Mamba-1 backward -- ``SSM_CONV_BACK`` and ``SSM_SCAN_BACK`` -- over a 24-step trajectory,
+    a different observable on a different fixture (Mamba-1, n_group=1). The scan and conv backward
+    both thread by sequence and accumulate per-thread, so if either reduction became dependent on
+    the thread split, the curve would fork. The convergence tolerances could never see it; a bitwise
+    curve can, and the backend lanes inherit the claim.
+    """
+    curves = {
+        n: _mamba_curve(libs, tiny_mamba_f32, tmp_path / f"mamba-{n}.gguf", n) for n in (1, 2, 4)
+    }
+    assert curves[1] == curves[2] == curves[4], (
+        "the Mamba loss curve depends on the thread count: an SSM_CONV_BACK / SSM_SCAN_BACK "
+        "reduction now depends on how the sequence was split across threads, breaking ADR-0002's "
+        "same-host determinism claim for the SSM backward."
+    )

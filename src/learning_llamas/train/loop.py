@@ -62,6 +62,12 @@ class Batch:
             another. ``None`` means the whole batch is one sequence.
         positions: Each position's index *within its own sequence* — so a packed sample's positions
             restart at 0. ``None`` means ``0..n-1``.
+        pad_count: How many of ``tokens`` are padding — positions with weight 0 that are *filler*,
+            not masked prompt. The packer knows this; nothing downstream can recover it, because a
+            pad and a prompt token both carry weight 0 (S1-07). 0 for an unpadded batch.
+        n_samples: How many real samples are packed into this batch (S1-07). 1 for an unpacked
+            batch. Together with ``pad_count`` this is what the throughput counters are computed
+            from — pad fraction and samples-per-pack.
     """
 
     tokens: list[int]
@@ -69,6 +75,8 @@ class Batch:
     weights: list[float]
     seq_ids: list[int] | None = None
     positions: list[int] | None = None
+    pad_count: int = 0
+    n_samples: int = 1
 
     def __post_init__(self) -> None:
         """Reject a ragged batch at construction, not three layers down in ctypes."""
@@ -157,6 +165,9 @@ class StepMetrics:
         lr: The learning rate in force.
         n_valid: How many positions carried loss.
         seconds: Wall-clock time of the step.
+        n_tokens: The batch's total length (tokens/step), padding included.
+        pad_tokens: How many of those tokens are padding filler (S1-07).
+        n_samples: How many real samples were packed into the batch (S1-07).
     """
 
     micro_step: int
@@ -166,11 +177,29 @@ class StepMetrics:
     lr: float
     n_valid: int
     seconds: float
+    n_tokens: int = 0
+    pad_tokens: int = 0
+    n_samples: int = 1
 
     @property
     def tokens_per_second(self) -> float:
         """Valid tokens per second — the number that actually sizes a run."""
         return self.n_valid / self.seconds if self.seconds > 0 else 0.0
+
+    @property
+    def pad_fraction(self) -> float:
+        """Fraction of the batch that is padding — the packer's waste, per step (S1-07)."""
+        return self.pad_tokens / self.n_tokens if self.n_tokens > 0 else 0.0
+
+    @property
+    def valid_token_fraction(self) -> float:
+        """Fraction of the batch that carried loss — what fraction of the compute was training."""
+        return self.n_valid / self.n_tokens if self.n_tokens > 0 else 0.0
+
+    @property
+    def samples_per_pack(self) -> float:
+        """How many real samples shared this batch — packing density (S1-07)."""
+        return float(self.n_samples)
 
 
 @dataclass
@@ -301,7 +330,15 @@ class Trainer:
         loss = self._run(batch, train=True)
         elapsed = time.perf_counter() - started
 
-        return self.record(loss=loss, lr=lr, n_valid=batch.n_valid, seconds=elapsed)
+        return self.record(
+            loss=loss,
+            lr=lr,
+            n_valid=batch.n_valid,
+            seconds=elapsed,
+            n_tokens=len(batch.tokens),
+            pad_tokens=batch.pad_count,
+            n_samples=batch.n_samples,
+        )
 
     def apply_schedule(self) -> float:
         """Set the learning rate for the step that is about to run, and return it.
@@ -321,7 +358,16 @@ class Trainer:
 
         return lr
 
-    def record(self, loss: float, lr: float, n_valid: int, seconds: float = 0.0) -> StepMetrics:
+    def record(
+        self,
+        loss: float,
+        lr: float,
+        n_valid: int,
+        seconds: float = 0.0,
+        n_tokens: int = 0,
+        pad_tokens: int = 0,
+        n_samples: int = 1,
+    ) -> StepMetrics:
         """Book a completed step: advance the counters, fire the hooks, keep the metrics.
 
         Args:
@@ -329,6 +375,10 @@ class Trainer:
             lr: The learning rate it used.
             n_valid: How many positions carried loss.
             seconds: Wall-clock time.
+            n_tokens: The batch's total length (padding included); 0 leaves the fraction counters at
+                0 for callers that do not have a padded batch to report.
+            pad_tokens: How many of those tokens were padding filler.
+            n_samples: How many real samples were packed into the batch.
 
         Returns:
             What the step did.
@@ -347,6 +397,9 @@ class Trainer:
             lr=lr,
             n_valid=n_valid,
             seconds=seconds,
+            n_tokens=n_tokens,
+            pad_tokens=pad_tokens,
+            n_samples=n_samples,
         )
 
         self._state.micro_step += 1

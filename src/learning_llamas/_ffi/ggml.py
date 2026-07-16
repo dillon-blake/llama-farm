@@ -118,6 +118,15 @@ SYMBOLS = [
         ],
         ctypes.c_void_p,
     ),
+    # The DENSE cross-entropy: a[n_vocab, n_tokens] logits against a one-hot label MATRIX b of the
+    # same shape, mean-reduced over every token to a scalar. ce_sparse's summed loss must match it
+    # within F32 round-off (S1-04 forward-parity); exposed only so a test can pin that identity.
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_cross_entropy_loss",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],  # ctx, logits, one-hot labels
+        ctypes.c_void_p,
+    ),
     Symbol(
         Library.GGML_BASE,
         "ggml_scale",

@@ -100,6 +100,25 @@ def test_each_packed_sample_gets_its_own_sequence_and_restarts_its_positions() -
     assert n_sequences(batch) == 4
 
 
+def test_the_batch_carries_its_pad_and_sample_counts() -> None:
+    """S1-07: pad_count and n_samples ride on the Batch, for the throughput meters.
+
+    Neither is recoverable downstream -- a pad and a masked prompt token both carry weight 0 -- so
+    the packer, the one place that knows, records them here.
+    """
+    samples = [_sample(2, 3), _sample(1, 4, start=30), _sample(3, 2, start=50)]
+    batch = pack(samples, seq_len=SEQ_LEN)[0]
+
+    assert batch.n_samples == len(samples)
+
+    # The pads are exactly the positions in the trailing pad sequence (seq_id == n_samples).
+    pad_seq = batch.n_samples
+    assert batch.pad_count == sum(1 for s in batch.seq_ids if s == pad_seq)
+    assert batch.pad_count == SEQ_LEN - sum(1 for s in batch.seq_ids if s < pad_seq)
+    # This pack genuinely pads, so a pad-fraction meter built on it is not measuring a constant 0.
+    assert 0 < batch.pad_count < SEQ_LEN
+
+
 def test_no_position_is_ever_asked_to_predict_a_token_from_another_sample() -> None:
     """The packing bug, asserted out of existence.
 

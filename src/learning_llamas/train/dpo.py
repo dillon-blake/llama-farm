@@ -163,6 +163,8 @@ def to_batch(pair: Preference, seq_len: int, pad_id: int = 0) -> Batch:
         weights=weights,
         seq_ids=batch.seq_ids,
         positions=batch.positions,
+        pad_count=batch.pad_count,
+        n_samples=batch.n_samples,
     )
 
 
@@ -403,6 +405,15 @@ def train_dpo(
                 lr = trainer.apply_schedule()
                 loss = trainer.dpo_step(batches[i], reference[i])
 
-                result.steps.append(trainer.record(loss=loss, lr=lr, n_valid=batches[i].n_valid))
+                result.steps.append(
+                    trainer.record(
+                        loss=loss,
+                        lr=lr,
+                        n_valid=batches[i].n_valid,
+                        n_tokens=len(batches[i].tokens),
+                        pad_tokens=batches[i].pad_count,
+                        n_samples=batches[i].n_samples,
+                    )
+                )
 
     return result

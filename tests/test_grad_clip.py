@@ -87,12 +87,12 @@ def test_an_unclipped_gradient_can_exceed_the_threshold(trainable, libs) -> None
 def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) -> None:
     """The clip's threshold is the global norm over every tensor, and it scales a copy.
 
-    The accumulator the optimizer reads back is therefore left unclipped. There is no getter for the
-    post-clip norm (S1-10 left ``ll_step_result``'s pre/post-clip fields
-    unimplemented), and AdamW's step-1 update is nearly invariant to a *uniform* scaling of the
-    gradient — so a single-step assertion cannot read the clipped magnitude directly. The
-    closed-form magnitude proof lives in the fork's ``test-opt``. What is observable here, and
-    asserted, are the two properties that pin the clip to the *global* norm:
+    The accumulator the optimizer reads back is therefore left unclipped. AdamW's step-1 update is
+    nearly invariant to a *uniform* scaling of the gradient — so a single-step assertion cannot read
+    the clipped magnitude off the *weights* directly. (The clipped magnitude is read off the
+    *norms* directly, by ``ll_grad_norms``, in the sibling test below; the closed-form magnitude
+    proof lives in the fork's ``test-opt``.) What is observable here, and asserted, are the two
+    properties that pin the clip to the *global* norm:
 
     * the accumulator still holds the unclipped global gradient after a clipped step — the clip
       nodes scale a copy on the way into AdamW, they do not rewrite the accumulator. A clip applied
@@ -162,6 +162,97 @@ def test_the_clip_bounds_the_global_norm(tiny_q4_k, tmp_path, load_model, libs) 
     assert np.allclose(w_slack, w_off, rtol=1e-6, atol=1e-9), (
         "a clip set above the measured global norm changed the weights beyond rounding residue; "
         "a non-binding clip must be a no-op up to last-ulp arithmetic jitter"
+    )
+
+
+def test_the_grad_norms_getter_reports_pre_and_post_clip(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """S1-10 item 3: ``ll_grad_norms`` exposes the global grad norm before and after the clip.
+
+    ggml-opt computes both norms IN the backward graph — the pre-clip norm as the sqrt of the
+    summed unclipped-gradient squares, the post-clip norm measured off the clipped gradients the
+    optimizer actually steps on (not inferred as ``pre * factor``, and emphatically not a host-side
+    ``min(pre, clip)``). This reads the two scalars back out.
+
+    The load-bearing check against a tautology is the first assertion: the reported pre-clip norm
+    is pinned to an INDEPENDENT host-side norm of the same accumulators (``_global_grad_norm``).
+    A getter wired to the wrong tensor, or reporting a fabricated number, fails there. Given a true
+    pre, the two clip relationships (``post <= pre``, ``post`` lands on the threshold when it binds)
+    then say something real, because ``post`` is its own graph measurement — a broken clamp would
+    move it off the threshold rather than have it agree by construction.
+    """
+    import ctypes
+
+    def run(clip: float) -> tuple[float, float, float]:
+        adapter_path = tmp_path / f"norms-{clip}.gguf"
+        create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+        model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+        model.attach_adapter(adapter_path, scale=1.0)
+        model.targets = enumerate_targets(tiny_q4_k)
+
+        with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=clip)) as trainer:
+            trainer.step(_batch())
+            host = _global_grad_norm(libs, model)
+            pre, post = ctypes.c_float(), ctypes.c_float()
+            rc = libs.farm.ll_grad_norms(model.ctx, ctypes.byref(pre), ctypes.byref(post))
+        assert rc == 0, f"ll_grad_norms returned {rc}"
+        return host, pre.value, post.value
+
+    # A BINDING clip, well under the natural norm, so it actually bites.
+    clip = 0.01
+    host_b, pre_b, post_b = run(clip)
+
+    # The oracle: the reported pre-clip norm IS the real gradient's global norm.
+    assert pre_b == pytest.approx(host_b, rel=1e-5), (
+        f"the reported pre-clip norm {pre_b:.6f} disagrees with an independent host-side norm of "
+        f"the accumulators {host_b:.6f} — the getter is not reading the gradient it claims to"
+    )
+    assert pre_b > 0.0 and post_b > 0.0, (
+        f"a norm came back zero (pre={pre_b}, post={post_b}); the getter is reporting nothing"
+    )
+    assert pre_b > clip, f"premise failed: the natural norm {pre_b:.4f} is under the clip {clip}"
+    # Clipping cannot RAISE the norm, and a binding clip lands it on the threshold.
+    assert post_b <= pre_b + 1e-5, f"post-clip norm {post_b:.6f} exceeds pre-clip {pre_b:.6f}"
+    assert post_b < pre_b, f"a binding clip left the norm unchanged ({post_b:.6f} == {pre_b:.6f})"
+    assert post_b == pytest.approx(clip, rel=1e-4), (
+        f"a binding clip should rescale the global norm to the threshold {clip}, got {post_b:.6f}"
+    )
+
+    # A SLACK clip, above the natural norm: nothing is clipped, so post == pre.
+    host_s, pre_s, post_s = run(pre_b + 1.0)
+    assert pre_s == pytest.approx(host_s, rel=1e-5)
+    assert post_s == pytest.approx(pre_s, rel=1e-6), (
+        f"a non-binding clip changed the norm ({post_s:.6f} vs {pre_s:.6f}); it must be a no-op"
+    )
+    assert post_s <= (pre_s + 1.0) + 1e-5
+
+
+def test_the_grad_norms_are_nan_without_a_clip(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """With ``grad_clip == 0`` ggml-opt builds no norm node, so the getter reports NaN.
+
+    Not a stale or fabricated value.
+    This is the contract that lets a caller distinguish "the clip was off" from "the norm was
+    zero": an unclipped run's graph is unchanged by the feature, so there is genuinely nothing to
+    report, and the getter says so rather than inventing a number.
+    """
+    import ctypes
+
+    adapter_path = tmp_path / "noclip.gguf"
+    create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+    model.attach_adapter(adapter_path, scale=1.0)
+    model.targets = enumerate_targets(tiny_q4_k)
+
+    with Trainer(libs, model, TrainConfig(lr=1e-3, grad_clip=0.0)) as trainer:
+        trainer.step(_batch())
+        pre, post = ctypes.c_float(), ctypes.c_float()
+        rc = libs.farm.ll_grad_norms(model.ctx, ctypes.byref(pre), ctypes.byref(post))
+
+    assert rc == 0, f"ll_grad_norms returned {rc}"
+    assert math.isnan(pre.value) and math.isnan(post.value), (
+        f"an unclipped step should report NaN norms (no norm node is built), got "
+        f"pre={pre.value}, post={post.value}"
     )
 
 

@@ -525,6 +525,45 @@ def test_hooks_fire_where_they_say_they_do(trainable, libs: _ffi.Libraries) -> N
     assert opt == [0, 1], "on_optimizer_step must fire once per window, and not otherwise"
 
 
+def test_the_throughput_counters_reach_the_logging_hook(trainable, libs: _ffi.Libraries) -> None:
+    """S1-07 AC: the throughput counters appear in the logging-hook payload.
+
+    tokens/step and pad fraction, plus valid-token fraction and samples-per-pack.
+    The counters are computed from the batch in ``Trainer.step`` and threaded through ``record``
+    into ``StepMetrics``, so a downstream logger reads them off the metric it already receives. The
+    numbers are checked against the batch itself, not against constants, so a wrong wiring (reading
+    the wrong field, or dropping the pad count) is caught.
+    """
+    model = trainable
+    # _sample(4, 8) is 12 tokens; padded to SEQ_LEN this batch is mostly padding, so the pad
+    # fraction is a real, non-zero number to check.
+    batch = to_batch(_sample(n_prompt=4, n_completion=8), seq_len=SEQ_LEN)
+
+    seen: list = []
+    hooks = Hooks(on_micro_step=seen.append)
+    with Trainer(libs, model, TrainConfig(lr=1e-3), hooks=hooks) as trainer:
+        trainer.step(batch)
+
+    assert len(seen) == 1
+    m = seen[0]
+
+    # The payload carries the raw counts, matching the batch it trained on.
+    assert m.n_tokens == len(batch.tokens) == SEQ_LEN
+    assert m.pad_tokens == batch.pad_count
+    assert m.n_samples == batch.n_samples == 1
+    assert m.n_valid == batch.n_valid
+
+    # ...and the derived fractions are consistent with them.
+    assert m.pad_fraction == pytest.approx(m.pad_tokens / m.n_tokens)
+    assert m.valid_token_fraction == pytest.approx(m.n_valid / m.n_tokens)
+    assert m.samples_per_pack == 1.0
+
+    # Non-vacuous: this batch really is mostly padding and part-trained, so the meters are not
+    # trivially 0 or 1.
+    assert 0.0 < m.pad_fraction < 1.0
+    assert 0.0 < m.valid_token_fraction < 1.0
+
+
 def test_collate_produces_one_fixed_shape_batch_per_sample() -> None:
     samples = [_sample(2, 3), _sample(6, 9), _sample(1, 2)]
 

@@ -302,6 +302,13 @@ SYMBOLS = [
     Symbol(Library.FARM, "ll_opt_n_params", [ctypes.c_void_p], ctypes.c_int32),
     # S1-17: the activation high-water mark -- the number checkpointing exists to move.
     Symbol(Library.FARM, "ll_compute_buffer_bytes", [ctypes.c_void_p], ctypes.c_int64),
+    # S1-10 item 3: the last step's global grad norm, pre and post clip, written into two floats.
+    Symbol(
+        Library.FARM,
+        "ll_grad_norms",
+        [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float)],
+        ctypes.c_int32,
+    ),
     # S1-16: one GRPO step. `weights` is the completion mask and must be exactly 0.0 or 1.0 --
     # ce_sparse multiplies logp_new by it, so a fractional weight corrupts the importance ratio
     # rather than down-weighting the token. The shim rejects it.

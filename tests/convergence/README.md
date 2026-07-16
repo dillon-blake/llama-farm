@@ -155,6 +155,17 @@ It prints the twin's logit deviation, refuses to record if the twin is not the s
 writes the JSON. Commit it. In CI, the `record-reference` `workflow_dispatch` job does the same and
 uploads the result as an artifact.
 
+There is a **second** recorded curve, `reference_curve_wd.json`, identical to the first but with
+`weight_decay = 1.0` — the only PEFT curve that exercises AdamW's decoupled decay term (the
+recorded config has `weight_decay = 0`, so its decay multiplies by exactly 1). It has its own
+identity hash (`config.variant_identity(config.WD_SPEC, ...)`) and its own gate,
+`tests/test_convergence_variants.py::test_the_weight_decay_curve_matches_the_recorded_peft_reference`.
+Regenerate it with the `--wd` flag; it writes only that file and never touches `reference_curve.json`:
+
+```bash
+PYTHONPATH=$PWD:$PWD/src /tmp/recorder/bin/python -m tests.convergence.record_reference --wd
+```
+
 The recorder needs **no compiled shim** — it only builds an F32 fixture and a zero adapter, both
 pure `gguf-py` — so the project source on `PYTHONPATH` is enough.
 

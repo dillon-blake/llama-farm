@@ -1359,6 +1359,20 @@ int64_t ll_debug_base_grad(llama_context * ctx, const char * name, float * out, 
     return n;
 }
 
+int32_t ll_grad_norms(llama_context * ctx, float * pre_out, float * post_out) {
+    if (ctx == nullptr || pre_out == nullptr || post_out == nullptr) {
+        return LL_ERR_INVALID_ARG;
+    }
+    ll_train_state * state = state_for(ctx);
+    if (state == nullptr || state->opt_ctx == nullptr) {
+        return LL_ERR_NOT_INITIALIZED;
+    }
+    // NaN unless the last eval was a clipping OPT step -- ggml-opt caches these out of the graph.
+    *pre_out = ggml_opt_grad_norm_pre(state->opt_ctx);
+    *post_out = ggml_opt_grad_norm_post(state->opt_ctx);
+    return LL_OK;
+}
+
 // ---------------------------------------------------------------------------
 // Optimizer-state checkpoint / resume (S1-09)
 // ---------------------------------------------------------------------------

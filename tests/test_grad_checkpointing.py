@@ -167,6 +167,36 @@ def test_a_shorter_segment_saves_more(deep_model, deep_adapter, load_model, libs
     )
 
 
+def test_checkpointing_is_correct_and_saves_memory_per_pr(
+    deep_model, deep_adapter, load_model, libs, batch
+) -> None:
+    """A per-PR smoke that checkpointing is both correct AND not a silent no-op (S1-50).
+
+    The two witnesses above are ``@slow`` (the full segment-length sweep is a nightly cost), so per-
+    PR CI ran only the error-path contract -- nothing that would go red if a refactor made recompute
+    wrong or turned the feature into a no-op. This is the minimal thing that catches both, cheaply:
+    ONE on/off comparison on the deep fixture. The 12 layers are load-bearing -- they are what make
+    the memory claim non-vacuous, since a no-op passes the bitwise equality but not the reduction.
+    Measured ~2.7 s on the reference box (off 53 MiB, on 12 MiB), which is a per-PR price worth
+    paying to keep a headline feature from silently breaking between nightly runs.
+    """
+    off = _train(libs, load_model, deep_model, deep_adapter, batch, segment_len=0)
+    on = _train(libs, load_model, deep_model, deep_adapter, batch, segment_len=2)
+
+    assert on.losses == off.losses, (
+        f"checkpointing changed the losses -- recompute is not reproducing the forward.\n"
+        f"  off: {off.losses}\n  on : {on.losses}"
+    )
+    assert np.array_equal(on.weights, off.weights), (
+        "checkpointing trained to different weights though the losses matched: the backward read "
+        "something the forward did not write"
+    )
+    assert on.peak_bytes < off.peak_bytes, (
+        f"checkpointing did not reduce activation memory ({on.peak_bytes} vs {off.peak_bytes}); on "
+        f"12 layers a real implementation must, so this is what catches a silent no-op per-PR"
+    )
+
+
 # ---------------------------------------------------------------------------------------------
 # The contract.
 # ---------------------------------------------------------------------------------------------

@@ -509,6 +509,22 @@ LL_API int64_t ll_adapter_get(struct llama_adapter_lora * adapter, int32_t index
 LL_API int64_t ll_adapter_set(struct llama_adapter_lora * adapter, int32_t index, bool is_b, const float * data,
                               int64_t n);
 
+// The global gradient norm of the last training step, before and after clipping (S1-10 item 3).
+//
+// grad_clip is applied INSIDE the backward graph (ggml_opt_build), so there is no host-visible
+// moment between the backward and the step at which a pass over the accumulators could see the
+// clipped gradient. Instead the graph itself computes both norms -- pre-clip as sqrt(sum of the
+// unclipped grad squares), post-clip measured off the clipped grads it actually steps on -- and
+// this reads the two scalars back.
+//
+// Populated only after an OPT step that CLIPPED (ll_opt_init_lora/full with grad_clip > 0). An
+// unclipped context builds no norm node (its graph is unchanged by the feature), so both come
+// back NaN; likewise a non-stepping accumulation micro-step. When the norm was under the
+// threshold, *post_out == *pre_out to the bit; when it bound, *post_out == grad_clip.
+//
+// Returns LL_OK, or LL_ERR_NOT_INITIALIZED if the context has no training state.
+LL_API int32_t ll_grad_norms(struct llama_context * ctx, float * pre_out, float * post_out);
+
 // ---------------------------------------------------------------------------
 // Debug accessors (S1-03)
 // ---------------------------------------------------------------------------
