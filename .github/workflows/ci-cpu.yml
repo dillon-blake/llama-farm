@@ -37,8 +37,17 @@ on:
         default: false
 
 concurrency:
-  group: ci-cpu-${{ github.ref }}
-  cancel-in-progress: true
+  # Keyed on the EVENT as well as the ref. A schedule run and a push to main both resolve to
+  # refs/heads/main, so a single group let a push landing inside the 04:17 window cancel the
+  # nightly -- and the nightly is the only place the `slow` tests, the full test-backend-ops sweep
+  # and the MUL_MAT grad run at all -- or let the nightly cancel a push run a required check is
+  # waiting on.
+  group: ci-cpu-${{ github.event_name }}-${{ github.ref }}
+  # Supersede only where a newer run genuinely replaces an older one: another push to the same
+  # branch or PR. A nightly and a manual dispatch are each the only run of their tier (and a
+  # record-reference dispatch is a different job entirely), so cancelling one loses the coverage
+  # rather than saving a runner.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
   # The vendored tree is CPU-only on this lane. On macOS this is load-bearing rather
@@ -87,8 +96,18 @@ jobs:
       - name: Install build tooling
         run: pip install scikit-build-core cmake ninja build
 
+      # VERIFY, and do not apply -- the step name was already saying so while the script it ran was
+      # doing a real `git am`. The distinction is not pedantic. This is the only job in the repo
+      # that builds a wheel; `test`, `ops`, ci-windows and ci-metal all build the pin exactly as
+      # checked out. So a non-empty queue applied HERE would ship a wheel whose vendor tree no other
+      # job in the matrix tested, and would bake a submodule commit created seconds earlier on this
+      # runner -- a hash that exists on no remote -- into farm_version.h and _version_lock.py, i.e.
+      # into the very version lock whose job is to make that kind of divergence detectable.
+      #
+      # Applying the queue stays a deliberate local/fork step (patches/README.md). CI's contract is
+      # narrower and honest: the queue still applies to the pinned HEAD.
       - name: Verify the patch queue applies
-        run: ./scripts/apply-patches.sh
+        run: ./scripts/apply-patches.sh --check
 
       - name: Build the wheel
         run: python -m build --wheel --no-isolation

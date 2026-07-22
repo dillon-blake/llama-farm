@@ -1,6 +1,10 @@
 """ctypes mirrors of ``include/llama.h``.
 
-Mirrored from llama.cpp at commit ``4f37f519722aa3242eecb7649466b4a4a2d6d6da``. Model,
+Written against the headers at the fork's **upstream base**,
+``4f37f519722aa3242eecb7649466b4a4a2d6d6da`` — the commit the ``file:line`` anchors are valid at,
+*not* the vendored pin (which advances past the base as fork commits land, ADR-0001; the authority
+on it is :data:`learning_llamas._ffi._version_lock.VENDORED_COMMIT`, generated from the submodule
+at CMake configure time). The layouts below were verified against the pinned build. Model,
 context, and adapter handles stay opaque (``c_void_p``); only the two parameter structs that
 cross the ABI **by value** — ``llama_model_params`` and ``llama_context_params`` — need full
 field-by-field layouts, and those are the ones a vendor bump can silently corrupt.
@@ -281,6 +285,15 @@ SYMBOLS = [
     ),
     Symbol(Library.LLAMA, "llama_n_seq_max", [llama_context_p], ctypes.c_uint32),
     Symbol(Library.LLAMA, "llama_n_ubatch", [llama_context_p], ctypes.c_uint32),
+    # THREE different sizes, and they are not interchangeable -- see llama_n_ctx below for the one
+    # that is easiest to reach for and most often wrong.
+    #
+    # n_batch is the most tokens a single llama_decode will accept, and exceeding it is not a
+    # status code: llama-context.cpp's decode does `GGML_ASSERT(n_tokens_all <= cparams.n_batch)`,
+    # and GGML_ASSERT is GGML_ABORT (ggml.h). n_ctx_seq is the KV cells one SEQUENCE gets: equal to
+    # n_ctx on a unified cache, and n_ctx / n_seq_max (padded up to 256) when kv_unified is false.
+    Symbol(Library.LLAMA, "llama_n_batch", [llama_context_p], ctypes.c_uint32),
+    Symbol(Library.LLAMA, "llama_n_ctx_seq", [llama_context_p], ctypes.c_uint32),
     Symbol(Library.LLAMA, "llama_vocab_is_eog", [llama_vocab_p, llama_token], ctypes.c_bool),
     #
     # Samplers. One chain per sequence, so that G rollouts of one prompt are G independent draws.
@@ -321,6 +334,11 @@ SYMBOLS = [
         llama_token,
     ),
     Symbol(Library.LLAMA, "llama_sampler_free", [llama_sampler_p]),
+    # The PADDED context size, and the reason llama_n_batch is bound above. llama.cpp computes
+    # cparams.n_batch = min(cparams.n_ctx, params.n_batch) and only THEN rounds cparams.n_ctx up to
+    # a multiple of 256 (llama-context.cpp), so for any requested n_ctx that is not already a
+    # multiple of 256 this returns a number up to 255 larger than the batch limit. It is the KV
+    # cell count of a unified cache; it is not a decode limit.
     Symbol(Library.LLAMA, "llama_n_ctx", [llama_context_p], ctypes.c_uint32),
     # Decode. llama_batch_get_one returns the batch BY VALUE and llama_decode takes it by
     # value; both are fine through ctypes (it is only *callbacks* returning structs that trap).

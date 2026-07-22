@@ -202,11 +202,13 @@ def test_the_acceptance_bar_of_2x_at_n_ctx_4096(tiny_f32, tmp_path, libs, load_m
     """S1-24's headline: ckpt+chunk peak at n_ctx 4096 beats naive by at least 2x, from CI output.
 
     The 2.17x figure lived only in a hand-measured table (docs/dev/chunked-attention.md); the
-    per-PR memory gate asserts 1.5x at n_ctx 1024, the same claim on a smaller context. This
-    runs the actual acceptance context and asserts the actual bar, so the number is reproduced by a
-    machine and not just recorded by a human. It is @slow: n_ctx 4096 is a 4096-token ubatch in one
-    graph, and the naive arm alone is ~0.9 GiB of compute buffer -- fine for the nightly box, too
-    much to pay on every PR. Observed on the reference box: naive ~904 MiB, ckpt+chunk ~414 MiB.
+    sibling gate above asserts 1.5x at n_ctx 1024, the same claim on a smaller context -- and it is
+    `slow` too, so BOTH memory gates are nightly and nothing per-PR asserts that chunking saves
+    memory at all. This runs the actual acceptance context and asserts the actual bar, so the number
+    is reproduced by a machine and not just recorded by a human. It is @slow: n_ctx 4096 is a
+    4096-token ubatch in one graph, and the naive arm alone is ~0.9 GiB of compute buffer -- fine
+    for the nightly box, too much to pay on every PR. Observed on the reference box: naive ~904 MiB,
+    ckpt+chunk ~414 MiB.
     """
     seq, chunk = 4096, 256
     _, _, naive = _run(libs, load_model, tiny_f32, tmp_path / "n.gguf", 0, steps=1, seq=seq)

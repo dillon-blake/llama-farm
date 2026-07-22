@@ -294,7 +294,18 @@ def test_the_special_token_test_is_not_vacuous(chat) -> None:
 
     # Neither of the sibling's assertions survives the mutation:
     assert mutated != [tokenizer.bos]  # it does NOT collapse to the single id...
-    assert not (len(mutated) < len(mutated))  # ...and there is no strictly-fewer-tokens win.
+
+    # ...and its strict `len(with_special) < len(without)` degenerates: with the flag ignored both
+    # sides are this same encoding, so the comparison becomes `len(mutated) < len(mutated)` and is
+    # false. Asserting *that* is asserting `x < x` — true of every int, and no evidence about any
+    # tokenizer. The fact with real content is the one that makes the sibling's `<` separable in the
+    # first place: the byte spelling is genuinely longer than the single id. If `<s>` ever became a
+    # one-token byte-fallback, both sides would be length 1, the sibling's `<` could never hold, and
+    # this is what would say so.
+    assert len(mutated) > 1, (
+        f"{bos_text!r} byte-falls-back to {len(mutated)} token(s); the sibling's strictly-fewer "
+        "check has nothing left to measure"
+    )
 
 
 # ---------------------------------------------------------------------------

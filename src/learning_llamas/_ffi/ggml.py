@@ -1,6 +1,12 @@
 """ctypes mirrors of the core ``ggml.h`` calls learning-llamas uses.
 
-Mirrored from llama.cpp at commit ``4f37f519722aa3242eecb7649466b4a4a2d6d6da``.
+Written against the headers at the fork's **upstream base**,
+``4f37f519722aa3242eecb7649466b4a4a2d6d6da`` — that is the commit every ``file:line`` anchor below
+is valid at, and it is *not* the vendored pin. The pin advances past the base as fork commits land
+(ADR-0001); the authority on what is actually vendored is
+:data:`learning_llamas._ffi._version_lock.VENDORED_COMMIT`, generated from the submodule at CMake
+configure time and checked against ``ll_probe()`` at load. These layouts were verified against the
+pinned build, not against the base.
 
 ``ggml_quantize_chunk`` (``ggml/include/ggml.h:2789``) is here because K-quants are **not**
 writable from pure numpy — gguf-py's quantizer covers the legacy types but not Q4_K. Driving

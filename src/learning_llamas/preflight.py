@@ -239,17 +239,19 @@ def preflight_context(libs: _ffi.Libraries, ctx: int) -> Report:
 def preflight_adapter(libs: _ffi.Libraries, ctx: int, model: int, adapters: list[int]) -> Report:
     """Preflight a model+adapter on **throwaway** optimizer state, leaving the context untouched.
 
-    The walk has to be seeded from a set of flagged trainable tensors, so optimizer state must
-    exist — but it must not be the *training* optimizer state, and this is the subtle part.
-    ``opt_step_custom`` sizes an optimizer context from the first graph it is handed, and the
-    preflight's forward-only graph is not the training graph. Run the walk on the very context a
-    trainer will then step through and that context is mis-sized: the first real backward aborts
-    inside ``ggml_build_backward_expand`` (``GGML_ASSERT(ggml_is_scalar(b))``), which is precisely
-    the kind of late, cryptic abort the preflight exists to replace.
+    The walk is seeded from a set of *flagged* trainable tensors, so optimizer state has to exist
+    before it can run at all — and the callers who most want an answer are the ones who have none
+    yet: ``Model.preflight()`` is asked *whether* to train, and the ``Trainer`` gate runs before it
+    builds the optimizer state it would go on to use. So this stands one up, walks, and tears it
+    down in a ``finally``, leaving the context exactly as it was found.
 
-    So this stands up its own optimizer state, walks, and tears it down in a ``finally``. The
-    context is left exactly as it was found — and a trainer that builds its real optimizer state
-    afterwards gets to hand it the training graph first, as ggml-opt requires.
+    It is no longer standing in for a shim defect. ``ll_preflight`` used to run its forward pass on
+    the *shared* training optimizer context, which sized ggml-opt's gradient accumulators from the
+    preflight graph — one loss node shorter than a training step's — so the first real backward
+    then indexed past the end of them. That is fixed in C: the walk gets its own forward-only
+    ggml-opt context, and ``init → preflight → train`` on one context is safe. Which means
+    :func:`preflight_context` is now a fine thing to call on a live trainer's context, and this
+    function is about *not needing one*, not about protecting one.
 
     Args:
         libs: The loaded native libraries.

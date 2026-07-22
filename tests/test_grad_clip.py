@@ -261,9 +261,22 @@ def test_clipping_changes_the_step_and_a_clip_above_the_norm_does_not(
 ) -> None:
     """The observable consequence: the weights land somewhere different — and only when they should.
 
-    A clip *above* the gradient's norm must be a no-op, bit for bit. That is the half of the
-    behaviour a "the numbers got smaller" test never checks, and the half that a clip implemented as
-    an unconditional rescale would fail.
+    A clip *above* the gradient's norm must be a no-op. That is the half of the behaviour a "the
+    numbers got smaller" test never checks, and the half that a clip implemented as an
+    unconditional rescale would fail.
+
+    A no-op up to rounding residue, though, and **not** bit for bit — the same lesson the sibling
+    test above records twice and this one was left out of by S1-49. ``grad_clip=0`` builds a graph
+    with no clip nodes at all, so comparing an above-norm clip against it is a comparison across
+    two DIFFERENT graphs, and the allocation shift moves SIMD reduction splits by an ulp on
+    macos-14 arm64 (ADR-0002's caveat in miniature). Even the clip constant itself participates in
+    the arithmetic rather than forming a literal ``factor == 1.0``, so each clip value leaves its
+    own last-ulp residue; Linux merely cancels by coincidence.
+
+    The tolerance is therefore the sibling's measured one (~1e-7 relative rounding residue), and it
+    stays discriminating because the two claims are asserted against each other: a *binding* clip
+    has to move these same weights by more than that same tolerance. Four steps at lr=1e-2 put that
+    separation four orders of magnitude apart.
     """
     steps = 4
 
@@ -294,11 +307,17 @@ def test_clipping_changes_the_step_and_a_clip_above_the_norm_does_not(
     clipped = run(0.001)  # well under the norm
     slack = run(1e6)  # far above it: must be a no-op
 
-    assert unclipped != clipped, "clipping to 0.001 left the weights exactly where they were"
+    # The two halves, at the SAME tolerance, which is what keeps either of them meaningful: a
+    # binding clip must move the weights further than the rounding residue an above-norm one is
+    # allowed, or the no-op claim below would be satisfied by a clip that does nothing ever.
+    assert not np.allclose(clipped, unclipped, rtol=1e-6, atol=1e-9), (
+        "clipping to 0.001 moved the weights no further than arithmetic rounding would; the clip "
+        "is not binding, and the no-op assertion below would then be vacuous"
+    )
 
-    assert slack == unclipped, (
-        "a clip far above the gradient's norm changed the weights. It must be the identity: "
-        "min(1, clip/norm) is 1 there, so nothing should be rescaled."
+    assert np.allclose(slack, unclipped, rtol=1e-6, atol=1e-9), (
+        "a clip far above the gradient's norm changed the weights beyond rounding residue. It "
+        "must be the identity: min(1, clip/norm) is 1 there, so nothing should be rescaled."
     )
 
 

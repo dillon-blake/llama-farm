@@ -155,6 +155,82 @@ def test_freeing_two_models_that_share_an_adapter_does_not_double_free(tiny_q4_k
     assert "ok" in done.stdout
 
 
+def test_re_attaching_frees_the_adapter_it_displaced(
+    tiny_q4_k, tmp_path, load_model, libs, monkeypatch
+) -> None:
+    """``llama_set_adapters_lora`` replaces the set, so the displaced adapter is otherwise a leak.
+
+    ``close()`` frees ``self.adapter`` and nothing else, so an object that attached twice would
+    hold the first adapter's A/B tensors for the life of the process. A leak crashes nothing and
+    changes no number, which is exactly why it needs an assertion rather than an eye.
+
+    Counted by wrapping ``llama_adapter_lora_free`` — the free itself is the observable, and the
+    alternative (looking at RSS) would not survive a small fixture.
+    """
+    first = tmp_path / "first.gguf"
+    second = tmp_path / "second.gguf"
+    create_zero_adapter(tiny_q4_k, first, r=RANK, seed=7)
+    create_zero_adapter(tiny_q4_k, second, r=RANK, seed=8)
+
+    model = load_model(tiny_q4_k, n_ctx=N_CTX)
+    displaced = model.attach_adapter(first)
+
+    freed: list[int] = []
+    real = libs.llama.llama_adapter_lora_free
+
+    def spy(handle: int) -> None:
+        freed.append(handle)
+        real(handle)
+
+    monkeypatch.setattr(libs.llama, "llama_adapter_lora_free", spy)
+
+    kept = model.attach_adapter(second)
+
+    assert freed == [displaced], (
+        f"the displaced adapter was not freed exactly once (freed={freed}). It is unreachable "
+        f"through this Model now, so nothing else will ever free it."
+    )
+    assert model.adapter == kept
+    assert model._owns_adapter
+
+
+def test_re_attaching_over_a_borrowed_adapter_frees_nothing(
+    tiny_q4_k, tmp_path, load_model, libs, monkeypatch
+) -> None:
+    """The other side of the same fix: a handle that came in through ``adapter=`` is not ours.
+
+    Freeing it here would be a double free charged to whoever loaded it — the failure this Model's
+    whole ``_owns_adapter`` flag exists to prevent — and it would happen at the moment the borrower
+    moves on, which is nowhere near the owner's ``close()``.
+    """
+    shared = tmp_path / "shared.gguf"
+    own = tmp_path / "own.gguf"
+    create_zero_adapter(tiny_q4_k, shared, r=RANK, seed=7)
+    create_zero_adapter(tiny_q4_k, own, r=RANK, seed=8)
+
+    owner = load_model(tiny_q4_k, n_ctx=N_CTX)
+    borrower = load_model(tiny_q4_k, n_ctx=N_CTX)
+
+    handle = owner.attach_adapter(shared)
+    borrower.attach_adapter(adapter=handle)
+
+    freed: list[int] = []
+    real = libs.llama.llama_adapter_lora_free
+
+    def spy(h: int) -> None:
+        freed.append(h)
+        real(h)
+
+    monkeypatch.setattr(libs.llama, "llama_adapter_lora_free", spy)
+
+    borrower.attach_adapter(own)
+
+    assert freed == [], f"a borrowed adapter was freed by the Model that only borrowed it: {freed}"
+    assert owner.adapter == handle
+    assert owner._owns_adapter
+    assert borrower._owns_adapter  # it owns the one it just loaded, not the one it gave up
+
+
 # ---------------------------------------------------------------------------
 # llama.cpp's logs.
 # ---------------------------------------------------------------------------

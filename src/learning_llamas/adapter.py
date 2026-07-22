@@ -299,6 +299,12 @@ def _write_adapter_gguf(
 ) -> None:
     """Write a LoRA adapter GGUF.
 
+    ``add_tensor`` writes ``ne`` as the numpy shape reversed (``gguf_writer.py:265-268``), so a 3D
+    MoE pair handed over as ``(n_expert, r, n_in)`` lands in the file as ``ne = [n_in, r,
+    n_expert]`` with its expert axis intact and nothing here to do about it. The axis can only be
+    lost upstream, by whoever built the array — which is exactly where it used to be lost
+    (:func:`save_adapter`).
+
     Args:
         out_path: Where to write it.
         architecture: The base model's architecture string. The loader requires a match.
@@ -491,15 +497,38 @@ def save_adapter(
         name = name_buf.value.decode()
 
         # numpy shapes are the reverse of GGUF ne, and the writer wants numpy. An A of
-        # ne = [n_in, r] is a numpy array of shape (r, n_in).
-        a = _read(libs, adapter, i, is_b=False).reshape(int(ne_a[1]), int(ne_a[0]))
-        b = _read(libs, adapter, i, is_b=True).reshape(int(ne_b[1]), int(ne_b[0]))
+        # ne = [n_in, r] is a numpy array of shape (r, n_in) -- and an A of a MoE expert stack,
+        # ne = [n_in, r, n_expert], is (n_expert, r, n_in). See _np_shape.
+        a = _read(libs, adapter, i, is_b=False).reshape(_np_shape(ne_a))
+        b = _read(libs, adapter, i, is_b=True).reshape(_np_shape(ne_b))
 
         pairs.append((name, a, b))
 
     _write_adapter_gguf(out_path, architecture, float(alpha), pairs)
 
     return n
+
+
+def _np_shape(ne: ctypes.Array[ctypes.c_int64]) -> tuple[int, ...]:
+    """The numpy shape of an adapter tensor from its ggml ``ne``.
+
+    ``ll_adapter_tensor_info`` always fills GGML_MAX_DIMS (4) entries, padding the unused ones with
+    1 (farm_api.h), and a numpy shape is ``ne`` reversed. So the dimensionality has to be recovered
+    by dropping the trailing 1s — but only down to **two** dimensions, never further: a rank-1 LoRA
+    has ``a.ne = [n_in, 1, 1, 1]``, and collapsing that to a 1-D ``(n_in,)`` would write an A whose
+    ``ne[1]`` the loader can no longer compare against ``b.ne[0]``
+    (``src/llama-adapter.cpp:362-367``).
+
+    The dimension this exists for is ``ne[2]``, the MoE expert axis. Reshaping unconditionally to
+    ``(ne[1], ne[0])`` — which is what this did before S1-50 — cannot express a
+    ``[n_in, r, n_expert]`` expert stack at all: it raises ValueError, so a MoE run could not save
+    its adapter after spending the entire training budget on it. There is no version of that bug
+    that shows up before the end of the run.
+    """
+    dims = [int(x) for x in ne]
+    while len(dims) > 2 and dims[-1] == 1:
+        dims.pop()
+    return tuple(reversed(dims))
 
 
 def _index_by_name(libs: _ffi.Libraries, adapter: int) -> dict[str, int]:

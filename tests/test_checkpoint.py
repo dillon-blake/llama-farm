@@ -18,6 +18,11 @@ does *not* reproduce the reference. AdamW's moments and its bias-correction coun
 first steps after the restart are much larger than the ones they follow, and the run lands somewhere
 else. That is the bug this ticket exists to prevent, and it is silent: the loss simply jumps at
 every resume, and only on the long runs — which are the ones you cannot afford to re-do.
+
+There is a second counterfactual, because the mistake runs both ways: restoring the **sidecar
+alone** does not reproduce the reference either. The optimizer graph only exists after a step, and
+that priming step moves the weights before ``restore_checkpoint`` gets a chance to say anything.
+Both halves go back, in that order, or it is not a resume.
 """
 
 import ctypes
@@ -188,6 +193,80 @@ def test_resuming_from_the_adapter_alone_does_not_reproduce_it(
         f"resuming from the adapter alone reproduced the reference run to within {worst:.3g}. "
         f"Either the optimizer state does not matter here — in which case the test above proves "
         f"nothing — or the learning rate is too small for the moments to carry any history."
+    )
+
+
+def test_restoring_the_sidecar_alone_does_not_reproduce_it(
+    fresh, tmp_path, libs: _ffi.Libraries
+) -> None:
+    """The mirror counterfactual: the sidecar is not a checkpoint either, on its own.
+
+    ``restore_checkpoint`` used to document the resume as "one step, restore, carry on". This is
+    that recipe, run with every other advantage handed to it: the run STARTS at the step-4 weights
+    (so nothing is missing but the sidecar's own contribution), takes the priming step, restores
+    the moments and the iteration counter, and takes the remaining four. Four real steps against
+    the reference's last four, from the right weights, with the right ``m``, ``v`` and ``iter``.
+
+    It still lands somewhere else, and there is exactly one reason left: the priming step is a real
+    AdamW update that MOVES THE WEIGHTS off step 4, and nothing in ``checkpoint.py`` moves them
+    back — the restore overwrites ``m``, ``v`` and ``iter``, not the parameters. So what this
+    measures is precisely the priming step's update, which is why it is set up this way rather than
+    from a fresh adapter: a fresh adapter would diverge because it took 5 steps against 8, and
+    would say nothing about priming at all. Make the priming step weight-neutral and this test
+    *should* fail — that is the correct signal for a counterfactual, and it is the discrimination
+    the fresh-adapter version did not have.
+
+    So the two counterfactuals bracket the protocol: weights alone diverge (no moments), the
+    documented public-API resume diverges (nothing puts the primed weights back). What makes it
+    exact is writing the step-N weights over the priming step's, which the test at the top of this
+    file does through the debug shim.
+
+    MEASURED, tiny-llama-q4_k at LR=2e-2: worst element differs by 0.108 against a weight scale of
+    1.96 — a relative 5.5e-2, i.e. 550x the 1e-4 the assertion asks for. The margin is that wide
+    because the priming step is AdamW's *first*, where the bias correction ``1/(1 - beta^t)`` is at
+    its largest, so it displaces the weights by roughly the full learning rate.
+    """
+    batch = _batch()
+    sidecar = tmp_path / "opt.gguf"
+
+    model = fresh()
+    with Trainer(libs, model, TrainConfig(lr=LR)) as trainer:
+        for _ in range(8):
+            trainer.step(batch)
+        reference = _adapter_state(libs, model, model.targets)
+
+    model = fresh()
+    with Trainer(libs, model, TrainConfig(lr=LR)) as trainer:
+        for _ in range(4):
+            trainer.step(batch)
+        halfway_weights = _adapter_state(libs, model, model.targets)
+        save_checkpoint(libs, model.ctx, sidecar, position=TrainingPosition(micro_step=4))
+
+    # Parts 1 and 2 of the documented resume, and only those: start at the step-4 weights, prime,
+    # restore the sidecar. Part 3 -- putting the weights back AFTER the priming step -- is the one
+    # deliberately left out, and it is the only difference from the bit-exact run above.
+    model = fresh()
+    with Trainer(libs, model, TrainConfig(lr=LR)) as trainer:
+        _restore_adapter(libs, model, halfway_weights)
+        trainer.step(batch)
+        restore_checkpoint(libs, model.ctx, read_checkpoint(sidecar))
+        for _ in range(4):
+            trainer.step(batch)
+        moments_only = _adapter_state(libs, model, model.targets)
+
+    worst = max(
+        abs(a - b)
+        for name in reference
+        for a, b in zip(reference[name], moments_only[name], strict=True)
+    )
+    scale = max(abs(x) for name in reference for x in reference[name])
+
+    assert worst > 1e-4 * scale, (
+        f"a resume that restored the sidecar but not the primed-over weights reproduced the "
+        f"reference run to within {worst:.3g}. Either the priming step no longer moves the "
+        f"weights — in which case part 3 of the documented protocol is unnecessary and "
+        f"restore_checkpoint's docstring is wrong — or something other than the explicit "
+        f"_restore_adapter above is putting the step-4 weights back."
     )
 
 

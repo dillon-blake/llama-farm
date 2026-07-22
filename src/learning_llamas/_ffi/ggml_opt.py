@@ -1,9 +1,15 @@
 """ctypes mirrors of ``ggml/include/ggml-opt.h``.
 
-Mirrored from llama.cpp at commit ``4f37f519722aa3242eecb7649466b4a4a2d6d6da``. These are
-interface declarations, not copied implementation, but the trail matters: ctypes reproduces
-struct layouts by hand, so a vendor bump that reshapes one of them corrupts memory instead of
-failing to link. The commit lock in :mod:`learning_llamas._ffi.loader` is what stops that.
+Written against the headers at the fork's **upstream base**,
+``4f37f519722aa3242eecb7649466b4a4a2d6d6da`` — that is the commit the ``file:line`` anchors below
+are valid at, and it is *not* the vendored pin, which advances past the base as fork commits land
+(ADR-0001). These are interface declarations, not copied implementation, but the trail matters:
+ctypes reproduces struct layouts by hand, so a vendor bump that reshapes one of them corrupts
+memory instead of failing to link. The commit lock in :mod:`learning_llamas._ffi.loader` is what
+stops that, and :data:`learning_llamas._ffi._version_lock.VENDORED_COMMIT` — generated from the
+submodule at CMake configure time — is the authority on what is vendored. The layout here is
+verified against the pinned build by
+``tests/test_ffi.py::test_the_opt_params_mirror_matches_the_C_layout``, not against the base.
 
 The whole ggml-opt driver lives in ``libggml-base`` — ``ggml-opt.cpp`` is one of that target's
 sources (``ggml/src/CMakeLists.txt:192``), not ``libggml``'s.

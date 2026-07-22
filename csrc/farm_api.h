@@ -114,12 +114,20 @@ struct ll_opt_params {
 // and never offers adapter tensors to the filter, so today they ride through training graphs as
 // inert constants.
 //
-// Two orderings are enforced, not merely documented:
+// Two orderings matter, and they are NOT alike in how they fail:
+//   - this must run BEFORE the first training step, and that one is structural: ll_train_step
+//     refuses a context with no training state, so there is no way to reach a step first. PARAM
+//     leaves are promoted into graph nodes at build time and ggml-opt's gradient/momentum
+//     allocation scans only graph nodes, so flagging afterwards would silently train nothing;
 //   - adapters must already be attached to `ctx` (llama_set_adapters_lora), because this call
-//     takes the same handles;
-//   - this must run BEFORE the first training step, because PARAM-flagged leaves are promoted
-//     into graph nodes at build time and ggml-opt's gradient/momentum allocation scans only
-//     graph nodes. Flagging afterwards would silently train nothing.
+//     takes the same handles. THIS ONE IS NOT CHECKED HERE, and the header used to claim it was.
+//     It cannot be: llama_context keeps its adapter set in a private member with no accessor, and
+//     the scales it would have to be compared against are not arguments of this function. Get it
+//     wrong and init SUCCEEDS -- the tensors are flagged, they are simply in no graph -- and the
+//     first step aborts inside ggml_build_backward_expand on "no trainable parameters found, did
+//     you forget to call ggml_set_param?", which is the one message guaranteed to send you looking
+//     in the wrong place. ll_preflight is what detects it: an adapter tensor that appears in no
+//     graph node is reported as a WARN, and an unattached adapter makes every one of them do so.
 //
 // Because only the adapter trains, the base model is never written and may stay quantized AND
 // memory-mapped (use_mmap=true) -- unlike full fine-tuning, which must disable mmap because the
@@ -318,7 +326,10 @@ LL_API int64_t ll_compute_buffer_bytes(struct llama_context * ctx);
 //   targets:  the target token id for each position, length n_tokens. Usually tokens shifted
 //             left by one.
 //   weights:  the per-token loss weight, length n_tokens. 0 masks a token out.
-//   n_tokens: how many. Must not exceed the context's n_batch.
+//   n_tokens: how many. Must not exceed the context's n_UBATCH -- not its n_batch, which is the
+//             larger of the two. One ll_train_step is one micro-batch by construction: a batch
+//             spanning several ubatches would take several optimizer steps, which is not what "one
+//             training step" means. Accumulate across steps (opt_period) instead.
 //   train:    true to backpropagate and step the optimizer; false for a forward-only eval.
 //   loss_out: receives the loss. May be NULL.
 //
@@ -368,6 +379,12 @@ LL_API int32_t ll_train_step_dpo(struct llama_context * ctx, const int32_t * tok
 //
 // With +/-1 weights this is precisely the log-ratio DPO needs; run it with the adapter's scale at 0
 // to get the reference model's.
+//
+// Passing seq_ids requires a context created with kv_unified=true, exactly as ll_train_step does,
+// and is refused with LL_ERR_INVALID_ARG otherwise: a multi-stream KV cache regroups the batch by
+// sequence while this call keeps indexing targets and weights in the caller's order, so the result
+// would be a well-formed log-probability of the wrong pairing. Since the reference pass packs
+// chosen and rejected as two sequences, that is the common case, not the exotic one.
 LL_API int32_t ll_logp_delta(struct llama_context * ctx, const int32_t * tokens, const int32_t * targets,
                              const float * weights, const int32_t * seq_ids, const int32_t * positions,
                              int32_t n_tokens, float * out);
@@ -416,6 +433,14 @@ LL_API int32_t ll_preflight_walk(struct ggml_cgraph * gf, struct ggml_tensor ** 
 // tensor that appears in NO graph node -- which means its target projection never went through
 // build_lora_mm, so that tensor will sit at its initial value forever while the loss falls anyway.
 // That is the failure mode nothing else catches: the adapter trains, just not all of it.
+//
+// It reads the training state's flagged tensors and NOTHING else of it: the forward pass runs on a
+// throwaway, forward-only ggml-opt context of its own. That is what makes both of this function's
+// promises true. It never builds a backward, so a model with a non-differentiable op on the gradient
+// path -- the exact case worth diagnosing -- gets a BLOCKED report instead of the GGML_ABORT this is
+// supposed to replace. And it leaves the training state untouched, so init -> preflight -> train is
+// a safe order to call in; sharing the training context would have sized ggml-opt's gradient
+// accumulators from this shorter graph and corrupted the first real step.
 LL_API int32_t ll_preflight(struct llama_context * ctx, const int32_t * tokens, int32_t n_tokens,
                             struct ll_preflight_entry * out, int32_t max_entries, int32_t * n_blocked);
 

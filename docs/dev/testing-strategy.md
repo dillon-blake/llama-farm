@@ -69,11 +69,20 @@ device:
 5. Tolerance bands may be re-measured per backend (SIMD/warp reduction order moves the noise
    floor) — but re-measured means *measured*, with the number quoted, not widened until green.
 
-## Current verified state (2026-07-16)
+## Current verified state (2026-07-22)
 
 SFT, DPO, GRPO, MoE, Mamba-1, Mamba-2 (`n_group>1`), full-finetune, quantized-base LoRA: all
 oracle-verified on CPU (worst observed one-step gradient deviations 1e-6..4e-6; trajectories
 5e-7..1e-5 with mechanisms named). B-10 lifted the SSM `n_group>1` refusal: the `SSM_SCAN` backward's
 group-index fold is now MODE_GRAD-checked at `n_group` in {2,4} and e2e-verified against a float64
 Mamba-2 oracle. Known boundaries: `A`/`D`/conv-weight grads still frozen (B-09); the `xbc_overlap`
-SSM_SCAN aliasing case is still eval-only; throughput audit deferred (B-11). 373 tests.
+SSM_SCAN aliasing case is still eval-only; throughput audit deferred (B-11).
+
+S1-50 (the minor-findings sweep) added the second PEFT reference curve at `weight_decay=1.0`, the
+pre/post-clip grad-norm getters, the sparse-vs-dense CE forward parity test, a per-PR
+grad-checkpointing memory smoke, a nightly chunked-attention 2x@4096 gate, MoE/SSM thread
+determinism curves, and `GGML_TEST_SEED` for the MODE_GRAD float inits (now pinned in the CPU and
+Windows backend-ops lanes). It also widened `SSM_SCAN`'s MODE_GRAD threshold to 1e-1 — a measured
+libm-dependent finite-difference floor, not a green-until-it-passes widening.
+
+434 tests: 428 in the per-PR lane (`-m "not slow"`, ~70 s) and 6 `@slow` nightly ones.

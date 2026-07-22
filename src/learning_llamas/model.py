@@ -183,6 +183,12 @@ class Model:
             self.model = 0
             raise RuntimeError(f"failed to create a context for {self.path}")
 
+        # The PADDED cell count, which is what llama_n_ctx reports -- and it is NOT the batch
+        # limit, even though this class asks for the same number for both. llama.cpp takes
+        # cparams.n_batch = min(cparams.n_ctx, params.n_batch) BEFORE rounding cparams.n_ctx up to
+        # a multiple of 256, so a context created with n_ctx=64 has n_batch=64 and reports
+        # n_ctx=256. Anything checking "will one llama_decode of N tokens fit" must read
+        # llama_n_batch, not this. (grpo.py's KL guard is the one that has to.)
         self.n_ctx: int = self._libs.llama.llama_n_ctx(self.ctx)
         self.tokenizer = Tokenizer(self._libs, self.model)
         self.n_vocab: int = self.tokenizer.n_tokens
@@ -203,6 +209,10 @@ class Model:
         adapters that start out equal and diverge the moment a step is taken. The trainer moves
         one; the sampler keeps reading the other. There is no error and no NaN — just a policy
         that never changes, and a reward curve that is flat for no reason anyone can see.
+
+        Attaching a second time *replaces* the context's adapter set. If this object had loaded the
+        one being displaced, it is freed here — see the note at the call, and note that this makes
+        re-attaching over an adapter another :class:`Model` borrowed unsupported.
 
         Args:
             path: The adapter GGUF. Required unless ``adapter`` is given.
@@ -233,6 +243,21 @@ class Model:
             if owned:
                 self._libs.llama.llama_adapter_lora_free(adapter)
             raise RuntimeError(f"llama_set_adapters_lora failed with status {status}")
+
+        # llama_set_adapters_lora REPLACES the context's adapter set, so whatever was attached a
+        # moment ago is now unreachable through this object -- and close() frees self.adapter and
+        # nothing else. Without this, attaching twice leaks every adapter but the last for the life
+        # of the process: no crash, no wrong number, just memory that never comes back.
+        #
+        # Only an adapter this object loaded itself is freed. A handle that arrived through
+        # `adapter=` belongs to whoever loaded it, and freeing it here is precisely the double free
+        # `_owns_adapter` exists to prevent. The context has already let go of the displaced
+        # adapter above, so the free is safe from *this* context's point of view -- but a sibling
+        # Model that borrowed the same handle has not, which is why re-attaching over a shared
+        # adapter is not supported.
+        displaced = self.adapter
+        if self._owns_adapter and displaced and displaced != adapter:
+            self._libs.llama.llama_adapter_lora_free(displaced)
 
         self.adapter = adapter
         self._owns_adapter = owned

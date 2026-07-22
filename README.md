@@ -5,10 +5,12 @@ locally, on llama.cpp's ggml backend — CPU, Metal, CUDA, and Vulkan — with t
 training step GPU-resident when a GPU is available. Trained adapters load
 directly in stock llama.cpp, llama-server, and ollama.
 
-**Status: stage 1 (CPU training core), 27 of 37 tickets landed or in review.**
+**Status: stage 1 (CPU training core), 48 of 52 tickets landed or in review.**
 SFT, DPO and GRPO all train today on CPU, on quantized bases, with gradient
-checkpointing and a chunked lm_head. What remains is MoE (S1-26, S1-28), SSM
-(S1-30, S1-31), the convergence gate (S1-12), and chunked attention (S1-24).
+checkpointing, a chunked lm_head and chunked attention. MoE, Mamba-1 and
+Mamba-2 train and are pinned by float64 gradient oracles; the convergence gate
+runs against a recorded PEFT reference on every PR. What remains open in stage 1
+is S1-32 (the CPU throughput audit); S1-21/22/23 are deferred, see below.
 
 The **flash-attention backward** family (S1-21/22/23) is **deferred out of stage 1**:
 flash attention is force-disabled during training and none of those tickets turns it
@@ -63,7 +65,7 @@ For working on the library itself, see [`docs/dev/`](docs/dev/) — the
 
 - [`PLAN.md`](PLAN.md) — the implementation plan overview (stages, milestones,
   effort, risks).
-- [`tickets/`](tickets/) — the complete backlog: **84 one-PR tickets** across
+- [`tickets/`](tickets/) — the complete backlog: **105 one-PR tickets** across
   five stages (CPU groundwork → Metal → CUDA → Vulkan, plus a trigger-gated
   backlog). Start with [`tickets/README.md`](tickets/README.md) — the guide for
   agents picking up tickets (ordering, claim protocol, definition of done, CI).

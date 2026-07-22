@@ -97,6 +97,23 @@ def test_the_pair_is_packed_as_two_sequences_with_plus_and_minus_one_weights() -
     assert len(negative) == 5
 
 
+def test_both_sides_of_the_pair_count_as_valid_tokens() -> None:
+    """The rejected side carries as much loss as the chosen one — it just carries it the other way.
+
+    ``Batch.n_valid`` counted ``w > 0``, which is right for SFT (where weights are 0 or 1) and half
+    right for DPO: the rejected completion's -1 weights are what make ``ce_sparse``'s sum the
+    log-*ratio* rather than just ``logp(chosen)``, and every one of those tokens is in the loss and
+    in the gradient. Counting only the positive half made ``StepMetrics.n_valid``,
+    ``tokens_per_second`` and ``valid_token_fraction`` understate a DPO run by exactly the length of
+    the rejected completion — a throughput report that says a run is doing half the work it is.
+    """
+    batch = to_batch(_pair(), seq_len=SEQ_LEN)
+
+    assert batch.n_valid == 10, "5 chosen + 5 rejected tokens carry loss"
+    assert batch.n_valid == sum(1 for w in batch.weights if w != 0.0)
+    assert batch.n_valid < len(batch.tokens), "the pads must still not count"
+
+
 def test_a_pair_too_big_for_one_batch_is_refused() -> None:
     """DPO compares them in a single forward pass, so they cannot be split."""
     big = Preference(chosen=_sample(4, 20, 7), rejected=_sample(4, 20, 30))
@@ -315,12 +332,27 @@ def test_a_bigger_beta_moves_the_policy_further(trainable, libs: _ffi.Libraries)
     nothing — if it were dropped on the way into the graph, say — the loss would still fall and
     every
     other test here would still pass.
+
+    The two arms have to start from the same **parameters**, and that is a stricter thing than
+    starting from the same model. This test used to reset with ``_zero_b`` between arms, which
+    restores the policy *function* exactly (``delta = scale * B(A·x)`` is zero for any A) — so the
+    second arm really did begin from the base model, and looked fine. But ``A`` still carried the
+    first arm's six updates, and ``dL/dB`` is a function of ``A``: the second arm's very first step
+    was therefore not the first arm's first step. Under the exact mutation named above — beta
+    dropped on the way into the graph — the arms would then differ *only* through that leaked ``A``,
+    and ``large > small`` becomes a coin flip on which noise landed where.
     """
     model = trainable
     batch = to_batch(_pair(), seq_len=SEQ_LEN)
 
+    pristine = _snapshot_ab(libs, model)
+    started_from: list[dict] = []
+
     def travel(beta: float) -> float:
-        _zero_b(libs, model)  # back to a no-op adapter, so both runs start from the same place
+        # BOTH tensors, not just B: see the docstring.
+        _restore_ab(libs, model, pristine)
+        started_from.append(_a_only(libs, model))
+
         reference = reference_logratios(libs, model, [batch])[0]
 
         with DPOTrainer(libs, model, DPOConfig(lr=2e-2, beta=beta, seq_len=SEQ_LEN)) as trainer:
@@ -332,14 +364,46 @@ def test_a_bigger_beta_moves_the_policy_further(trainable, libs: _ffi.Libraries)
     small = travel(0.05)
     large = travel(0.5)
 
+    assert started_from[0] == started_from[1], (
+        "the two arms did not start from the same parameters: A still carries the first arm's "
+        "training, so the second arm's gradients are not the first arm's gradients and the "
+        "comparison below is not a comparison of beta."
+    )
     assert large > small > 0, f"beta had no effect: 0.05 -> {small:.5f}, 0.5 -> {large:.5f}"
 
 
-def _zero_b(libs, model) -> None:
-    """Put every B back to zero — i.e. the adapter back to being a no-op."""
-    from learning_llamas.train.dpo import _zero_b as zero  # noqa: PLC0415 - test-only helper
+def _snapshot_ab(libs, model) -> dict[tuple[int, bool], list[float]]:
+    """Every A and every B of the adapter, read through the S1-08 adapter accessors.
 
-    zero(libs, model)
+    ``dpo._snapshot_b`` reads only B, because that is all the *reference pass* has to put back.
+    A test that reruns training from a fixed starting point needs both.
+    """
+    out: dict[tuple[int, bool], list[float]] = {}
+
+    n = _ffi.check(libs.farm.ll_adapter_n_tensors(model.adapter), "ll_adapter_n_tensors")
+    for i in range(n):
+        for is_b in (False, True):
+            k = _ffi.check(
+                libs.farm.ll_adapter_get(model.adapter, i, is_b, None, 0), "ll_adapter_get"
+            )
+            buf = (ctypes.c_float * k)()
+            _ffi.check(libs.farm.ll_adapter_get(model.adapter, i, is_b, buf, k), "ll_adapter_get")
+            out[(i, is_b)] = list(buf)
+
+    return out
+
+
+def _restore_ab(libs, model, saved: dict[tuple[int, bool], list[float]]) -> None:
+    for (i, is_b), values in saved.items():
+        buf = (ctypes.c_float * len(values))(*values)
+        _ffi.check(
+            libs.farm.ll_adapter_set(model.adapter, i, is_b, buf, len(buf)), "ll_adapter_set"
+        )
+
+
+def _a_only(libs, model) -> dict[int, list[float]]:
+    """Just the A tensors — the half ``_zero_b`` does not restore."""
+    return {i: v for (i, is_b), v in _snapshot_ab(libs, model).items() if not is_b}
 
 
 def test_train_dpo_end_to_end(trainable, libs: _ffi.Libraries) -> None:
@@ -360,6 +424,14 @@ def test_train_dpo_end_to_end(trainable, libs: _ffi.Libraries) -> None:
     assert losses[0] == pytest.approx(LOG_2, abs=1e-4)
 
     assert sum(losses[-4:]) / 4 < sum(losses[:4]) / 4
+
+    # train_dpo never timed its step, so `record` took the default seconds=0 and every DPO run
+    # reported a throughput of exactly zero -- a counter that cannot distinguish "fast" from
+    # "not measured".
+    assert all(m.seconds > 0.0 for m in result.steps), (
+        f"steps were not timed: {[m.seconds for m in result.steps]}"
+    )
+    assert all(m.tokens_per_second > 0.0 for m in result.steps)
 
 
 def test_a_nonpositive_beta_is_rejected() -> None:

@@ -50,6 +50,11 @@ step, peak compute-buffer allocation. `chunk_q = n_ctx/8`; `ckpt` is `segment_le
 | 2048  | 254.1 MiB | 196.1 MiB | 166.0 MiB | **128.0 MiB** | 1.98× |
 | 4096  | 904.1 MiB | 652.1 MiB | 620.1 MiB | **416.1 MiB** | **2.17×** |
 
+The 4096 row is no longer only hand-measured: `test_the_acceptance_bar_of_2x_at_n_ctx_4096`
+(S1-50) runs that context and asserts `naive/both >= 2x`. It is `@slow`, and so is the 1.5x@1024
+assertion beside it — **both** memory gates are nightly, and no per-PR test asserts that chunking
+saves anything.
+
 The shape is the point. Naive grows quadratically; the win grows with it, because the term being
 removed is the quadratic one. At 512 chunking buys nothing at all — the attention matrix is not yet
 the dominant term — and that is not a defect, it is the honest scale of the effect.

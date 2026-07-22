@@ -367,6 +367,39 @@ def test_the_cosine_schedule_matches_its_closed_form() -> None:
     assert schedule(total) == pytest.approx(floor)
 
 
+def test_the_cosine_bottoms_out_one_step_past_the_last_one_a_run_takes() -> None:
+    """Two fenceposts that look like bugs, are not, and must not drift away from the docstring.
+
+    ``run()`` calls the schedule with steps ``0 .. total_steps - 1``, while ``progress`` reaches 1
+    only at ``total_steps``. So a run **never sees** ``min_lr``: it stops one cosine increment
+    above it. That is the standard convention (HF's ``get_cosine_schedule_with_warmup`` does the
+    same) and it is wanted here for a reason of its own — ``min_lr`` defaults to 0, and a schedule
+    that hit 0 on the last executed step would spend a full forward and backward multiplying the
+    update by zero.
+
+    The second fencepost: ``cos(0) == 1``, so the cosine's first point is the peak too, and the
+    peak occupies **two** optimizer steps of a warmed-up run.
+
+    Neither is a number to be changed casually — the schedule is the LR sequence a whole run is
+    reproducible against — so both are pinned against hand-computed values here, and
+    ``warmup_cosine``'s own docstring quotes the same 2.32e-5.
+    """
+    peak, floor = 1e-4, 1e-5
+    schedule = warmup_cosine(peak, total_steps=4, warmup_steps=0, min_lr=floor)
+
+    # By hand: progress = 3/4, cos(3pi/4) = -0.70711, 1e-5 + 0.5 * 9e-5 * 0.29289 = 2.3180e-5.
+    last_executed = schedule(3)
+    assert last_executed == pytest.approx(2.3180e-5, rel=1e-4)
+    assert last_executed > floor, "a run that ends AT min_lr wastes its last optimizer step"
+    assert schedule(4) == pytest.approx(floor)
+
+    # The peak is two steps wide: the last warmup step, and the cosine's own first point.
+    warmed = warmup_cosine(peak, total_steps=10, warmup_steps=3, min_lr=floor)
+    assert warmed(2) == pytest.approx(peak)
+    assert warmed(3) == pytest.approx(peak)
+    assert warmed(4) < peak
+
+
 def test_the_learning_rate_the_optimizer_saw_is_the_scheduled_one(
     trainable, libs: _ffi.Libraries
 ) -> None:

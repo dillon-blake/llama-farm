@@ -39,12 +39,31 @@ def warmup_cosine(
     Warmup ramps over ``warmup_steps`` optimizer steps and reaches ``peak_lr`` on the *last* warmup
     step, not the one after it — so step ``warmup_steps - 1`` is the peak, and the cosine begins at
     ``warmup_steps``. Off-by-one here is the difference between ever seeing the peak LR and not.
+    A consequence worth stating, because it looks like a bug and is not: ``cos(0) == 1``, so the
+    cosine's own first point is ``peak_lr`` too, and steps ``warmup_steps - 1`` and ``warmup_steps``
+    both run at exactly the peak. The peak occupies two optimizer steps of a warmed-up run.
+
+    **The cosine's endpoint is step** ``total_steps`` **— which the run does not execute.**
+    ``progress = (step - warmup_steps) / (total_steps - warmup_steps)`` reaches 1 — and the schedule
+    reaches ``min_lr`` — only at ``step == total_steps``, while
+    :func:`~learning_llamas.train.loop.run` calls this with steps ``0 .. total_steps - 1``. So the
+    last step a run actually takes sits one cosine increment *above* ``min_lr``: with
+    ``peak_lr=1e-4, min_lr=1e-5, total_steps=4, warmup_steps=0`` the final executed step is
+    ``2.32e-5``, not ``1e-5``.
+
+    That is the standard convention (it is what HF's ``get_cosine_schedule_with_warmup`` does) and
+    it is deliberate here for a reason of its own: ``min_lr`` defaults to 0, and a schedule that hit
+    0 on the last executed step would spend the run's final optimizer step multiplying the update by
+    zero — a full forward and backward that moves nothing. Decaying *towards* the floor and stopping
+    just short of it keeps every step useful. If you want the run to end at ``min_lr``, pass
+    ``total_steps = n_steps - 1``.
 
     Args:
         peak_lr: The learning rate at the end of warmup.
-        total_steps: Total optimizer steps in the run. The cosine reaches ``min_lr`` at the last.
+        total_steps: Total optimizer steps in the run. The cosine bottoms out at ``min_lr`` at step
+            ``total_steps`` — one past the last step a run of that length takes; see above.
         warmup_steps: How many steps to ramp over. 0 starts at ``peak_lr``.
-        min_lr: The floor the cosine decays to.
+        min_lr: The floor the cosine decays towards.
 
     Returns:
         A schedule mapping optimizer step to learning rate.

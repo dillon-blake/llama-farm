@@ -18,8 +18,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Keyed on the EVENT as well as the ref. A schedule run and a push to main both resolve to
+  # refs/heads/main, so a single group let a push landing inside the 04:00 window cancel the
+  # nightly -- and the nightly is the only place the full pytest suite, the full forward sweep and
+  # the MUL_MAT grad run at all -- or let the nightly cancel a push run a required check is
+  # waiting on.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Supersede only where a newer run genuinely replaces an older one: another push to the same
+  # branch or PR. A nightly and a manual dispatch are each the only run of their tier, so
+  # cancelling one loses the coverage rather than saving a runner.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   build:
@@ -41,6 +49,13 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: install
+        # bash, for the same reason the `ops` job below sets it as a job default: on Windows the
+        # default shell is pwsh, which propagates only the LAST native command's exit code, so in a
+        # four-command step the first three can fail and the step still goes green. Here that would
+        # mean an unbuilt extension surviving into the pytest steps as a confusing import error.
+        # GitHub runs `shell: bash` as `bash --noprofile --norc -eo pipefail`, so the FIRST failure
+        # ends the step.
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           # --no-build-isolation means the build backend must already be here: pip will not fetch it.
@@ -75,14 +90,36 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: python -m pytest -q
 
+      # The Windows twin of ci-cpu's "The wheel installs and imports". Two things this step used to
+      # get wrong, both of which made it green on a wheel it had not tested:
+      #
+      #   * it ran under pwsh, where only the LAST native command's exit code reaches the runner.
+      #     `python -m build` could fail, the `pip install` of the wheel could fail, and the step
+      #     still reported success because the final `python -c` exited 0;
+      #   * the final import could not fail even in principle, because the `install` step above
+      #     leaves an EDITABLE install of this package on the interpreter — which resolves
+      #     `learning_llamas` out of `src/` no matter what the wheel does or does not contain.
+      #     That is the exact hole ci-cpu's comment describes: `_version_lock.py` was missing from
+      #     every wheel this project built and no lane noticed.
+      #
+      # So: bash (fail on the first error), uninstall the editable install FIRST, and then import
+      # from a directory that is not the source tree. Installed WITH its dependencies and exercised
+      # through the PUBLIC api, matching ci-cpu — `--no-deps` plus a private `_ffi` import proves
+      # the shared libraries shipped and nothing about whether a stranger can use the package.
       - name: wheel builds and imports
+        shell: bash
         run: |
-          python -m pip install build
           python -m build --wheel --no-isolation
-          python -m pip install (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName --force-reinstall --no-deps
-          cd $env:TEMP
-          python -c "from learning_llamas import _ffi; _ffi.load(); print('wheel imports outside the source tree')"
-        shell: pwsh
+          python -m pip uninstall -y learning-llamas
+          python -m pip install dist/*.whl
+          # mktemp, not $TEMP: this is git-bash, and $RUNNER_TEMP is a backslashed Windows path that
+          # `cd` has no business being handed. The directory only has to not be the checkout.
+          cd "$(mktemp -d)"
+          python -c "
+          import learning_llamas
+          learning_llamas.libraries()
+          print('the wheel imports outside the source tree:', len(learning_llamas.__all__), 'public names')
+          "
 
   # test-backend-ops on MSVC (S1-43). MODE_GRAD coverage of the project's kernel VJPs.
   #

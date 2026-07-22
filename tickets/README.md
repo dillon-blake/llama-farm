@@ -121,7 +121,7 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 
 <!-- BEGIN GENERATED INDEX -->
 
-### Stage 0 — Groundwork (9 tickets)
+### Stage 0 — Groundwork (10 tickets)
 
 | ID | Title | Track | Size | Depends on |
 |---|---|---|---|---|
@@ -134,8 +134,9 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | S0-07 | CPU CI: GitHub Actions build + test on Linux x86 and macOS arm (CPU-only) | infra | M | S0-06 |
 | S0-08 | Developer docs: build guide + per-backend VM playbooks | docs | S | S0-01 |
 | S0-09 | ADR: numerics policy + determinism default (gate G-B) + parity criterion | docs | S | S0-01 |
+| S0-10 | test-backend-ops MODE_GRAD aborts on inplace ops — skip them so the full grad sweep can run | kernels | S | S0-02, S0-07 |
 
-### Stage 1 — CPU training core (34 tickets)
+### Stage 1 — CPU training core (52 tickets)
 
 | ID | Title | Track | Size | Depends on |
 |---|---|---|---|---|
@@ -169,10 +170,28 @@ ops ran where; milestone tickets flip their lane to **fallback-forbidden**.
 | S1-27 | MoE: OUT_PROD_ID_GRP CPU reference (grouped expert outer product for LoRA A/B grads) | kernels | M | S1-25, S0-09 |
 | S1-28 | MoE: GLU-family backward (SWIGLU_OAI, GEGLU exact/tanh, REGLU) + tiny-MoE e2e | kernels | M | S1-26, S1-27, S1-19 |
 | S1-29 | SSM: CONCAT backward + SSM backward-switch wiring (S1/S4) | kernels | S | S0-02 |
+| S1-29b | SSM backward ops: enums, constructors, and the backward-switch wiring S1-29 never landed | kernels | S | S1-25 |
 | S1-30 | SSM: SSM_CONV_BACK CPU | kernels | S | S1-29 |
 | S1-31 | SSM: SSM_SCAN_BACK CPU (chunk-recompute) + tiny-Mamba e2e | kernels | L | S1-29, S0-09 |
 | S1-32 | CPU throughput audit + published tok/s sizing (P4) | docs | S | S1-12 |
 | S1-33 | Windows/MSVC build of liblearningllamas + ci-windows lane (CPU) | infra | M | S0-03, S0-07 |
+| S1-34 | SOFT_MAX's grad test never checked the gradient — and dL/d(sinks) is silently zero | kernels | M | S0-10, S0-09 |
+| S1-35 | Public API: promote the model loader, export the surface, write the quickstart | python | S | S1-05, S1-08, S1-16 |
+| S1-36 | Repair the docs that were actively causing bugs; inventory the carried fork diff | docs | S | S1-16, S1-34, S1-35 |
+| S1-37 | MODE_GRAD's metric divides by (gn + ga) — and a zero gradient is a NaN free pass | kernels | M | S1-28 |
+| S1-38 | Convergence gate off-unit variants: scale, weight decay, rank, thread determinism | python | S | S1-12 |
+| S1-39 | DPO trajectory oracle: twenty steps against float64 | python | S | S1-12, S1-14, S1-38 |
+| S1-40 | GRPO trajectory oracle: eight updates against float64, every branch live | python | S | S1-15, S1-16, S1-38, S1-39 |
+| S1-41 | MoE gradient oracle — which caught SOFT_MAX_BACK aliasing the router softmax | python | M | S1-25, S1-26, S1-27, S1-28, S1-38 |
+| S1-42 | Wire the trainability preflight into the training path + a freshness guard for the op table | python | M | S1-11 |
+| S1-43 | ci-windows: build and drive the vendored test-backend-ops (MODE_GRAD) on MSVC | infra | S | S1-33 |
+| S1-44 | token_embd flipped-convention merge + Q8_0 output-type preservation tests | python | S | S1-08 |
+| S1-45 | Data layer: the S1-06 vocab guard (no new special tokens) + de-vacuify the special-token test | python | S | S1-06 |
+| S1-46 | GRPO capture wiring: SelfVerified's first customer, and the D6 detach proven nonzero | python | S | S1-13, S1-15, S1-16, S1-40 |
+| S1-47 | SSM (Mamba-1) training oracle — which caught the scan backward reading the overwritten state cache | python | L | S1-29, S1-30, S1-31, S1-38, S1-41 |
+| S1-48 | Full-finetune gradients: the base weights against the float64 oracle | python | M | S1-00, S1-12, S1-38 |
+| S1-49 | Doc refresh: regenerate the fork inventory, resolve S1-32, triage the audit's minor tail | docs | S | S1-36, S1-41, S1-47, S1-48 |
+| S1-50 | Minors sweep: actually close the 15 parked minor findings from the 2026-07-15 audit | quality | M | S1-10, S1-04, S1-37, S1-12, S1-06, S1-07, S1-14, S1-17, S1-24, S1-31, S1-41, S1-47 |
 
 ### Stage 2 — Metal (13 tickets)
 

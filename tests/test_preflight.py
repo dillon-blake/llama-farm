@@ -19,10 +19,11 @@ stop testing anything the moment that op was implemented.
 
 import ctypes
 
+import numpy as np
 import pytest
 
 from learning_llamas import _ffi
-from learning_llamas.adapter import create_zero_adapter
+from learning_llamas.adapter import create_zero_adapter, enumerate_targets
 from learning_llamas.preflight import MAX_ENTRIES, Status, ll_preflight_entry, preflight
 from learning_llamas.train import TrainConfig, Trainer
 
@@ -237,3 +238,196 @@ def test_preflight_needs_a_prepared_context(trainable, libs: _ffi.Libraries) -> 
     """The walk is seeded from the trainable tensors, so there has to be a set of them."""
     with pytest.raises(RuntimeError, match="NOT_INITIALIZED"):
         preflight(libs, trainable.ctx, [7, 11, 13, 17])
+
+
+# ---------------------------------------------------------------------------
+# ...and that the walk does not cost the caller the context it walked.
+# ---------------------------------------------------------------------------
+
+
+def _step(libs, model, n: int, *, train: bool) -> float:
+    tokens = [7, 11, 13, 17] * (n // 4)
+    targets = tokens[1:] + [tokens[0]]
+
+    loss = ctypes.c_float()
+    _ffi.check(
+        libs.farm.ll_train_step(
+            model.ctx,
+            (ctypes.c_int32 * n)(*tokens),
+            (ctypes.c_int32 * n)(*targets),
+            (ctypes.c_float * n)(*([1.0] * n)),
+            None,
+            None,
+            n,
+            train,
+            ctypes.byref(loss),
+        ),
+        "ll_train_step",
+    )
+    return float(loss.value)
+
+
+def _first_lora_grad(libs, model, tiny_q4_k) -> list[float]:
+    """The gradient of the first adapted tensor's B, straight out of ggml-opt's accumulator."""
+    name = enumerate_targets(tiny_q4_k)[0].name.encode()
+
+    n = libs.farm.ll_debug_n_elements(model.ctx, name, True)
+    assert n > 0, f"ll_debug_n_elements returned {n}"
+
+    buf = (ctypes.c_float * n)()
+    assert libs.farm.ll_debug_grad(model.ctx, name, True, buf, n) == n
+
+    return list(buf)
+
+
+def _prepared(libs, tiny_q4_k, tmp_path, load_model, tag: str):
+    adapter_path = tmp_path / f"{tag}.gguf"
+    create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+    model.attach_adapter(adapter_path, scale=1.0)
+
+    params = _ffi.ll_opt_params(alpha=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.0)
+    _ffi.opt_init_lora(libs, model.ctx, model.model, [model.adapter], params)
+
+    return model, params
+
+
+def test_a_preflight_does_not_disturb_the_training_state_it_walked(
+    tiny_q4_k, tmp_path, load_model, libs: _ffi.Libraries
+) -> None:
+    """``init -> preflight -> train`` is the order farm_api.h documents, so it has to be safe.
+
+    It was not. The walk used to run its forward pass on the SHARED training ggml-opt context, and
+    a llama.cpp context uses dynamic ggml-opt graphs — so ``ggml_opt_alloc`` re-runs
+    ``ggml_opt_build`` every call, and the early return that would stop a ``train=false`` build
+    after the forward pass is gated on ``build_type_alloc``, not on this call's ``build_type``.
+    With a fresh OPT context that gate is open: the preflight's graph sized ``grad_accs`` for good,
+    and it is one loss node shorter than a training step's. The next real step then indexed that
+    array past its end inside ``ggml_build_backward_expand`` and used whatever it found there as
+    the loss's gradient accumulator.
+
+    That entry is a wild pointer, so the failure without the fix is an abort or a segfault rather
+    than a clean assertion — and, being heap-contents-dependent, it is not even guaranteed to be
+    either: a zero there falls into ggml's "allocate one for the loss" branch and the run survives.
+    So this test fails by dying, on the runs where it fails at all. What it can also catch, and
+    asserts, is the quieter half: that the step which follows a preflight computes the same numbers
+    as one that never saw a preflight.
+
+    Not bitwise. The two runs are separate contexts, and a preflight sizes the shared backend
+    scheduler's compute buffer with a graph of its own — an allocation shift, which moves SIMD
+    reduction splits by an ulp on macos-14 arm64 (ADR-0002; measured at ~1e-7 relative in
+    ``test_grad_clip``, twice, by S1-49). 1e-6 sits above that residue and four orders of magnitude
+    below anything a corrupted accumulator would do.
+    """
+    baseline, _keep_baseline = _prepared(libs, tiny_q4_k, tmp_path, load_model, "baseline")
+    walked, _keep_walked = _prepared(libs, tiny_q4_k, tmp_path, load_model, "walked")
+
+    try:
+        # The one difference between the two runs.
+        report = preflight(libs, walked.ctx, [7, 11, 13, 17] * (SEQ_LEN // 4))
+        assert report.trainable, report.summary()
+
+        loss_baseline = _step(libs, baseline, SEQ_LEN, train=True)
+        loss_walked = _step(libs, walked, SEQ_LEN, train=True)
+
+        assert loss_baseline > 0.0, "the baseline step has no loss; nothing is being compared"
+        assert loss_walked == pytest.approx(loss_baseline, rel=1e-6), (
+            f"a preflight changed the loss of the step that followed it: {loss_walked} vs "
+            f"{loss_baseline}"
+        )
+
+        grad_walked = _first_lora_grad(libs, walked, tiny_q4_k)
+        grad_baseline = _first_lora_grad(libs, baseline, tiny_q4_k)
+
+        assert any(g != 0.0 for g in grad_baseline), (
+            "the baseline gradient is all zeros; the comparison below is vacuous"
+        )
+        assert np.allclose(grad_walked, grad_baseline, rtol=1e-6, atol=1e-9), (
+            "a preflight changed the gradients of the step that followed it"
+        )
+    finally:
+        _ffi.opt_free(libs, walked.ctx)
+        _ffi.opt_free(libs, baseline.ctx)
+
+
+def test_a_preflight_can_be_repeated_and_still_leaves_the_state_alone(
+    tiny_q4_k, tmp_path, load_model, libs: _ffi.Libraries
+) -> None:
+    """The walk is idempotent, and the second one is the one that used to matter.
+
+    Every call builds its own throwaway forward-only ggml-opt context and frees it, so there is no
+    accumulating state for a second walk to trip over — and, before this was true, a walk run
+    between two training steps behaved differently from one run before the first (the shared
+    context's static buffer was already allocated by then, which took a different early return).
+    Calling it in both positions pins that the answer no longer depends on where it lands.
+    """
+    model, _keep = _prepared(libs, tiny_q4_k, tmp_path, load_model, "repeat")
+
+    try:
+        tokens = [7, 11, 13, 17] * (SEQ_LEN // 4)
+
+        before = preflight(libs, model.ctx, tokens)
+        _step(libs, model, SEQ_LEN, train=True)
+        between = preflight(libs, model.ctx, tokens)
+        _step(libs, model, SEQ_LEN, train=True)
+        after = preflight(libs, model.ctx, tokens)
+
+        assert before.n_blocked == between.n_blocked == after.n_blocked == 0
+        assert before.findings == between.findings == after.findings
+    finally:
+        _ffi.opt_free(libs, model.ctx)
+
+
+def test_the_preflight_reports_instead_of_aborting_when_the_backward_could_not_be_built(
+    tiny_q4_k, tmp_path, load_model, libs: _ffi.Libraries
+) -> None:
+    """The preflight must never take the abort it exists to replace — and it used to.
+
+    Sharing the training optimizer context meant ``ggml_opt_build`` ran to completion even at
+    ``train=false``, so the walk reached ``ggml_build_backward_expand``. On the models this function
+    is *for* — one with a non-differentiable op on the gradient path — that ends in
+    ``GGML_ABORT("unsupported ggml op for backward pass")``: the preflight died holding the report
+    it had just computed. No fixture here has such an architecture (the suite trains all of them),
+    and one that did would stop testing this the moment that op got a backward, which is the trap
+    this module's docstring calls out.
+
+    So the same failure is reached the other way, through the *other* assertion in that same
+    function: an adapter that was flagged but never ATTACHED puts no PARAM node in the forward
+    graph, and ``ggml_build_backward_expand`` opens with
+    ``GGML_ASSERT(any_params && "no trainable parameters found ...")``. Building a backward at all
+    is therefore fatal here, and not building one is the whole fix — with it, the walk gets to
+    return what it found, which is the WARN that says every adapter tensor is in no graph node.
+    (That is also the detection path ``farm_api.h`` now points at for an unattached adapter, since
+    ``ll_opt_init_lora`` cannot check attachment itself.)
+
+    Without the fix this aborts the process rather than failing an assertion.
+    """
+    adapter_path = tmp_path / "unattached.gguf"
+    create_zero_adapter(tiny_q4_k, adapter_path, r=RANK, seed=7)
+
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True)
+
+    # Loaded, flagged — and deliberately never handed to llama_set_adapters_lora.
+    adapter = libs.llama.llama_adapter_lora_init(model.model, str(adapter_path).encode())
+    assert adapter, "the adapter failed to load"
+
+    try:
+        params = _ffi.ll_opt_params(alpha=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.0)
+        n_flagged = _ffi.opt_init_lora(libs, model.ctx, model.model, [adapter], params)
+        assert n_flagged > 0
+
+        try:
+            report = preflight(libs, model.ctx, [7, 11, 13, 17] * (SEQ_LEN // 4))
+        finally:
+            _ffi.opt_free(libs, model.ctx)
+
+        assert report.n_blocked == 0, report.summary()
+        assert len(report.warnings) == n_flagged, (
+            f"every flagged tensor is outside the graph, so every one should warn: got "
+            f"{len(report.warnings)} of {n_flagged}\n{report.summary()}"
+        )
+        assert all(f.status is Status.WARN for f in report.findings)
+        assert "no graph node" in report.warnings[0].detail
+    finally:
+        libs.llama.llama_adapter_lora_free(adapter)

@@ -217,6 +217,11 @@ def output_lora(
     projections and leave ``output.weight`` alone, and for those the base weight *is* the whole
     lm_head. Passing None into :func:`chunked_token_logprobs` is then exactly right.
 
+    Nobody calls this for you. :func:`sequence_logprobs` takes whatever ``lora`` it is handed and
+    forwards it, because llama.cpp exposes no way to ask a ``llama_context`` which adapters are
+    attached — there is a setter and no getter. So the call site that attached the adapter is the
+    only place that knows, and it has to resolve the delta here and pass it on.
+
     Args:
         libs: The loaded native libraries.
         adapter: A ``llama_adapter_lora *`` — the handle from ``llama_adapter_lora_init``, not a
@@ -230,6 +235,17 @@ def output_lora(
     from .adapter import read_adapter  # noqa: PLC0415 - avoids a cycle at import time
 
     info = read_adapter(adapter_path)
+
+    # "output.weight" and nothing else, deliberately. A tied-embedding model has no output.weight:
+    # llama.cpp gives `model.output` the *same ggml tensor* as `model.tok_embd`, name included
+    # (llama-model-loader.cpp:1268, TENSOR_DUPLICATED), so `get_weight` at the output projection
+    # looks up "token_embd.weight" and a token_embd-targeting adapter is found there too. That is
+    # not a delta this function could return, though: the token_embd A/B convention is flipped
+    # (adapter.py:_zero_init_pair -- a.ne = [r, n_vocab], b.ne = [r, n_embd]), which is shape-
+    # incompatible with build_lora_mm's `mul_mat(a, cur)` and aborts in ggml rather than scoring
+    # quietly wrong. So the tied-plus-token_embd combination fails upstream, loudly, and the
+    # blind spot here costs nothing today. If llama.cpp ever grows a tied-aware output path, this
+    # name has to grow with it.
     if "output.weight" not in info.ranks:
         return None
 
@@ -325,7 +341,10 @@ def chunked_token_logprobs(
         softcap: ``softcap * tanh(u / softcap)`` on the logits. 0.0 is off.
         lora: An adapter targeting the output projection, or None to project with the base weight
             alone. Passing None when the attached adapter *does* target ``output`` silently scores
-            the wrong model — :func:`sequence_logprobs` works this out for you.
+            the wrong model, and nothing downstream can catch it: :func:`sequence_logprobs`
+            forwards this argument unchanged, and llama.cpp has no call that reports a context's
+            attached adapters. Resolve it at the call site with :func:`output_lora`, which returns
+            None exactly when the adapter leaves ``output`` alone.
 
     Returns:
         ``[n_tokens]`` F32: ``weights[i] * logp(labels[i])``. Masked-out tokens are exactly 0.
@@ -607,7 +626,13 @@ def sequence_logprobs(  # noqa: PLR0913 - a batch's five parallel arrays, as eve
         chunk_rows: Rows per chunk; see :func:`choose_chunk_rows`.
         logit_scale: Multiplies the logits before the softmax. 1.0 is off.
         softcap: ``softcap * tanh(u / softcap)`` on the logits. 0.0 is off.
-        lora: An adapter targeting the output projection; None to score the base weight alone.
+        lora: The output-projection delta of whatever adapter is attached to ``ctx``, from
+            :func:`output_lora`; None to score the base weight alone. **This is not worked out
+            here** — the argument is forwarded as given. There is no llama.cpp call that reports a
+            context's attached adapters, so a caller that attached an ``output``-targeting adapter
+            and then leaves this None gets the base lm_head's logprobs with no error anywhere. For
+            an adapter that does not target ``output`` (the common case) None is exactly right:
+            its effect on every earlier layer is already in the hidden states this decode returns.
 
     Returns:
         ``[n_tokens]`` F32: ``weights[i] * logp(targets[i])``, zero where masked.

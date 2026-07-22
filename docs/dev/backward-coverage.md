@@ -382,22 +382,62 @@ it still named eight ops while the project had thirteen, so MUL_MAT_ID, ADD_ID, 
 SSM_SCAN (every op the MoE and Mamba work added) were not grad-checked in CI at all. CI was green.
 
 All thirteen are genuinely grad-checked (the test class calls `ggml_set_param`) **and** green, with
-real cases rather than skips — `test_backend_ops_grad.py::test_every_op_reports_real_cases` enforces
-that, so an op cannot join the list on the strength of a vacuous pass:
+real cases rather than skips — `test_backend_ops_grad.py::test_the_gradient_of_a_project_op_is_checked_and_correct`
+enforces that (and `::test_the_vacuity_guard_can_actually_detect_vacuity` mutation-checks the
+enforcement itself), so an op cannot join the list on the strength of a vacuous pass:
 
-| op | real cases | added by |
+**What the number in the table is.** It is the count of cases for which MODE_GRAD *compared a
+gradient* — i.e. what `_n_gradients_compared` returns for `grad -b CPU -o <op>`, which is exactly
+the quantity the guard asserts is `> 0`. It is **not** the number of `OK` lines: a case that is
+going to be checked prints an info line rendered as a bare `OK` *before anything is compared*, and
+its real verdict is the line after. Counting `OK` lines therefore counts support and info lines as
+if they were gradient verdicts — the same confusion this whole document exists to name. An earlier
+revision of this table did exactly that, listing `MUL_MAT_ID` as 840 where 24 gradients are
+compared. Reproduce a cell with:
+
+```bash
+.venv/bin/python - <<'PY'
+import subprocess, sys
+sys.path.insert(0, ".")
+from tests.test_backend_ops_grad import _n_gradients_compared
+out = subprocess.run(
+    ["build/vendor-tests/bin/test-backend-ops", "grad", "-b", "CPU", "-o", "MUL_MAT_ID"],
+    capture_output=True, text=True,
+).stdout
+print(_n_gradients_compared(out))
+PY
+```
+
+Measured on this box (Linux x86-64, CPU backend) at the current pin, one process per op:
+
+| op | gradients compared | added by |
 |---|---|---|
-| `CROSS_ENTROPY_LOSS` | 5 | S1-04 |
-| `CROSS_ENTROPY_LOSS_SPARSE` | 17 | S1-04 |
-| `RMS_NORM` | 33 | S0-09 |
-| `TANH` / `SIGMOID` / `CLAMP` | 8 / 8 / 7 | S1-19 |
-| `SOFT_MAX` | 293 | S1-20, S1-34 |
-| `CONCAT` | 46 | S1-29 |
-| `MUL_MAT_ID` | 840 | S1-25 |
-| `ADD_ID` | 64 | S1-25 |
+| `CROSS_ENTROPY_LOSS` | 1 | S1-04 |
+| `CROSS_ENTROPY_LOSS_SPARSE` | 6 | S1-04 |
+| `RMS_NORM` | 10 | S0-09 |
+| `TANH` / `SIGMOID` / `CLAMP` | 2 / 2 / 2 | S1-19 |
+| `SOFT_MAX` | 79 | S1-20, S1-34 |
+| `CONCAT` | 12 | S1-29 |
+| `MUL_MAT_ID` | 24 | S1-25 |
+| `ADD_ID` | 26 | S1-25 |
 | `SWIGLU` / `GEGLU` / `REGLU` / `GEGLU_ERF` / `GEGLU_QUICK` / `SWIGLU_OAI` | 8 each | S1-28 |
-| `SSM_CONV` | 75 | S1-30 |
-| `SSM_SCAN` | 10 | S1-31 |
+| `SSM_CONV` | 19 | S1-30 |
+| `SSM_SCAN` | 6 | S1-31, B-10 (2 → 6: the `n_group in {2,4}` cases) |
+
+Every op compares more than zero, so no gate here is vacuous — but the counts are much smaller than
+the line counts suggest, because most registered cases bail before comparing anything. The
+harness prints its own reason, and counting those reasons is the honest way to see it:
+
+```bash
+./build/vendor-tests/bin/test-backend-ops grad -b CPU -o MUL_MAT_ID 2>/dev/null \
+  | grep -oP '(?<=: )not supported \[[^]]*\]|skipping large tensors for speed' | sort | uniq -c
+```
+
+`MUL_MAT_ID` reports `not supported [MUL_MAT_ID]` 790 times and compares 24 gradients. `CLAMP`
+emits nine lines — three `not supported [out->type != FP32]`, one `skipping large tensors for
+speed`, and **two** compared gradients. `SOFT_MAX` skips 125 cases as large and refuses 8 as
+`inplace SOFT_MAX is not differentiable`, leaving 79. Read the table as "the gate is real and
+non-vacuous", not as "this op is exhaustively covered".
 
 Deliberately **not** on the list:
 
@@ -440,3 +480,56 @@ done
 
 For the `ggml_set_param` audit, parse `tests/test-backend-ops.cpp` for `struct test_* : public
 test_case` blocks and check each body for `ggml_set_param`. **Do this before trusting any `OK`.**
+
+## Re-measuring a `max_maa_err()` bound
+
+Every MODE_GRAD tolerance in the fork is justified by a measured distribution in the comment above
+it. `GGML_TEST_MAA_REPORT=1` is what produces one: it prints `MAA<TAB>op<TAB>vars<TAB>param<TAB>err
+<TAB>bound` to **stderr** for *every* comparison, not just the ones that trip the threshold. Unset,
+it changes nothing.
+
+Two rules, both of which have been broken here before:
+
+1. **Use the variant names, never `GLU`.** `-o` is an exact match on `ggml_op_desc(out)`, so
+   `grad -o GLU` matches zero cases and exits 0 — see the section above for the transcript.
+2. **Quote the invocation shape with the number.** `GGML_TEST_SEED` mixes a *per-process counter*
+   into each init site's seed, and non-matching cases return before they consume one. So the same
+   case gets a different input under `-o A` than under `-o A,B`. Verified: `SSM_SCAN`'s draws differ
+   between the two, while two identical invocations are bit-identical. CI runs **one process per
+   op** (`tests/test_backend_ops_grad.py` loops over `tests/project_ops.py`), so that is the shape
+   whose numbers describe CI.
+
+```bash
+TBO=./build/vendor-tests/bin/test-backend-ops
+OPS=$(.venv/bin/python -c "import sys; sys.path.insert(0,'tests'); \
+      from project_ops import PROJECT_ADDED_OPS; print(' '.join(PROJECT_ADDED_OPS))")
+
+# CI's regime: the ONE draw the pinned seed produces, per op, in its own process.
+for op in $OPS; do
+    GGML_TEST_MAA_REPORT=1 GGML_TEST_SEED=20260716 "$TBO" grad -b CPU -o "$op" 2>>seeded.tsv >/dev/null
+done
+
+# The distribution the bound has to clear locally: same shape, no seed, N runs.
+for i in $(seq 1 15); do
+    for op in $OPS; do
+        GGML_TEST_MAA_REPORT=1 "$TBO" grad -b CPU -o "$op" 2>>unseeded.tsv >/dev/null
+    done
+done
+```
+
+Record **both**, because they answer different questions. A failure near the unseeded worst is a
+bound-vs-noise problem; a failure that appears after any change to the number or order of seeded
+draws is a seed shift and says nothing about the kernel.
+
+Two results from the 2026-07-22 sweep worth knowing before you read a green:
+
+* **`SOFT_MAX` flakes unseeded and cannot flake seeded.** 1185 unseeded comparisons: median 2.7e-5,
+  p99 5.2e-4, worst **5.35e-3** against a 5e-3 bound — one failing run in fifteen, on the
+  `scale=0.1` ALiBi+sink case the `grad_eps` note calls estimator-limited. Under
+  `GGML_TEST_SEED=20260716` the worst is 4.65e-4, a 10.8x margin, forever. The seed is what makes
+  that lane stable; it is not evidence the bound is comfortable.
+* **`CROSS_ENTROPY_LOSS_SPARSE` has the tightest real margin in the file**: worst 3.0e-3 unseeded /
+  2.8e-3 pinned, against 5e-3 — 1.7x, not the 2.5-5x its old "1e-3 to 2e-3" note implied.
+
+Neither is a reason to raise a bound. Both are reasons to condition the estimator if they ever go
+red — see *"Condition the test; do not widen the tolerance until the flapping stops"* above.

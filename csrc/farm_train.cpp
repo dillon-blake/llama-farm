@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <cstddef>
 #include <string>
@@ -225,6 +226,11 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
     // Validate everything BEFORE mutating anything. A half-flagged adapter is worse than a
     // rejected one: it would train a subset of the tensors and look like it worked.
     size_t n_tensors = 0;
+
+    // Every parameter name seen so far, because the shim's whole name-addressed surface assumes
+    // they are unique. See the duplicate check below.
+    std::set<std::string> param_names;
+
     for (size_t i = 0; i < n_adapters; ++i) {
         if (adapters[i] == nullptr) {
             return LL_ERR_INVALID_ARG;
@@ -237,6 +243,32 @@ int32_t ll_opt_init_lora(llama_context * ctx, llama_model * model, llama_adapter
             const int32_t err_b = validate_adapter_tensor(weight.b);
             if (err_b != LL_OK) {
                 return err_b;
+            }
+
+            // Two adapters that adapt the SAME base tensor give their A/B tensors the SAME ggml
+            // name -- llama.cpp derives it from the base ("<base>.lora_a"), not from the adapter --
+            // and every name-keyed structure in this shim then aliases them. grad_accs, grad_m and
+            // grad_v are std::unordered_map<std::string, ...>, so the second adapter's capture
+            // overwrites the first's; ll_debug_grad hands back the other adapter's accumulator;
+            // ll_opt_state_count reports one adapter's worth of moments, and a checkpoint saves
+            // half the run while claiming to be complete. Every one of those is silent.
+            //
+            // Refusing is the honest fix rather than re-keying the maps by tensor pointer, because
+            // the ambiguity is in the ABI and not merely in the map behind it: farm_api.h addresses
+            // both the checkpoint moments and the debug accessors BY PARAMETER NAME, so with a
+            // duplicate there is no argument a caller could pass to mean the second one. Overlapping
+            // adapters have to be trained on separate contexts.
+            const char * ab_names[2] = {ggml_get_name(weight.a), ggml_get_name(weight.b)};
+            for (const char * pname : ab_names) {
+                if (!param_names.insert(pname).second) {
+                    LLAMA_LOG_ERROR("%s: two of these adapters both adapt '%s', so their parameter "
+                                    "tensors share the name '%s'. Gradients, AdamW moments, the "
+                                    "optimizer-state checkpoint and the debug accessors are all "
+                                    "addressed by that name, and would silently alias. Train "
+                                    "overlapping adapters on separate contexts.\n",
+                                    __func__, name.c_str(), pname);
+                    return LL_ERR_INVALID_ARG;
+                }
             }
 
             // The base tensor this adapter hangs off must be differentiable, or the backward
@@ -387,6 +419,15 @@ int32_t ll_opt_init_full(llama_context * ctx, llama_model * model, ll_opt_params
     if (state->param_tensors.empty()) {
         // Nothing trainable -- an all-quantized base, or a model with no F32 leaves. Refuse rather
         // than stand up an optimizer that would step on nothing.
+        //
+        // And put the context back the way it was found. cparams.training was flipped on above, and
+        // a rejected init leaves NO training state behind -- so a caller that reasonably falls back
+        // to inference then decodes on a training-mode context, which is the documented crash on the
+        // second llama_decode (see ll_logp_delta's note 2). An error return that arms a segfault a
+        // few calls later is worse than the abort it replaced. Safe here because set_training's own
+        // precondition -- that no graph has been built on this context yet -- still holds: nothing
+        // has stepped, because there is no state to step with.
+        ctx->set_training(false);
         return LL_ERR_INVALID_ARG;
     }
 
@@ -396,11 +437,63 @@ int32_t ll_opt_init_full(llama_context * ctx, llama_model * model, ll_opt_params
     return n_tensors;
 }
 
+namespace {
+
+// Take GGML_TENSOR_FLAG_PARAM back off the tensors a dying training state owns.
+//
+// ggml_set_param only ORs the flag in (ggml.c:8479-8482) and ggml offers nothing that clears it, so
+// without this the flag OUTLIVES the state that set it -- and the next ll_opt_init_* on the same
+// tensors inherits a parameter it does not know about. Concretely: init_lora([A, B]), opt_free,
+// init_lora([A]). B's tensors are still flagged, so ggml still promotes them to graph nodes, still
+// gives them a gradient accumulator and AdamW moments, and the optimizer still STEPS them -- while
+// param_tensors, the ll_opt_state_* checkpoint and every ll_debug_* accessor enumerate only A. The
+// run trains a tensor the caller believes it detached, and no checkpoint carries it, so a resume
+// starts from a different model than the one that was saved. Nothing errors.
+//
+// A tensor another LIVE state still owns keeps its flag: two contexts may share one adapter (GRPO
+// samples through the very tensors the trainer steps) or one base model under full fine-tuning, and
+// clearing the flag out from under the other context would silently stop ITS training instead --
+// the same bug with the sign flipped.
+void unflag_params(const ll_train_state * dying) {
+    for (ggml_tensor * t : dying->param_tensors) {
+        bool still_owned = false;
+
+        for (const auto & entry : train_states()) {
+            const ll_train_state * other = entry.second.get();
+            if (other == dying) {
+                continue;
+            }
+            for (const ggml_tensor * u : other->param_tensors) {
+                if (u == t) {
+                    still_owned = true;
+                    break;
+                }
+            }
+            if (still_owned) {
+                break;
+            }
+        }
+
+        if (!still_owned) {
+            t->flags &= ~(int32_t)GGML_TENSOR_FLAG_PARAM;
+        }
+    }
+}
+
+} // namespace
+
 int32_t ll_opt_free(llama_context * ctx) {
     if (ctx == nullptr) {
         return LL_ERR_INVALID_ARG;
     }
-    train_states().erase(ctx);
+
+    const auto it = train_states().find(ctx);
+    if (it != train_states().end()) {
+        // Before the erase, while the state still knows which tensors it flagged.
+        unflag_params(it->second.get());
+        train_states().erase(it);
+    }
+
     return LL_OK;
 }
 
@@ -796,16 +889,6 @@ void upload_masked_ce(void * userdata) {
     // at all as a denominator, and zero whenever the two happen to be the same length. What DPO
     // wants is the plain sum of per-token log-probabilities, which is what an unnormalized weighted
     // sum with +/-1 weights is.
-    float scale = 1.0f;
-
-    if (lc->kind == LL_LOSS_SFT) {
-        float sum_w = 0.0f;
-        for (int32_t i = 0; i < n_ubatch; ++i) {
-            sum_w += lc->weights[lc->pos + i];
-        }
-        scale = sum_w > 0.0f ? 1.0f / sum_w : 0.0f;
-    }
-
     std::vector<int32_t> labels(n_ubatch);
     std::vector<float> weights(n_ubatch);
 
@@ -816,7 +899,29 @@ void upload_masked_ce(void * userdata) {
         // An out-of-range target is masked out rather than allowed to index off the end of a row.
         // Label 0 is then arbitrary but never read, because its weight is zero.
         labels[i] = in_range ? target : 0;
-        weights[i] = in_range ? lc->weights[lc->pos + i] * scale : 0.0f;
+        weights[i] = in_range ? lc->weights[lc->pos + i] : 0.0f;
+    }
+
+    // Normalize AFTER the force-masking, over the weights that survived it -- not over the caller's
+    // raw ones.
+    //
+    // The two differ exactly when a target is outside [0, n_vocab): that position's weight has just
+    // been driven to zero, so it carries none of the loss, but summing the caller's array would
+    // still have counted it in the denominator. Every real token's loss and gradient would then be
+    // scaled by n_valid/n_total -- a quiet, data-dependent shrink of the learning rate that moves
+    // whenever the batch's mix of bad targets does. farm_api.h documents the mean over the tokens
+    // that actually count. With no out-of-range target the two sums are the same addends in the
+    // same order, so an ordinary batch is bit-for-bit unchanged.
+    if (lc->kind == LL_LOSS_SFT) {
+        float sum_w = 0.0f;
+        for (int32_t i = 0; i < n_ubatch; ++i) {
+            sum_w += weights[i];
+        }
+
+        const float scale = sum_w > 0.0f ? 1.0f / sum_w : 0.0f;
+        for (int32_t i = 0; i < n_ubatch; ++i) {
+            weights[i] *= scale;
+        }
     }
 
     ggml_backend_tensor_set(lc->labels, labels.data(), 0, labels.size() * sizeof(int32_t));
@@ -1070,6 +1175,13 @@ int32_t ll_train_step_grpo(llama_context * ctx, const int32_t * tokens, const in
         return LL_ERR_INVALID_ARG;
     }
 
+    // The 0-or-1 check below DEREFERENCES weights, so its null-ness has to be settled here.
+    // train_step_impl rejects a null one, but only after this function has already read it -- and
+    // farm_api.h promises LL_ERR_INVALID_ARG for a null argument, not a segfault.
+    if (weights == nullptr || n_tokens <= 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
     // The weights ARE the completion mask, and they have to be exactly 0 or 1.
     //
     // This is not fastidiousness. logp_new is -ce_sparse(...), and ce_sparse multiplies by w_i --
@@ -1093,6 +1205,25 @@ int32_t ll_logp_delta(llama_context * ctx, const int32_t * tokens, const int32_t
                       const int32_t * seq_ids, const int32_t * positions, int32_t n_tokens, float * out) {
     if (ctx == nullptr || tokens == nullptr || targets == nullptr || weights == nullptr || out == nullptr ||
         n_tokens <= 0) {
+        return LL_ERR_INVALID_ARG;
+    }
+
+    // The same packing guard train_step_impl enforces, and for the same reason -- checked here
+    // BEFORE set_training, so a rejected call leaves the context as it found it.
+    //
+    // With kv_unified off, llama.cpp's ubatch splitter is split_equal rather than split_simple, and
+    // split_equal REGROUPS the batch by sequence. upload_masked_ce keeps reading targets[pos + i]
+    // in the caller's original order, so every target pairs with a different token than the caller
+    // meant. Nothing fails: the answer is a perfectly well-formed log-probability of the wrong
+    // pairing. And this entry point exists for DPO's reference pass, whose whole shape is two
+    // sequences (chosen, rejected) packed into one batch -- i.e. the one call that always passes
+    // seq_ids. A wrong ref_delta is then baked in as a constant and every later DPO step optimizes
+    // against it, which is a run that looks healthy and converges somewhere else.
+    if (seq_ids != nullptr && !ctx->get_cparams().kv_unified) {
+        LLAMA_LOG_ERROR("%s: packing (seq_ids) needs a context created with kv_unified=true. "
+                        "Without it, llama.cpp regroups the batch by sequence and the log-probability "
+                        "would silently be of the wrong token pairing.\n",
+                        __func__);
         return LL_ERR_INVALID_ARG;
     }
 
@@ -1654,6 +1785,39 @@ int32_t ll_preflight(llama_context * ctx, const int32_t * tokens, int32_t n_toke
         return LL_ERR_NOT_INITIALIZED;
     }
 
+    // Its OWN, throwaway, FORWARD-ONLY optimizer context -- emphatically not state->opt_ctx. Two
+    // separate things break when the walk shares the training one, and the second is the worse.
+    //
+    // 1. It MIS-SIZES the training state, and the caller finds out one step later. A llama.cpp
+    //    context uses DYNAMIC ggml-opt graphs (ctx_compute is null), so ggml_opt_alloc re-runs
+    //    ggml_opt_build on every call; and the early return that would stop a train=false build
+    //    after the forward pass is gated on build_type_ALLOC, not on this call's build_type
+    //    (ggml-opt.cpp: `} else if (opt_ctx->build_type_alloc == GGML_OPT_BUILD_TYPE_FORWARD)`).
+    //    On a fresh OPT-built context buf_static is still null, so a forward-only preflight fell
+    //    straight through into `if (opt_ctx->grad_accs.empty())` and sized grad_accs/grad_m/grad_v
+    //    from the PREFLIGHT graph's node count. That graph's loss tail is one node shorter than a
+    //    training step's, so the next ll_train_step read grad_accs[i] past the end of the vector
+    //    inside ggml_build_backward_expand and used whatever was there as a gradient tensor. It
+    //    does not assert. Calling in the order farm_api.h documents -- init, preflight, train --
+    //    was therefore undefined behaviour.
+    //
+    // 2. It ABORTS on exactly the models this function exists to diagnose. The same fall-through
+    //    reaches ggml_build_backward_expand -> ggml_compute_backward, whose default case is
+    //    GGML_ABORT("unsupported ggml op for backward pass") (ggml.c). So on a model with a
+    //    non-differentiable op on the gradient path, the preflight died mid-walk instead of
+    //    returning the BLOCKED report -- the late, cryptic abort it promises to replace, moved a
+    //    few minutes earlier and no more legible.
+    //
+    // GGML_OPT_BUILD_TYPE_FORWARD makes ggml_opt_build stop after the forward graph: no backward,
+    // no accumulators, no momenta, and nothing shared with the training state. Which is all the
+    // walk ever needed -- it reads the forward graph, and the trainable tensors it is seeded from
+    // come from `state`, which this does not touch. The context is left exactly as it was found.
+    ggml_opt_params opt_params = ggml_opt_default_params(ctx->get_sched(), GGML_OPT_LOSS_TYPE_SUM);
+    opt_params.build_type = GGML_OPT_BUILD_TYPE_FORWARD;
+    opt_params.opt_period = 1;
+
+    ggml_opt_context_t opt_ctx = ggml_opt_init(opt_params);
+
     llama_batch batch = llama_batch_init(n_tokens, 0, 1);
     batch.n_tokens = n_tokens;
     for (int32_t i = 0; i < n_tokens; ++i) {
@@ -1674,11 +1838,12 @@ int32_t ll_preflight(llama_context * ctx, const int32_t * tokens, int32_t n_toke
     // train=false: build the forward graph, run it, build no backward. The walk happens at build
     // time, so the forward's result is discarded -- but running it does prove the graph is
     // SCHEDULABLE, which a pure graph build would not.
-    const int32_t status = ctx->opt_step_custom(batch, state->opt_ctx, result, build_preflight, preflight_no_inputs,
-                                                &pc, /*train =*/false);
+    const int32_t status =
+        ctx->opt_step_custom(batch, opt_ctx, result, build_preflight, preflight_no_inputs, &pc, /*train =*/false);
 
     ggml_opt_result_free(result);
     llama_batch_free(batch);
+    ggml_opt_free(opt_ctx);
 
     if (status != 0) {
         return LL_ERR_STEP_FAILED;

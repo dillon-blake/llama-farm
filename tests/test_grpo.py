@@ -25,6 +25,7 @@ lives in that swap. A clip that got it backwards would still train, still conver
 """
 
 import ctypes
+import dataclasses
 import logging
 import math
 
@@ -38,6 +39,7 @@ from learning_llamas.train import TrainConfig, Trainer
 from learning_llamas.train.grpo import (
     GRPOBatch,
     GRPOConfig,
+    GRPOMetrics,
     GRPOTrainer,
     _apply_logp_old,
     _logp_old_verifier,
@@ -704,6 +706,26 @@ def test_an_epsilon_outside_the_open_unit_interval_is_refused(eps: float) -> Non
         GRPOConfig(clip_eps=eps)
 
 
+def test_the_metrics_report_nothing_they_do_not_compute() -> None:
+    """A diagnostic that is always 0 is worse than no diagnostic.
+
+    ``GRPOMetrics`` used to carry ``mean_ratio`` and ``clip_fraction``, documented as the PPO drift
+    diagnostics — and ``grpo_step`` never set either, because both are functions of ``logp_new``,
+    which lives inside the graph and never crosses the FFI (``ll_train_step_grpo`` returns one
+    scalar). They read 0.0 forever. For ``clip_fraction`` that is *indistinguishable from the
+    healthy value*: a caller watching for the clip to start binding would watch a constant and
+    conclude, correctly-looking, that it never did.
+
+    So they are gone until something can compute them honestly. This pins that: every field here
+    must be one ``grpo_step`` actually fills in.
+    """
+    fields = {f.name for f in dataclasses.fields(GRPOMetrics)}
+    assert fields == {"loss", "mean_reward", "n_tokens"}, (
+        f"GRPOMetrics grew a field: {fields}. If grpo_step does not compute it, it will read 0.0 "
+        f"for the life of every run."
+    )
+
+
 def test_a_grpo_context_refuses_a_supervised_evaluation(policy, libs) -> None:
     """It would build the SFT graph, and this context is pinned to the GRPO one.
 
@@ -789,6 +811,65 @@ def test_the_collator_normalizes_by_the_graded_tokens() -> None:
     assert batch.adv[2] == pytest.approx(1.5 / 3)
     assert batch.adv[8 + 2] == pytest.approx(-1.5 / 3)
     assert batch.adv[0] == 0.0
+
+
+def _long_rollout(n_completion: int) -> RolloutBatch:
+    """One rollout, 3 prompt tokens and ``n_completion`` completion tokens, all distinct ids."""
+    return RolloutBatch(
+        rollouts=[
+            Rollout(
+                group=0,
+                prompt_tokens=[5, 6, 7],
+                completion_tokens=list(range(20, 20 + n_completion)),
+                logp_old=np.array([-1.0 * (t + 1) for t in range(n_completion)], dtype=np.float32),
+                advantage=1.0,
+            )
+        ],
+        prompts=["p"],
+    )
+
+
+def test_a_rollout_of_seq_len_plus_one_tokens_keeps_its_last_token(caplog) -> None:
+    """``seq_len`` counts PREDICTIONS, so ``seq_len + 1`` tokens fit exactly — nothing to truncate.
+
+    The last token of a rollout is only ever a *target*: position ``i`` predicts ``full[i + 1]``,
+    so ``full[seq_len]`` is graded from position ``seq_len - 1`` and is never fed in. That is the
+    same arithmetic ``sft.to_batch`` and ``packing._prepare`` do (``usable = len(tokens) - 1``), and
+    the collator was one short of it — it cut at ``seq_len``, which threw the final completion token
+    (typically the EOS, the one token that says the answer *ended*) out of the grading and warned
+    about a tail that fitted.
+
+    It is worth a test rather than an eyeball because both the loss and the warning stay perfectly
+    plausible when it is wrong: the batch just quietly grades one token fewer than it generated.
+    """
+    rollouts = _long_rollout(n_completion=5)  # 3 + 5 = 8 tokens, into seq_len = 7
+
+    with caplog.at_level(logging.WARNING):
+        batch = collate(rollouts, seq_len=7)
+
+    # Every completion token is graded, including the last one.
+    graded = [i for i in range(7) if batch.mask[i] != 0.0]
+    assert graded == [2, 3, 4, 5, 6], graded
+    assert batch.n_completion_tokens == 5
+
+    # ...and position 6 is graded against the token that used to fall off the end.
+    assert batch.targets[6] == 24
+    assert batch.logp_old[6] == pytest.approx(-5.0)
+
+    assert "no gradient" not in caplog.text, (
+        f"a rollout that fits exactly was reported as truncated: {caplog.text!r}"
+    )
+
+
+def test_a_rollout_past_the_layout_still_warns_and_truncates(caplog) -> None:
+    """One token past the fit is a real loss of signal, and it must still say so."""
+    rollouts = _long_rollout(n_completion=6)  # 3 + 6 = 9 tokens, into seq_len = 7 (room for 8)
+
+    with caplog.at_level(logging.WARNING):
+        batch = collate(rollouts, seq_len=7)
+
+    assert batch.n_completion_tokens == 5, "the sixth completion token has nowhere to be graded"
+    assert "no gradient" in caplog.text, "a genuinely truncated rollout was truncated in silence"
 
 
 def test_each_rollout_is_its_own_sequence() -> None:
@@ -1033,36 +1114,50 @@ def test_a_kl_coefficient_without_a_reference_is_refused(
         )
 
 
-def test_the_kl_actually_reaches_the_loss(tiny_q4_k, tmp_path, load_model, libs) -> None:
-    """With a reference and a large coefficient, the loss must MOVE.
+KL_G = 2
+KL_SEQ = 16
+KL_MAX_NEW = 8
 
-    The reference is the base model with the adapter off (BLUEPRINT D6), scored on the ROLLOUT
-    context — the one without an optimizer holding its scheduler.
+
+def _kl_arm(base, tmp_path, load_model, libs, lm_head, kl_coef: float) -> float:
+    """One seeded GRPO iteration at this ``kl_coef``; returns the loss of its single step.
+
+    Every arm is built from scratch — its own adapter object, its own two contexts — and then given
+    the *same* B, so the one iteration it runs draws its rollouts from identical weights with
+    identical per-(group, member) sampler seeds and therefore gets identical tokens. Which is what
+    makes the arms comparable at all: the surrogate half of the loss is then bitwise the same in
+    every arm (same graph shape, same inputs, ADR-0002), and the only thing left that can move the
+    number is the KL.
+
+    ``B`` has to be moved off zero first. ``create_zero_adapter`` writes ``B = 0``, which makes the
+    adapter a bitwise no-op — so the policy *is* the reference, every ``k3`` is exactly 0, and the
+    KL term contributes nothing however faithfully it is plumbed. That is precisely the state in
+    which this test cannot fail, so it is stepped out of deliberately.
     """
-    adapter = tmp_path / "kl.gguf"
-    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+    adapter = tmp_path / f"kl-{kl_coef}.gguf"
+    create_zero_adapter(base, adapter, r=RANK, seed=7)
 
-    G = 2
-    SEQ = 32
-    n_seq = 1 * G
-    n_tok = n_seq * SEQ
+    n_seq = 1 * KL_G
+    n_tok = n_seq * KL_SEQ
 
-    rollout_model = load_model(tiny_q4_k, n_ctx=128, n_seq_max=G)
+    rollout_model = load_model(base, n_ctx=64, n_seq_max=n_seq)
     rollout_model.attach_adapter(adapter, scale=1.0)
 
-    train_model = load_model(tiny_q4_k, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    train_model = load_model(base, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
     train_model.attach_adapter(adapter, scale=1.0, adapter=rollout_model.adapter)
+
+    # One adapter object, shared by both contexts -- so randomizing it here is what BOTH the policy
+    # and the sampler see, in every arm identically.
+    _randomize_b(libs, rollout_model.adapter, sigma=0.05, seed=1)
 
     engine = RolloutEngine(
         libs,
         rollout_model.ctx,
         rollout_model.model,
-        n_rollouts=G,
-        sampler=SamplerConfig(temperature=1.0, seed=3, max_new_tokens=8),
+        n_rollouts=KL_G,
+        sampler=SamplerConfig(temperature=1.0, seed=3, max_new_tokens=KL_MAX_NEW),
         adapter=rollout_model.adapter,
     )
-
-    lm_head = load_lm_head(tiny_q4_k)
 
     result = train_grpo(
         libs,
@@ -1070,14 +1165,221 @@ def test_the_kl_actually_reaches_the_loss(tiny_q4_k, tmp_path, load_model, libs)
         engine,
         prompts=["hello"],
         reward_fn=token_reward(set(range(100))),
-        config=GRPOConfig(lr=1e-3, seq_len=SEQ, iterations=2, kl_coef=1.0),
+        config=GRPOConfig(lr=1e-3, seq_len=KL_SEQ, iterations=1, kl_coef=kl_coef),
         lm_head=lm_head,
     )
 
-    assert len(result.steps) == 2
-    assert all(math.isfinite(m.loss) for m in result.steps), (
-        f"the KL path produced a non-finite loss: {[m.loss for m in result.steps]}"
+    assert len(result.steps) == 1
+    assert math.isfinite(result.steps[0].loss), f"non-finite loss at kl_coef={kl_coef}"
+
+    return result.steps[0].loss
+
+
+def test_the_kl_actually_reaches_the_loss(tiny_q4_k, tmp_path, load_model, libs) -> None:
+    """With a reference and a large coefficient, the loss must MOVE — and move *proportionally*.
+
+    The reference is the base model with the adapter off (BLUEPRINT D6), scored on the ROLLOUT
+    context — the one without an optimizer holding its scheduler.
+
+    This is the only end-to-end test of that plumbing: everything else drives ``grpo_step`` (or the
+    shim) directly with a ``logp_ref`` handed to it, so a ``train_grpo`` that dropped ``kl_coef`` on
+    the floor, or ran the reference pass and threw the result away, is invisible to all of them. It
+    used to be invisible here too — the assertions were ``len(result.steps) == 2`` and "the losses
+    are finite", both of which a completely absent KL satisfies.
+
+    So run the *same seeded configuration* three times, changing only ``kl_coef``. The graph is one
+    shape either way (the KL nodes are built unconditionally and the coefficient is folded into a
+    per-token weight), the rollouts are identical, and the surrogate is therefore identical, so
+
+        loss(c) = surrogate + c * mean_i k3_i
+
+    exactly. Two consequences are asserted, and no plumbing bug survives both:
+
+    * the gap is **positive** — ``k3 = expm1(d) - d >= 0``, so a KL can only ever push the loss up;
+    * the gap is **linear in c** — ``loss(2c) - loss(0) == 2 * (loss(c) - loss(0))``. A coefficient
+      that were quietly clamped, squared, or ignored past some threshold fails this even though it
+      passes "the loss moved".
+
+    The floor on the gap is 1e-4. It is not a tolerance to be widened: the two arms share the
+    surrogate bitwise, so the only noise is the single F32 rounding of ``surrogate + kl`` — about
+    6e-8 on a loss of order 1 (``np.spacing(np.float32(1.0)) == 1.19e-7``). The gap this rig
+    actually produces is ~1e-1: with B randomized at sigma=0.05 the reference sits ~0.55 nats from
+    the policy (measured by ``test_reference_logprobs_actually_detaches_the_adapter``), and
+    ``k3(0.55) = expm1(0.55) - 0.55 = 0.18``. 1e-4 sits three orders above the noise and three
+    orders below the signal.
+    """
+    lm_head = load_lm_head(tiny_q4_k)
+
+    free = _kl_arm(tiny_q4_k, tmp_path, load_model, libs, lm_head, kl_coef=0.0)
+    single = _kl_arm(tiny_q4_k, tmp_path, load_model, libs, lm_head, kl_coef=1.0)
+    double = _kl_arm(tiny_q4_k, tmp_path, load_model, libs, lm_head, kl_coef=2.0)
+
+    gap = single - free
+    assert gap > 1e-4, (
+        f"kl_coef=1.0 changed the loss by {gap:.3e}, which is indistinguishable from a KL that "
+        f"never reached the graph. losses: kl=0 -> {free!r}, kl=1 -> {single!r}"
     )
+
+    # ...and it is the COEFFICIENT that got through, not merely some reference pass.
+    assert (double - free) == pytest.approx(2.0 * gap, rel=1e-3), (
+        f"doubling kl_coef did not double the KL's contribution: {gap:.6e} -> "
+        f"{double - free:.6e}. The KL term is linear in kl_coef by construction (it is folded "
+        f"into a per-token weight), so anything else means the coefficient is being mangled."
+    )
+
+
+def test_an_engine_that_cannot_score_the_whole_batch_is_refused(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """The KL makes the ROLLOUT context score, and scoring is bigger than generating.
+
+    ``RolloutEngine`` documents ``n_seq_max >= n_rollouts`` — one group — and that is genuinely all
+    generation needs, because groups are generated one at a time into a cleared cache. But the KL's
+    reference pass decodes the *whole collated batch* on that same context: every rollout of every
+    prompt at once, each as its own sequence, seq_ids ``0 .. n_prompts * n_rollouts - 1``.
+    llama.cpp rejects a seq_id at or past ``n_seq_max`` (``llama_batch_allocr::init``), so two
+    prompts with G=4 on an engine sized exactly as its own docstring says would die mid-run with
+    ``llama_decode failed with status -1`` and nothing naming the knob.
+
+    Both halves are pinned: the guard fires, and it fires *only* for the KL — the same undersized
+    engine must still be able to run a plain ``kl_coef=0`` GRPO, because nothing then scores the
+    flattened batch and the docstring's sizing really is sufficient.
+    """
+    adapter = tmp_path / "engine-size.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    G = 2
+    # 96 rather than a token-thrifty 32, because of a hard floor underneath the second arm:
+    # llama.cpp rounds n_ctx up to a multiple of 256, so the SMALLEST context that can exist has
+    # 256 cells. (Measured on this box, tiny-llama-q4_k, n_seq_max in {2, 4}: every request from 32
+    # to 256 comes back as n_ctx=256; 257 to 512 come back as 512.) A batch that does not fit in a
+    # context therefore has to be bigger than 256 tokens, and 2 prompts x 2 rollouts x 96 = 384 is.
+    SEQ = 96
+    PROMPTS = ["hello", "world"]
+    n_seq = len(PROMPTS) * G  # 4 sequences in the collated batch...
+    n_tok = n_seq * SEQ
+
+    # ...but an engine with room for exactly one group of 2, which is what generation needs.
+    narrow_seq = load_model(tiny_q4_k, n_ctx=256, n_seq_max=G)
+    narrow_seq.attach_adapter(adapter, scale=1.0)
+
+    train_model = load_model(tiny_q4_k, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    train_model.attach_adapter(adapter, scale=1.0, adapter=narrow_seq.adapter)
+
+    lm_head = load_lm_head(tiny_q4_k)
+
+    def engine_on(model) -> RolloutEngine:  # noqa: ANN001
+        return RolloutEngine(
+            libs,
+            model.ctx,
+            model.model,
+            n_rollouts=G,
+            sampler=SamplerConfig(temperature=0.0, max_new_tokens=8),
+            adapter=model.adapter,
+        )
+
+    def run(engine: RolloutEngine, kl_coef: float, model=train_model):  # noqa: ANN001, ANN202
+        return train_grpo(
+            libs,
+            model,
+            engine,
+            prompts=PROMPTS,
+            reward_fn=token_reward(set(range(100))),
+            config=GRPOConfig(lr=1e-3, seq_len=SEQ, iterations=1, kl_coef=kl_coef),
+            lm_head=lm_head,
+        )
+
+    with pytest.raises(ValueError, match="rollout context needs n_seq_max"):
+        run(engine_on(narrow_seq), kl_coef=0.5)
+
+    # The other half of the same decode: room for every sequence, but not for every token. The
+    # reference pass is ONE decode of n_seq * seq_len tokens, so it all has to be resident at once.
+    narrow_ctx = load_model(tiny_q4_k, n_ctx=n_tok // 2, n_seq_max=n_seq)
+    narrow_ctx.attach_adapter(adapter, scale=1.0, adapter=narrow_seq.adapter)
+
+    # llama.cpp pads n_ctx up (to the next multiple of 256), so read back what it actually gave us:
+    # a padded-up context that happened to be large enough would make the guard below untestable
+    # rather than wrong. This is why SEQ is 96 -- see the note where it is set.
+    assert narrow_ctx.n_ctx < n_tok, (
+        f"llama.cpp padded n_ctx to {narrow_ctx.n_ctx}, which is enough for the {n_tok}-token "
+        f"reference pass — this arm cannot exercise the guard. Raise seq_len."
+    )
+
+    # Matched on the ROLLOUT-context wording, not on the bare word "n_batch": the training-context
+    # guard a few lines earlier in train_grpo also talks about batch size, so a loose match would
+    # pass on the wrong refusal entirely.
+    with pytest.raises(ValueError, match="in one decode on the rollout context"):
+        run(engine_on(narrow_ctx), kl_coef=0.5)
+
+    # And the guard is scoped to the KL: without one, the engine's own docstring is the truth, and
+    # the undersized-for-scoring engine generates perfectly well.
+    fresh_train = load_model(tiny_q4_k, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    fresh_train.attach_adapter(adapter, scale=1.0, adapter=narrow_seq.adapter)
+
+    result = run(engine_on(narrow_seq), kl_coef=0.0, model=fresh_train)
+    assert len(result.steps) == 1
+
+
+def test_the_engine_batch_guard_reads_n_batch_and_not_the_padded_n_ctx(
+    tiny_q4_k, tmp_path, load_model, libs
+) -> None:
+    """The gap between the two numbers is a SIGABRT, so the guard has to read the right one.
+
+    ``llama_n_ctx()`` is not the decode limit. llama.cpp computes
+    ``cparams.n_batch = min(cparams.n_ctx, params.n_batch)`` and only afterwards rounds
+    ``cparams.n_ctx`` up to a multiple of 256 (``llama-context.cpp``), so every context whose
+    requested ``n_ctx`` is not already a multiple of 256 reports an ``n_ctx`` larger than the batch
+    it can actually decode — here 256 against 64, a factor of four.
+
+    That gap is not a nicer error message. ``llama_decode`` guards the batch with
+    ``GGML_ASSERT(n_tokens_all <= cparams.n_batch)``, and ``GGML_ASSERT`` is ``GGML_ABORT``: a
+    guard written against ``llama_n_ctx()`` lets a 128-token reference pass through onto a
+    64-token context and the *interpreter* dies, mid-iteration, with no traceback and no rollouts.
+
+    Sized so that every other guard in ``train_grpo`` passes and only this one can fire.
+    """
+    adapter = tmp_path / "engine-batch.gguf"
+    create_zero_adapter(tiny_q4_k, adapter, r=RANK, seed=7)
+
+    G = 2
+    SEQ = 32
+    PROMPTS = ["hello", "world"]
+    n_seq = len(PROMPTS) * G  # 4
+    n_tok = n_seq * SEQ  # 128
+
+    # 64 is the whole point: it pads to n_ctx=256 (> 128, so the old n_ctx check passed) while
+    # n_batch stays at the unpadded 64 (< 128, so the decode would have aborted).
+    engine_model = load_model(tiny_q4_k, n_ctx=64, n_seq_max=n_seq)
+    engine_model.attach_adapter(adapter, scale=1.0)
+
+    assert engine_model.n_ctx >= n_tok, (
+        f"llama.cpp gave n_ctx={engine_model.n_ctx}, below the {n_tok}-token reference pass — the "
+        f"old n_ctx-based guard would have fired and this test proves nothing."
+    )
+    assert int(libs.llama.llama_n_batch(engine_model.ctx)) < n_tok
+
+    train_model = load_model(tiny_q4_k, n_ctx=n_tok, n_ubatch=n_tok, n_seq_max=n_seq, training=True)
+    train_model.attach_adapter(adapter, scale=1.0, adapter=engine_model.adapter)
+
+    engine = RolloutEngine(
+        libs,
+        engine_model.ctx,
+        engine_model.model,
+        n_rollouts=G,
+        sampler=SamplerConfig(temperature=0.0, max_new_tokens=8),
+        adapter=engine_model.adapter,
+    )
+
+    with pytest.raises(ValueError, match="n_batch"):
+        train_grpo(
+            libs,
+            train_model,
+            engine,
+            prompts=PROMPTS,
+            reward_fn=token_reward(set(range(100))),
+            config=GRPOConfig(lr=1e-3, seq_len=SEQ, iterations=1, kl_coef=0.5),
+            lm_head=load_lm_head(tiny_q4_k),
+        )
 
 
 # ---------------------------------------------------------------------------------------------

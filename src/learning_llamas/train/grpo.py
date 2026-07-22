@@ -109,23 +109,25 @@ class GRPOConfig:
 class GRPOMetrics:
     """What one update did.
 
+    There is deliberately **no ``mean_ratio`` and no ``clip_fraction``** here, and their absence is
+    the point. Both are the standard PPO drift diagnostics, and both are functions of ``logp_new``
+    — which lives inside the graph and never crosses the FFI: ``ll_train_step_grpo`` hands back one
+    scalar, the loss. They can only be produced by a second chunked scoring pass over the same batch
+    (doubling the step's cost) or by new shim surface to read the ratio tensor back. Fields that
+    read ``0.0`` forever would be worse than nothing: 0 is also what a *healthy* ``clip_fraction``
+    looks like, so a caller watching for the clip to start binding would watch a constant and
+    conclude it never does.
+
     Attributes:
         loss: The surrogate, as the graph computed it.
         mean_reward: Averaged over every rollout in the batch. **This is the number that should go
             up.** The loss is only a proxy for it, and a falling loss with a flat reward means the
             policy is exploiting the surrogate rather than the task.
-        mean_ratio: ``exp(logp_new - logp_old)`` averaged over completion tokens. Should sit near 1
-            on a fresh batch of rollouts; drifting far from it means the policy has moved a long
-            way from the one that generated them.
-        clip_fraction: Fraction of tokens where the clip actually bound. A number near 0 means the
-            clip is doing nothing; near 1 means every step is being held back by it.
         n_tokens: Completion tokens the update was averaged over.
     """
 
     loss: float
     mean_reward: float
-    mean_ratio: float = 0.0
-    clip_fraction: float = 0.0
     n_tokens: int = 0
 
 
@@ -179,9 +181,12 @@ def collate(rollouts: RolloutBatch, seq_len: int) -> GRPOBatch:
     what predicts the first completion token, and it is graded.
 
     Args:
-        rollouts: What the engine generated.
-        seq_len: Tokens per rollout. A rollout longer than this is truncated, and the tokens that
-            fall off carry no gradient, which is a silent loss of signal — so it warns.
+        rollouts: What the engine generated. Each may be up to ``seq_len + 1`` tokens long: the
+            layout holds ``seq_len`` *predictions*, and a rollout's final token is only ever a
+            target.
+        seq_len: Predictions per rollout. A rollout of more than ``seq_len + 1`` tokens is
+            truncated, and the tokens that fall off carry no gradient, which is a silent loss of
+            signal — so it warns.
 
     Returns:
         The flattened batch.
@@ -216,14 +221,22 @@ def collate(rollouts: RolloutBatch, seq_len: int) -> GRPOBatch:
                 f"be at least one prompt token for the first completion token to be predicted BY."
             )
 
-        if len(full) > seq_len:
+        # The fixed layout holds `seq_len` PREDICTIONS, and a rollout's last token is only ever a
+        # target -- `targets[i] = full[i+1]`, so `full[seq_len]` is graded from position seq_len - 1
+        # and is never fed in. `seq_len + 1` tokens therefore fit exactly, which is the same
+        # arithmetic sft.to_batch and packing._prepare do with `usable = len(tokens) - 1`. Cutting
+        # at `seq_len` instead dropped the final completion token -- usually the EOS, the one token
+        # that says the answer ended -- out of the grading, and warned about a tail that fitted.
+        if len(full) > seq_len + 1:
             log.warning(
-                "rollout %d is %d tokens but seq_len is %d: the tail carries no gradient",
+                "rollout %d is %d tokens but seq_len is %d (room for %d): the tail carries no "
+                "gradient",
                 r,
                 len(full),
                 seq_len,
+                seq_len + 1,
             )
-            full = full[:seq_len]
+            full = full[: seq_len + 1]
 
         n_prompt = len(rollout.prompt_tokens)
 
@@ -408,6 +421,12 @@ def reference_logprobs(
     in place, and that adapter is the one the optimizer is training. Doing it mid-run would zero the
     policy.
 
+    **This scores the whole flattened batch in one decode**, so the engine's context has to be sized
+    for the *batch* and not just for one group: ``n_seq_max >= n_prompts * n_rollouts`` and
+    ``n_ctx >= n_prompts * n_rollouts * seq_len``. :func:`train_grpo` checks both up front when
+    ``kl_coef > 0``; calling this directly on an engine sized only to generate gets a bare
+    ``llama_decode`` failure from :func:`~learning_llamas.logprobs.hidden_states`.
+
     Args:
         libs: The loaded native libraries.
         engine: The rollout engine, for its inference context and its adapter handle.
@@ -508,7 +527,8 @@ def train_grpo(
 
     Raises:
         ValueError: If the engine and the policy are using different adapters, if the training
-            context is too small, or if ``kl_coef > 0`` with no ``lm_head``.
+            context is too small, if ``kl_coef > 0`` and the *rollout* context is too small to
+            score the whole batch in one pass, or if ``kl_coef > 0`` with no ``lm_head``.
     """
     if config.kl_coef > 0.0 and lm_head is None:
         raise ValueError(
@@ -557,6 +577,63 @@ def train_grpo(
             f"tokens, but the training context's n_ubatch is {n_ubatch}. Create it with "
             f"n_ctx >= n_ubatch >= {n_tokens}."
         )
+
+    # The same two numbers, for the ENGINE -- but only when the KL is on, because that is what makes
+    # the engine score a batch instead of merely generating one.
+    #
+    # `reference_logprobs` decodes the WHOLE flattened batch on the inference context: every rollout
+    # as its own sequence, seq_ids 0..n_sequences-1, all n_tokens of it in one llama_decode. But
+    # generation only ever needs room for a single group at a time, so an engine sized exactly as
+    # RolloutEngine documents (n_seq_max >= n_rollouts) is big enough to sample from and too small
+    # to score with. llama.cpp rejects a seq_id >= n_seq_max in llama_batch_allocr::init
+    # (llama-batch.cpp) by returning false, which surfaces here as a bare "llama_decode failed with
+    # status -1" from the middle of iteration 1 -- after the rollouts, with nothing naming the knob.
+    if config.kl_coef > 0.0:
+        engine_seq_max = int(libs.llama.llama_n_seq_max(engine.ctx))
+        if n_sequences > engine_seq_max:
+            raise ValueError(
+                f"{len(prompts)} prompts x {engine.n_rollouts} rollouts is {n_sequences} "
+                f"sequences, but the ROLLOUT context was created with n_seq_max="
+                f"{engine_seq_max}. Generation only needs one group at a time, but the KL's "
+                f"reference pass scores every rollout at once, each as its own sequence, so the "
+                f"rollout context needs n_seq_max >= {n_sequences} too. (Or set kl_coef=0.0, and "
+                f"no reference pass runs at all.)"
+            )
+
+        # ...and the reference pass is ONE decode of the whole thing, which puts it under two
+        # DIFFERENT limits. They are checked separately because they are different numbers, and the
+        # obvious single number -- llama_n_ctx() -- is the wrong one for the harsher of the two.
+        #
+        # The BATCH limit is n_batch, and overrunning it is not a status code to be caught: llama
+        # asserts `n_tokens_all <= cparams.n_batch` (llama-context.cpp) and GGML_ASSERT is
+        # GGML_ABORT, so the process dies. n_batch is NOT llama_n_ctx(): cparams.n_batch is
+        # min(cparams.n_ctx, params.n_batch) taken BEFORE cparams.n_ctx is padded up to a multiple
+        # of 256, so on a context whose requested n_ctx is not already a multiple of 256 --
+        # load_model(..., n_ctx=64) is the common one -- llama_n_ctx() reports up to 255 more than
+        # a decode will accept, and a guard written against it waves through the abort.
+        engine_n_batch = int(libs.llama.llama_n_batch(engine.ctx))
+        if n_tokens > engine_n_batch:
+            raise ValueError(
+                f"the KL's reference pass scores {n_sequences} rollouts x seq_len "
+                f"{config.seq_len} = {n_tokens} tokens in one decode on the rollout context, but "
+                f"that context's n_batch is {engine_n_batch}. Create it with n_batch >= "
+                f"{n_tokens} (learning_llamas.Model takes n_batch from n_ctx, so n_ctx >= "
+                f"{n_tokens}). llama.cpp does not report this one -- it aborts the process."
+            )
+
+        # The CACHE limit is per sequence, because every rollout is scored as its own. On a unified
+        # cache n_ctx_seq is the whole pool (and the n_batch check above already bounded the total
+        # against it, since n_batch <= the unpadded n_ctx <= the padded one); with kv_unified=False
+        # each stream instead gets n_ctx / n_seq_max of its own, and n_tokens <= n_ctx says nothing
+        # about whether one rollout fits in one stream.
+        engine_n_ctx_seq = int(libs.llama.llama_n_ctx_seq(engine.ctx))
+        if config.seq_len > engine_n_ctx_seq:
+            raise ValueError(
+                f"each of the {n_sequences} rollouts is scored as its own sequence of "
+                f"{config.seq_len} tokens, but the rollout context holds only {engine_n_ctx_seq} "
+                f"KV cells per sequence (n_ctx_seq). Create it with a larger n_ctx -- or with "
+                f"kv_unified=True, which gives every sequence the whole pool."
+            )
 
     result = GRPOResult()
 

@@ -11,9 +11,10 @@ Three layers, same shape as the dense gate:
 1. the oracle audits itself (finite difference of its own forward — including through the router,
    whose top-k makes this the one place an FD *can* legitimately blip: a perturbation that flips a
    selection lands in the ones, not the millionths, and would be caught);
-2. one step, **every one of the 56 LoRA gradient tensors** — 2D attention pairs and 3D expert
-   stacks — at effective LoRA scale 2.0, so the MoE path gets scale coverage the dense gate only
-   got in S1-38;
+2. one step, **every one of the 28 LoRA gradient comparisons** — 14 targets (per layer:
+   attn_q/k/v/output plus the three ``*_exps`` stacks), each checked for its A and its B — so 2D
+   attention pairs and 3D expert stacks alike, at effective LoRA scale 2.0, which gets the MoE path
+   the scale coverage the dense gate only got in S1-38;
 3. a 24-step loss trajectory of the real ``train_sft`` on the MoE fixture, per step.
 """
 
@@ -45,8 +46,8 @@ EPOCHS = 4
 N_SAMPLES = 6
 
 # One step, per LoRA tensor, relative to the tensor's largest element.
-#   observed: 1.5e-05 worst over all 56 tensors (the dense gate observes 2.0e-06 over 28; the MoE
-#   forward is deeper in reductions, and scale 2.0 doubles the deltas).
+#   observed: 1.5e-05 worst over all 28 comparisons (the dense gate observes 2.0e-06 over its own
+#   28; the MoE forward is deeper in reductions, and scale 2.0 doubles the deltas).
 GRAD_TOL = 1e-3
 
 # The 24-step curve.  observed: 2.7e-06 worst per step.

@@ -98,8 +98,16 @@ class Batch:
 
     @property
     def n_valid(self) -> int:
-        """How many positions actually carry loss."""
-        return sum(1 for w in self.weights if w > 0.0)
+        """How many positions actually carry loss.
+
+        Nonzero, not positive. DPO weights the rejected completion's tokens **-1** (see
+        :func:`~learning_llamas.train.dpo.to_batch`) — those positions carry as much loss and as
+        much gradient as the chosen side's, they just carry it the other way. Counting ``w > 0``
+        reported half of a DPO batch, which made ``tokens_per_second`` and
+        ``valid_token_fraction`` read low by exactly the rejected completion's length. 0 still
+        means masked, which is the only distinction anything downstream draws.
+        """
+        return sum(1 for w in self.weights if w != 0.0)
 
 
 @dataclass
@@ -262,14 +270,20 @@ class Trainer:
         self._state = _State()
         self._closed = False
 
-        # The gate, and it runs BEFORE the training optimizer state exists -- deliberately. The walk
-        # needs flagged trainable tensors to seed from, so it stands up throwaway optimizer state of
-        # its own and tears it down (preflight_adapter); it must not borrow the training context,
-        # because opt_step_custom sizes an optimizer context from the first graph it sees and the
-        # preflight's forward-only graph is not the training graph -- sharing it aborts the first
-        # real backward. Gating first also leaves the training context below free to see the
-        # training graph first, as ggml-opt requires. A blocker here is the whole reason S1-11 built
-        # the preflight; S1-42 is what finally calls it. preflight=False is the escape hatch.
+        # The gate, and it runs BEFORE the training optimizer state exists -- deliberately. A
+        # blocked adapter is the whole reason S1-11 built the preflight, and the point of gating is
+        # to say so before opt_init_lora allocates moments for a run that cannot take a step.
+        #
+        # That ordering is why this calls preflight_adapter and not preflight_context: the walk is
+        # seeded from *flagged* trainable tensors, and at this point in __init__ there are none --
+        # opt_init_lora is what flags them, twenty lines down. preflight_adapter stands up throwaway
+        # optimizer state of its own, walks, and tears it down in a finally.
+        #
+        # Sharing the training context is no longer the hazard it was: ll_preflight builds its walk
+        # on its own GGML_OPT_BUILD_TYPE_FORWARD ggml-opt context, so init -> preflight -> train is
+        # a safe order now (the reasoning, and the two failures it used to cause, are written out at
+        # csrc/farm_train.cpp:1788). This gate is about not needing optimizer state, not about
+        # protecting it. S1-42 is what finally calls it. preflight=False is the escape hatch.
         if config.preflight:
             report = preflight_adapter(libs, model.ctx, model.model, [model.adapter])
             if not report.trainable:

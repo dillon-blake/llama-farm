@@ -6,7 +6,8 @@ what the tests need is a public API that is missing something.
 
 Fixture models are generated on first use and cached under ``tests/.fixtures/`` (gitignored).
 The cache is keyed by a content hash of the generator, so editing ``gen_tiny_llama.py`` cannot
-leave a stale model behind.
+leave a stale model behind — including behind the MoE and Mamba fixtures, which are built out of
+its chat template and vocab loader and therefore hash it too (see :mod:`tests.fixtures`).
 """
 
 from __future__ import annotations

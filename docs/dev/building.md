@@ -47,7 +47,9 @@ prevent.
 pytest tests/ -m "not slow"
 ```
 
-52 tests should pass in about a second. If `learning_llamas/lib/` does not exist, the native
+As of 2026-07-22 that lane collects 428 tests (6 more are `@slow` and deselected) and takes about
+70 s on a 4-core N100 — the suite trains real tiny models, so it is not instant. The first run is
+slower still: it generates the GGUF fixtures. If `learning_llamas/lib/` does not exist, the native
 build did not run — re-run the editable install.
 
 ### On a memory-constrained machine

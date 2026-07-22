@@ -14,8 +14,9 @@ Deliberately import-free, so CI can read it without building the package:
 **A green ``grad -o <op>`` is not evidence that the op has a backward.** MODE_GRAD only checks a
 gradient if the test class calls ``ggml_set_param``; otherwise it prints ``OK`` having compared
 nothing at all. Every op below was confirmed to produce *real* cases —
-``tests/test_backend_ops_grad.py::test_every_op_reports_real_cases`` enforces that, so an op cannot
-be added here on the strength of a vacuous pass.
+``tests/test_backend_ops_grad.py::test_the_gradient_of_a_project_op_is_checked_and_correct``
+enforces that (and ``::test_the_vacuity_guard_can_actually_detect_vacuity`` mutation-checks the
+enforcement), so an op cannot be added here on the strength of a vacuous pass.
 
 What is deliberately **not** here, and why, is in ``docs/dev/backward-coverage.md``.
 """
@@ -47,8 +48,8 @@ PROJECT_ADDED_OPS: tuple[str, ...] = (
     # NOT "GLU". `-o` filters on ggml_op_desc(out), and for a GGML_OP_GLU node that returns the
     # *variant* name, not "GLU" (ggml.c:1398-1400 — same as GGML_OP_UNARY returning "SILU"). So
     # `grad -o GLU` matches ZERO cases: it runs nothing, prints "Backend CPU: OK", and exits 0.
-    # It sat in this list checking nothing until test_every_op_reports_real_cases was fixed to
-    # parse the GRADIENT verdict rather than the support line.
+    # It sat in this list checking nothing until the grad-check wrapper was fixed to parse the
+    # GRADIENT verdict rather than the support line.
     "SWIGLU",
     "GEGLU",
     "REGLU",

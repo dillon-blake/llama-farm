@@ -23,8 +23,12 @@ Keeping them apart matters: the artefact you ship and the artefact you resume fr
 lifetimes, and merging them would mean either shipping optimizer moments to users or making the
 adapter unloadable.
 
-Resume is bit-exact. A run stopped at step N and resumed produces the same weights as one that never
-stopped — not approximately, exactly — and there is a test that says so.
+Resume is bit-exact — but only if the weights and the moments both go back, and only in the right
+ORDER. A run stopped at step N and resumed produces the same weights as one that never stopped, not
+approximately but exactly, provided the step-N weights are written back *after* the priming step
+that brings the moments into existence. That last part is not a file, and today it needs the debug
+shim; :func:`restore_checkpoint` spells out why, and what the two-file recipe alone gets you
+instead. Putting back the sidecar alone is not a resume either; there is a test for both halves.
 """
 
 from __future__ import annotations
@@ -216,10 +220,34 @@ def restore_checkpoint(
 ) -> int:
     """Put a sidecar's optimizer state back into a live training context.
 
+    This restores the moments and AdamW's iteration counter, and **nothing else**. The adapter's
+    weights are the other half of a checkpoint and they are not touched here — they travel in the
+    adapter GGUF (:func:`~learning_llamas.adapter.save_adapter`).
+
     The context must already have taken **one training step**, because that is when ggml-opt builds
-    the optimizer graph and the moments come into existence. So a resume is: one step, restore, then
-    carry on — and that first step's own contribution is overwritten by the restore, which is what
-    makes the resume exact.
+    the optimizer graph and the moments come into existence. That priming step is taken with zeroed
+    moments and a bias correction at iteration 1, so it *moves the weights*, and nothing in this
+    module moves them back: the restore below overwrites ``m``, ``v`` and ``iter``, not the
+    parameters. So a resume is:
+
+    1. Start from the step-N weights: attach the adapter GGUF that was saved alongside this
+       sidecar.
+    2. Take the priming step, so that the optimizer graph — and with it the moments — exists. It
+       moves the weights off step N.
+    3. Write the step-N weights back over what the priming step did, then call this.
+
+    Necessary and sufficient are not the same thing here, and the difference is worth stating.
+    Parts 1 and 2 are all the public names can do, and that resume is **not** exact: it diverges by
+    exactly the priming step's AdamW update, which at a realistic learning rate is the largest
+    single update the run will ever take (``tests/test_checkpoint.py`` measures 5.5e-2 relative).
+    Part 3 is what makes it exact — and because it overwrites every parameter, it also makes part 1
+    redundant. That is why the bit-exactness test starts from a *zero-init* adapter, never attaches
+    the step-N one, and still matches the uninterrupted run element for element.
+
+    Part 3 has no public API today: the test does it through the debug shim
+    (``ll_debug_set_tensor``). Until it has one, "attach the adapter, step, restore, carry on" — the
+    only recipe expressible in public names — is a resume that diverges on its first step, which is
+    why the protocol is written out here rather than left as "one step, restore, carry on".
 
     Args:
         libs: The loaded native libraries.
