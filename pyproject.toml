@@ -49,6 +49,16 @@ build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/learning_llamas"]
 install.components = ["learningllamas"]
 
+# The sdist has to be buildable in a tree with no .git, and that is not an exotic case: bare
+# `python -m build` builds the sdist and then the wheel FROM it, and `pip install <tarball>` does
+# the same. csrc/CMakeLists.txt reads the vendored llama.cpp commit with `git rev-parse` and falls
+# back to the value recorded in the generated _version_lock.py; running CMake at sdist time is what
+# puts that recording in the tarball. The file is gitignored (it is generated), and scikit-build-core
+# honours gitignore when it packs, so it needs the explicit include or it silently would not ship --
+# the same trap that shipped a wheel without it (S1-33).
+sdist.cmake = true
+sdist.include = ["src/learning_llamas/_ffi/_version_lock.py"]
+
 [tool.scikit-build.metadata.version]
 # Single source of truth for the version: src/learning_llamas/__init__.py.
 provider = "scikit_build_core.metadata.regex"

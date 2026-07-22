@@ -22,8 +22,8 @@ both have to honour:
 
 F32 only, for the same reason as the Mamba-1 fixture: the conv weight's ``d_conv``-wide rows cannot
 be K-quantized. The dims are the smallest that keep every axis non-degenerate -- ``head_dim`` and
-``n_group`` both > 1, and ``n_head / n_group == 2`` so a group's ``dB``/``dC`` really does fold two
-heads.
+``n_group`` both > 1, and ``n_head / n_group == 4`` (8 heads over 2 groups) so a group's ``dB``/
+``dC`` really does fold several heads rather than passing one straight through.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from importlib.metadata import version
 import gguf
 import numpy as np
 
+from . import llama_source
 from .gen_tiny_llama import (
     CHAT_TEMPLATE,
     _load_vocab,
@@ -99,6 +100,11 @@ class TinyMamba2HParams:
 
 
 HPARAMS = TinyMamba2HParams()
+
+# The weight-RNG seed, hoisted out of ``build``'s signature so :func:`cache_key` can hash it. A seed
+# that is not in the key is a seed that does not name the fixture: ask for a different one and a
+# warm cache hands back the default-seed model, because the directory it lives in is the same.
+SEED = 20260716
 
 
 def _model_tensors(hp: TinyMamba2HParams, seed: int) -> dict[str, np.ndarray]:
@@ -188,16 +194,21 @@ def _write(path: pathlib.Path, hp: TinyMamba2HParams, variant: str, seed: int) -
     writer.close()
 
 
-def cache_key(hp: TinyMamba2HParams = HPARAMS) -> str:
-    """A content hash of this generator, its hyperparameters, and gguf-py's version.
+def cache_key(hp: TinyMamba2HParams = HPARAMS, seed: int = SEED) -> str:
+    """A content hash of everything the fixture bytes depend on.
 
-    Newlines normalized, matching :func:`tests.fixtures.gen_tiny_mamba.cache_key`.
+    This generator, **the llama generator it borrows ``CHAT_TEMPLATE`` and ``_load_vocab`` from**,
+    the hyperparameters, the weight seed and gguf-py's version -- matching
+    :func:`tests.fixtures.gen_tiny_mamba.cache_key`, including the newline normalization that keeps
+    a CRLF checkout from producing a different key for the same model.
     """
     source = pathlib.Path(__file__).read_text(encoding="utf-8").replace("\r\n", "\n")
     payload = b"".join(
         [
             source.encode(),
+            llama_source().encode(),
             repr(hp).encode(),
+            repr(seed).encode(),
             version("gguf").encode(),
         ]
     )
@@ -208,7 +219,7 @@ def build(
     variant: str,
     cache_dir: pathlib.Path,
     hp: TinyMamba2HParams = HPARAMS,
-    seed: int = 20260716,
+    seed: int = SEED,
 ) -> tuple[pathlib.Path, bool]:
     """Return the path to a Mamba-2 fixture, generating it only if not already cached.
 
@@ -226,7 +237,7 @@ def build(
 
     hp.validate()
 
-    out_dir = cache_dir / cache_key(hp)
+    out_dir = cache_dir / cache_key(hp, seed)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"tiny-mamba2-{variant}.gguf"
 

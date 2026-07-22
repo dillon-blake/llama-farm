@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from learning_llamas import _ffi
+from learning_llamas.data import Tokenizer
 from learning_llamas.logprobs import load_lm_head, sequence_logprobs
 from learning_llamas.train.rollout import (
     Rollout,
@@ -372,6 +373,82 @@ def test_the_counters_are_populated(engine) -> None:
     # One decode for the prompt, then one per token step -- for the WHOLE group, not per sequence.
     # If this were per-sequence the count would be G times larger, and the batching would be a lie.
     assert stats.decode_calls <= len(PROMPTS) * MAX_NEW
+
+
+def test_the_batch_counters_are_this_iterations_alone(engine) -> None:
+    """A GRPO run reads these per iteration, so they must mean "this iteration".
+
+    ``generate`` used to hand the batch ``self.stats`` — the engine-lifetime accumulator — by
+    reference. Two things went wrong and neither was visible in a single-iteration test: iteration 5
+    reported the sum of iterations 1 through 5 (a tokens/second that averages the whole run and
+    hides exactly the slowdown you would want to see), and every batch already returned mutated
+    underneath the caller the moment the next one was generated.
+
+    ``kv_reuse_hits`` is the crisp probe: it is exactly ``n_prompts * (G - 1)`` per call, with no
+    dependence on sampling, so a cumulative counter reads double on the second call.
+    """
+    eng, _ = engine
+    per_call = len(PROMPTS) * (G - 1)
+
+    first = eng.generate(PROMPTS, length_reward(10))
+    assert first.stats.kv_reuse_hits == per_call
+
+    second = eng.generate(PROMPTS, length_reward(10))
+    assert second.stats.kv_reuse_hits == per_call, (
+        "the second batch reported the run's total, not its own iteration"
+    )
+
+    # The first batch is a snapshot: generating again must not have rewritten it.
+    assert first.stats.kv_reuse_hits == per_call
+    assert first.stats is not eng.stats
+    assert second.stats is not first.stats
+
+    # ...and nothing is lost: the engine still accumulates, and the parts sum to the whole.
+    assert eng.stats.kv_reuse_hits == 2 * per_call
+    assert eng.stats.generated_tokens == (
+        first.stats.generated_tokens + second.stats.generated_tokens
+    )
+    assert eng.stats.decode_calls == first.stats.decode_calls + second.stats.decode_calls
+    assert eng.stats.wall_seconds == pytest.approx(
+        first.stats.wall_seconds + second.stats.wall_seconds
+    )
+
+
+def test_the_engine_tokenizes_special_tokens_like_the_rest_of_the_project(
+    tiny_q4_k, load_model, libs
+) -> None:
+    """One tokenizer convention, or the prompt GRPO trains on is not the prompt anyone serves.
+
+    The engine used to pass ``parse_special=False`` while the data layer
+    (:meth:`learning_llamas.data.Tokenizer.encode`) defaults to ``True``. GRPO is internally
+    consistent either way — ``logp_old``, ``logp_new`` and the reference all read whatever ids came
+    out of here — so nothing in a GRPO run can notice. What notices is everything else: a rendered
+    chat template's ``</s>`` or ``<|im_start|>`` becomes a handful of ordinary character tokens
+    during training and one control token at serving time, and the only symptom is a model that is
+    quietly worse.
+    """
+    model = load_model(tiny_q4_k, n_ctx=N_CTX, n_seq_max=G)
+    eng = RolloutEngine(libs, model.ctx, model.model, n_rollouts=G)
+    tokenizer = Tokenizer(libs, model.model)
+
+    # The vocab's own spelling of EOS, so this cannot degenerate into byte-fallback on a token the
+    # 512-entry fixture vocab does not have (the failure mode the data-layer audit found).
+    text = f"{tokenizer.piece(tokenizer.eos)} and on we go"
+
+    assert tokenizer.eos >= 0
+    assert not tokenizer.add_eos, (
+        "this model appends EOS itself, so finding the EOS id below would prove nothing"
+    )
+
+    # The discriminating half: unparsed, that prefix is several ordinary character tokens and the
+    # EOS id never appears at all.
+    assert tokenizer.eos in eng.tokenize(text), (
+        f"the engine did not recognize special-token text: {eng.tokenize(text)}"
+    )
+
+    # The engine adds BOS itself (a raw prompt, not a rendered template), which is the one
+    # deliberate difference from the data layer's default.
+    assert eng.tokenize(text) == tokenizer.encode(text, add_special=True, parse_special=True)
 
 
 def test_a_group_of_one_is_refused(tiny_q4_k, load_model, libs) -> None:

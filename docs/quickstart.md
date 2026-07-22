@@ -183,6 +183,12 @@ produced it. To add a KL penalty against the *untuned* model, set `kl_coef` and 
 a second set of weights. Without the `lm_head` the call is refused rather than silently running
 with the KL term contributing nothing.
 
+**A KL penalty also grows the sampler context.** The reference pass scores every rollout in one
+decode on the *rollout* context, so with `kl_coef > 0` the sampler above is too small twice over,
+and `train_grpo` says so before the first round: it needs `n_seq_max >= N_SEQ` (16, not `G`) and
+`n_batch >= N_TOK` — and `Model` takes `n_batch` from `n_ctx`, so that means
+`Model(BASE, n_ctx=N_TOK, n_seq_max=N_SEQ)`. Generation alone needs neither; only the KL does.
+
 The details, and the several ways a GRPO implementation can look like it is training when it is
 not, are in [`dev/grpo.md`](dev/grpo.md).
 

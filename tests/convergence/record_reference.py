@@ -41,6 +41,20 @@ from . import config, hf_twin
 
 
 def main() -> int:
+    # `--wd` records the SECOND curve (weight decay on) into reference_curve_wd.json and leaves the
+    # recorded reference_curve.json untouched; no argument records the recorded curve as before.
+    if "--wd" in sys.argv[1:]:
+        return _record(config.WD_SPEC, config.WD_CURVE_PATH, is_recorded=False)
+    return _record(config.RECORDED, config.CURVE_PATH, is_recorded=True)
+
+
+def _record(spec: config.RunSpec, curve_path: pathlib.Path, *, is_recorded: bool) -> int:
+    """Record one PEFT curve for `spec` into `curve_path`.
+
+    `is_recorded` selects the identity function: the recorded run reproduces the committed
+    reference_curve.json hash (`config.identity`), a variant carries a spec-derived one
+    (`config.variant_identity`).
+    """
     import torch
     from peft import LoraConfig, get_peft_model
 
@@ -72,8 +86,8 @@ def main() -> int:
     peft_model = get_peft_model(
         model,
         LoraConfig(
-            r=config.RANK,
-            lora_alpha=config.ALPHA,
+            r=spec.rank,
+            lora_alpha=spec.alpha,
             lora_dropout=config.LORA_DROPOUT,
             target_modules=config.HF_TARGET_MODULES,
             bias="none",
@@ -81,7 +95,7 @@ def main() -> int:
         ),
     )
 
-    a_init = _adapter_a(gguf_path)
+    a_init = _adapter_a(gguf_path, spec)
     n_set = 0
     for name, param in peft_model.named_parameters():
         if ".lora_A." in name:
@@ -98,10 +112,10 @@ def main() -> int:
     # ---------------------------------------------------------------------------------------
     opt = torch.optim.AdamW(
         [p for p in peft_model.parameters() if p.requires_grad],
-        lr=config.LR,
-        betas=config.BETAS,
-        eps=config.EPS,
-        weight_decay=config.WEIGHT_DECAY,
+        lr=spec.lr,
+        betas=spec.betas,
+        eps=spec.eps,
+        weight_decay=spec.weight_decay,
     )
 
     tok_t = torch.tensor(tokens, dtype=torch.long)
@@ -109,7 +123,7 @@ def main() -> int:
     w_t = torch.tensor(weights, dtype=torch.float32)
 
     curve: list[float] = []
-    for _epoch in range(config.EPOCHS):
+    for _epoch in range(spec.epochs):
         for i in range(config.N_SAMPLES):
             logits = peft_model(tok_t[i : i + 1]).logits[0]
 
@@ -127,12 +141,15 @@ def main() -> int:
 
     print(f"recorded {len(curve)} steps: {curve[0]:.6f} -> {curve[-1]:.6f}")
 
+    ident = (
+        config.identity(hp.n_vocab) if is_recorded else config.variant_identity(spec, hp.n_vocab)
+    )
     payload = {
         "_comment": (
             "Recorded once by tests/convergence/record_reference.py. Do not hand-edit. "
             "See tests/convergence/README.md to regenerate."
         ),
-        "identity": config.identity(hp.n_vocab),
+        "identity": ident,
         "twin_max_logit_deviation": deviation,
         "versions": {
             "torch": version("torch"),
@@ -141,23 +158,23 @@ def main() -> int:
             "numpy": version("numpy"),
         },
         "config": {
-            "rank": config.RANK,
-            "alpha": config.ALPHA,
-            "lr": config.LR,
-            "betas": list(config.BETAS),
-            "eps": config.EPS,
-            "weight_decay": config.WEIGHT_DECAY,
+            "rank": spec.rank,
+            "alpha": spec.alpha,
+            "lr": spec.lr,
+            "betas": list(spec.betas),
+            "eps": spec.eps,
+            "weight_decay": spec.weight_decay,
             "lora_dropout": config.LORA_DROPOUT,
             "seq_len": config.SEQ_LEN,
             "n_samples": config.N_SAMPLES,
-            "epochs": config.EPOCHS,
+            "epochs": spec.epochs,
             "shuffle": config.SHUFFLE,
             "targets": config.HF_TARGET_MODULES,
         },
         "curve": curve,
     }
-    config.CURVE_PATH.write_text(json.dumps(payload, indent=2) + "\n")
-    print(f"wrote {config.CURVE_PATH}")
+    curve_path.write_text(json.dumps(payload, indent=2) + "\n")
+    print(f"wrote {curve_path}")
     return 0
 
 
@@ -173,10 +190,11 @@ def _gguf_name(peft_param: str) -> str:
     return f"blk.{layer}.{gguf_module}.weight"
 
 
-def _adapter_a(gguf_path: pathlib.Path) -> dict[str, np.ndarray]:
+def _adapter_a(gguf_path: pathlib.Path, spec: config.RunSpec) -> dict[str, np.ndarray]:
     """The fixture adapter's A tensors, keyed by base tensor name.
 
-    Built with the same seed the gate uses, so both sides start from the identical A.
+    Built with the same rank/alpha/seed the gate uses for this spec, so both sides start from the
+    identical A.
     """
     import tempfile
 
@@ -186,9 +204,7 @@ def _adapter_a(gguf_path: pathlib.Path) -> dict[str, np.ndarray]:
 
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "a.gguf"
-        create_zero_adapter(
-            gguf_path, out, r=config.RANK, alpha=config.ALPHA, seed=config.ADAPTER_SEED
-        )
+        create_zero_adapter(gguf_path, out, r=spec.rank, alpha=spec.alpha, seed=spec.adapter_seed)
         reader = gguf_py.GGUFReader(str(out), "r")
         return {
             t.name[: -len(".lora_a")]: np.array(t.data)

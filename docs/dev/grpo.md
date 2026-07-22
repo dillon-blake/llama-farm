@@ -156,6 +156,17 @@ without touching the logprob.
 off** — never a second model, never a second set of weights (BLUEPRINT D6). It is scored on the
 **rollout** context, because that is the one without an optimizer holding its scheduler.
 
+**It scores the whole flattened batch in one decode**, which sizes the rollout context differently
+from generation. Generating only ever needs room for one group at a time, so an engine built exactly
+as `RolloutEngine` documents (`n_seq_max >= n_rollouts`) is big enough to sample from and too small
+to score with. With `kl_coef > 0`, `train_grpo` now checks the rollout context up front for three
+things and names the knob in each: `n_seq_max >= n_prompts * n_rollouts`, `n_batch >=
+n_prompts * n_rollouts * seq_len`, and `n_ctx_seq >= seq_len`. The middle one is the reason the
+check exists at all — llama.cpp asserts `n_tokens_all <= cparams.n_batch` and `GGML_ASSERT` aborts
+the process, so it is not an error anyone could have caught. Note also that `llama_n_ctx()` is *not*
+the batch limit: `cparams.n_batch` is taken as `min(cparams.n_ctx, params.n_batch)` **before**
+`n_ctx` is rounded up to a multiple of 256, so a context asked for 64 cells reports 256.
+
 `train_grpo(..., lm_head=load_lm_head(base_gguf))` is required when `kl_coef > 0`, and refused
 otherwise. The first version of this code accepted `kl_coef` and then never ran a reference pass at
 all — the KL term was multiplied by a zero weight and contributed exactly nothing. The run *looked*

@@ -575,3 +575,122 @@ def test_a_q8_0_merge_preserves_every_tensors_quant_type(tiny_q8_0, tmp_path, li
     q8_touched = [n for n in touched if base_types[n] == q8]
     assert q8_touched, "no Q8_0 tensor was folded; this test would prove nothing about Q8_0"
     assert all(merged_types[n] == q8 for n in q8_touched)
+
+
+# ---------------------------------------------------------------------------
+# The two silent partial-merge failures (S1-50).
+# ---------------------------------------------------------------------------
+
+
+def test_an_adapter_pair_matching_no_base_tensor_is_refused(
+    tiny_f32, tmp_path, libs: _ffi.Libraries
+) -> None:
+    """A partial merge has no symptom, so it must not be a merge at all.
+
+    ``merge`` walks the BASE's tensors and looks each one up in the adapter, so a pair naming a
+    tensor the base does not have is simply never consulted -- and the "matched no tensor" guard
+    fires only when NOTHING matched. An adapter trained on a same-architecture sibling with more
+    layers, or one targeting ``output.weight`` merged onto a tied-embedding base, therefore used to
+    produce a quietly incomplete model: it loads, it runs, and part of the training is just gone.
+    """
+    zero = tmp_path / "zero.gguf"
+    create_zero_adapter(tiny_f32, zero, r=RANK, alpha=ALPHA, preset=("attn_q",), seed=2)
+
+    arch, alpha, ab = _read_ab(zero)
+    assert ab, "the preset matched nothing"
+
+    # Same shapes, a block index this fixture does not have -- exactly what an adapter from a
+    # deeper sibling of this architecture looks like.
+    stray = "blk.99.attn_q.weight"
+    a, b = ab["blk.0.attn_q.weight"]
+    pairs = [(name, *pair) for name, pair in ab.items()] + [(stray, a, b)]
+
+    mixed = tmp_path / "mixed.gguf"
+    _write_adapter(mixed, arch, alpha, pairs)
+
+    out = tmp_path / "out.gguf"
+    with pytest.raises(ValueError, match=stray):
+        merge(tiny_f32, mixed, out, libs, scale=1.0)
+
+    # And it refuses before writing anything: a half-merged file left on disk is the failure mode
+    # this exists to prevent, not a smaller version of it.
+    assert not out.exists()
+
+
+# gguf-py pads tensor data to 32 bytes unless add_custom_alignment moves it. 4096 is far enough
+# above that for the mismatch to be unmissable: the fixture's 1-D norms are 256 floats == 1024
+# bytes, and pad(1024, 32) == 1024 while pad(1024, 4096) == 4096. A closer value (64, say) could
+# coincide with the fixture's dimensions on every tensor and check nothing.
+CUSTOM_ALIGNMENT = 4096
+
+
+def _realign(src, dst, alignment: int) -> None:
+    """Copy a GGUF, declaring **and** padding to ``alignment``.
+
+    ``add_custom_alignment`` is the only thing that moves ``GGUFWriter.data_alignment``, so this is
+    the one way to produce a self-consistent base with a non-default alignment -- which is what a
+    lot of real converters emit and what the merge has to survive.
+    """
+    import gguf
+
+    from learning_llamas.export import _copy_metadata, _write
+
+    reader = gguf.GGUFReader(str(src), "r")
+    arch = str(reader.get_field(gguf.Keys.General.ARCHITECTURE).contents())
+
+    writer = gguf.GGUFWriter(str(dst), arch=arch)
+    _copy_metadata(reader, writer)
+    writer.add_custom_alignment(alignment)
+    for tensor in reader.tensors:
+        _write(writer, tensor.name, np.asarray(tensor.data), tensor.tensor_type)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+
+def test_a_custom_alignment_is_honored_not_merely_copied(
+    tiny_f32, tmp_path, load_model, libs: _ffi.Libraries
+) -> None:
+    """``general.alignment`` is a promise about the file's layout, not a value about the model.
+
+    Copying it as a plain uint32 leaves ``GGUFWriter.data_alignment`` at 32 while the file declares
+    something else, and llama.cpp recomputes every expected tensor offset from the DECLARED
+    alignment and refuses the whole model on the first mismatch (ggml/src/gguf.cpp:762-780). So a
+    merged model built from any base written with a larger alignment would error at load -- after
+    the merge reported success.
+    """
+    import gguf
+
+    aligned_base = tmp_path / "aligned.gguf"
+    _realign(tiny_f32, aligned_base, CUSTOM_ALIGNMENT)
+
+    adapter_path = tmp_path / "a.gguf"
+    create_zero_adapter(aligned_base, adapter_path, r=RANK, alpha=ALPHA, seed=1)
+
+    merged_path = tmp_path / "merged.gguf"
+    merge(aligned_base, adapter_path, merged_path, libs, scale=1.0)
+
+    reader = gguf.GGUFReader(str(merged_path), "r")
+    assert int(reader.get_field(gguf.Keys.General.ALIGNMENT).contents()) == CUSTOM_ALIGNMENT
+
+    # gguf.cpp's own arithmetic, written out here so this does not depend on gguf-py agreeing with
+    # itself: each tensor's offset is the running sum of its predecessors' sizes, padded to the
+    # declared alignment.
+    ragged = 0
+    expected = 0
+    for tensor in reader.tensors:
+        actual = int(tensor.data_offset) - int(reader.data_offset)
+        assert actual == expected, (
+            f"{tensor.name} sits at data offset {actual}, but a reader honoring "
+            f"general.alignment={CUSTOM_ALIGNMENT} expects {expected}"
+        )
+        ragged += int(tensor.n_bytes) % CUSTOM_ALIGNMENT != 0
+        expected += -(-int(tensor.n_bytes) // CUSTOM_ALIGNMENT) * CUSTOM_ALIGNMENT
+
+    # If every tensor were already a multiple of the alignment, padding to 32 and padding to 4096
+    # would agree everywhere and the loop above would pass with the bug still in place.
+    assert ragged, f"no tensor's size is ragged modulo {CUSTOM_ALIGNMENT}; this check is vacuous"
+
+    # ...and the gate that actually matters: llama.cpp loads it.
+    load_model(merged_path, n_ctx=N_CTX)

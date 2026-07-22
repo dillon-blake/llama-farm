@@ -51,8 +51,16 @@ on:
         default: "macos-15"
 
 concurrency:
-  group: ci-metal-${{ github.ref }}
-  cancel-in-progress: true
+  # Keyed on the EVENT as well as the ref. A schedule run and a push to main both resolve to
+  # refs/heads/main, so a single group let a push landing inside the 04:41 window cancel the
+  # nightly -- and the nightly is the only place the full sweep, the convergence gate and the
+  # fallback report run at all (`e2e` is gated on schedule/dispatch) -- or let the nightly cancel
+  # a push run a required check is waiting on.
+  group: ci-metal-${{ github.event_name }}-${{ github.ref }}
+  # Supersede only where a newer run genuinely replaces an older one: another push to the same
+  # branch or PR. A nightly and a manual dispatch are each the only run of their tier, so
+  # cancelling one loses the coverage rather than saving a runner.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
   # GGML_NATIVE=OFF for the same reason as ci-cpu: this lane is an ORACLE, and an oracle compiled
@@ -223,6 +231,9 @@ jobs:
       - name: test-backend-ops — grad (Metal, MODE_GRAD)
         env:
           TEST_BACKEND_OPS: ${{ github.workspace }}/build/vendor-tests/bin/test-backend-ops
+          # Deterministic MODE_GRAD draws (S1-50): the SSM scan's FD is the worst-conditioned
+          # in the suite, and an unseeded run makes a marginal draw unreproducible.
+          GGML_TEST_SEED: "20260716"
         run: pytest tests/test_backend_ops_grad.py --device metal -v
 
   e2e:

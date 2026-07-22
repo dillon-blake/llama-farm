@@ -99,9 +99,11 @@ bool op_has_backward(ggml_op op) {
     // both the causal conv (SSM_CONV -> ssm_conv_back) and the selective scan (SSM_SCAN ->
     // ssm_scan_back), so a Mamba adapter's gradient path no longer aborts here. These belonged on the
     // BLOCKED side until the fork landed those VJPs, and nothing flipped them when it did -- the exact
-    // silent-drift the freshness guard now forbids. The scan's backward is Mamba-1 / n_group=1 today
-    // (SSM_SCAN's own case asserts on the A-matrix and ids gradients), but that is a numerical scope
-    // question, not an abort: the preflight only predicts whether the backward pass COMPLETES.
+    // silent-drift the freshness guard now forbids. B-10 then lifted the scan's n_group == 1 refusal
+    // -- SSM_SCAN's backward differentiates Mamba-2 / Falcon-H1 group routing too, given only that
+    // n_head divides evenly among the groups -- so the remaining scope limit is the A-matrix and ids
+    // gradients, which that case still asserts on. That is a numerical scope question rather than an
+    // abort risk either way: the preflight only predicts whether the backward pass COMPLETES.
     case GGML_OP_SSM_CONV:
     case GGML_OP_SSM_SCAN:
         return true;

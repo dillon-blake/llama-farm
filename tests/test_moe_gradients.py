@@ -11,9 +11,10 @@ Three layers, same shape as the dense gate:
 1. the oracle audits itself (finite difference of its own forward — including through the router,
    whose top-k makes this the one place an FD *can* legitimately blip: a perturbation that flips a
    selection lands in the ones, not the millionths, and would be caught);
-2. one step, **every one of the 56 LoRA gradient tensors** — 2D attention pairs and 3D expert
-   stacks — at effective LoRA scale 2.0, so the MoE path gets scale coverage the dense gate only
-   got in S1-38;
+2. one step, **every one of the 28 LoRA gradient comparisons** — 14 targets (per layer:
+   attn_q/k/v/output plus the three ``*_exps`` stacks), each checked for its A and its B — so 2D
+   attention pairs and 3D expert stacks alike, at effective LoRA scale 2.0, which gets the MoE path
+   the scale coverage the dense gate only got in S1-38;
 3. a 24-step loss trajectory of the real ``train_sft`` on the MoE fixture, per step.
 """
 
@@ -45,8 +46,8 @@ EPOCHS = 4
 N_SAMPLES = 6
 
 # One step, per LoRA tensor, relative to the tensor's largest element.
-#   observed: 1.5e-05 worst over all 56 tensors (the dense gate observes 2.0e-06 over 28; the MoE
-#   forward is deeper in reductions, and scale 2.0 doubles the deltas).
+#   observed: 1.5e-05 worst over all 28 comparisons (the dense gate observes 2.0e-06 over its own
+#   28; the MoE forward is deeper in reductions, and scale 2.0 doubles the deltas).
 GRAD_TOL = 1e-3
 
 # The 24-step curve.  observed: 2.7e-06 worst per step.
@@ -272,4 +273,49 @@ def test_the_moe_loss_curve_matches_the_reference(tiny_moe_f32, tmp_path, libs) 
     assert diff.max() < CURVE_TOL, (
         f"the MoE loss curve left the float64 reference at step {worst}: "
         f"{got[worst]:.8f} vs {want[worst]:.8f} (worst |diff| {diff.max():.2e})"
+    )
+
+
+def _moe_curve(libs, fixture, adapter, n_threads: int) -> list[float]:
+    """A MoE training curve at a fixed thread count, for the determinism check below."""
+    tokens, targets, weights = _dataset()
+    create_zero_adapter(fixture, adapter, r=RANK, alpha=ALPHA, seed=ADAPTER_SEED)
+    model = Model(
+        fixture, libs=libs, n_ctx=N_CTX, n_ubatch=SEQ_LEN, training=True, n_threads=n_threads
+    )
+    try:
+        model.attach_adapter(adapter, scale=1.0)
+        samples = [
+            MaskedSample(
+                tokens=[int(t) for t in tokens[i]] + [int(targets[i][-1])],
+                weights=[0.0] + [float(w) for w in weights[i]],
+            )
+            for i in range(N_SAMPLES)
+        ]
+        result = train_sft(
+            libs,
+            model,
+            samples,
+            SFTConfig(lr=LR, seq_len=SEQ_LEN, epochs=EPOCHS, shuffle=False, schedule="constant"),
+        )
+        return [s.loss for s in result.steps]
+    finally:
+        model.close()
+
+
+def test_the_moe_curve_is_bit_identical_across_thread_counts(tiny_moe_f32, tmp_path, libs) -> None:
+    """Same host, same inputs, 1 vs 2 vs 4 threads: exactly equal (S1-50, extending S1-38).
+
+    ``test_determinism.py`` pins this for the dense llama fixture; nothing pinned it for the MoE
+    backward, whose expert-gather gradient rides on ``OUT_PROD_ID`` / ``OUT_PROD_ID_GRP`` -- a
+    reduction over the tokens routed to each expert. If that sum's result came to depend on how the
+    tokens were split across threads (a store-order or accumulation-order bug the tolerance-based
+    gates would never see), this goes red. The Metal/CUDA/Vulkan lanes inherit the same claim on
+    their own hosts, which is why the assertion is bitwise, not banded.
+    """
+    curves = {n: _moe_curve(libs, tiny_moe_f32, tmp_path / f"moe-{n}.gguf", n) for n in (1, 2, 4)}
+    assert curves[1] == curves[2] == curves[4], (
+        "the MoE loss curve depends on the thread count: an expert-gather reduction "
+        "(OUT_PROD_ID/OUT_PROD_ID_GRP) now depends on how the tokens were split across threads, "
+        "which breaks ADR-0002's same-host determinism claim for the MoE backward."
     )

@@ -110,7 +110,9 @@ def to_batch(sample: MaskedSample, seq_len: int, pad_id: int = 0) -> Batch:
     targets = sample.tokens[1 : usable + 1] + [pad_id] * pad
     weights = sample.weights[1 : usable + 1] + [0.0] * pad
 
-    return Batch(tokens=tokens, targets=targets, weights=weights)
+    # One sample per batch, padded to seq_len -- the throughput counters need both to report a pad
+    # fraction and a samples-per-pack of 1 (S1-07).
+    return Batch(tokens=tokens, targets=targets, weights=weights, pad_count=pad, n_samples=1)
 
 
 def collate(samples: Sequence[MaskedSample], seq_len: int, pad_id: int = 0) -> list[Batch]:

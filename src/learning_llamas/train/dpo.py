@@ -41,6 +41,7 @@ from __future__ import annotations
 import ctypes
 import math
 import random
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -163,6 +164,8 @@ def to_batch(pair: Preference, seq_len: int, pad_id: int = 0) -> Batch:
         weights=weights,
         seq_ids=batch.seq_ids,
         positions=batch.positions,
+        pad_count=batch.pad_count,
+        n_samples=batch.n_samples,
     )
 
 
@@ -401,8 +404,24 @@ def train_dpo(
 
             for i in order:
                 lr = trainer.apply_schedule()
-                loss = trainer.dpo_step(batches[i], reference[i])
 
-                result.steps.append(trainer.record(loss=loss, lr=lr, n_valid=batches[i].n_valid))
+                # Timed like the SFT loop times its own step (Trainer.step): `record` defaults
+                # `seconds` to 0, and a 0 there makes StepMetrics.tokens_per_second return 0 for
+                # every step of every DPO run -- a throughput counter that reads as "no throughput".
+                started = time.perf_counter()
+                loss = trainer.dpo_step(batches[i], reference[i])
+                elapsed = time.perf_counter() - started
+
+                result.steps.append(
+                    trainer.record(
+                        loss=loss,
+                        lr=lr,
+                        n_valid=batches[i].n_valid,
+                        seconds=elapsed,
+                        n_tokens=len(batches[i].tokens),
+                        pad_tokens=batches[i].pad_count,
+                        n_samples=batches[i].n_samples,
+                    )
+                )
 
     return result

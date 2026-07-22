@@ -195,3 +195,24 @@ chunked-vs-naive equivalence above. GPU stages re-verify parity under the ADR-00
 - This is the standing long-context fallback while FA5/FA6/FA7 are in flight
   (ROADMAP §12 risk 12) — keep the builder isolated so it can be retired per-backend
   as FA backward lands.
+
+## Accepted deviation (S1-50): chunked softcap/ALiBi branches are covered by argument, not a fixture
+
+- **What.** The chunked path (`llama-graph.cpp`) emits a softcap branch (`scale`/`tanh`/`scale`, under
+  `hparams.attn_soft_cap`) and an ALiBi branch (`soft_max_ext` with `hparams.f_max_alibi_bias`). No
+  fixture toggles either, so the parity matrix's softcap and ALiBi rows are unmet for the *composed*
+  chunked path; only the no-softcap/no-ALiBi row is fixture-tested.
+- **Why implementing from this box is disproportionate.** Neither branch can be turned on for a
+  `llama`-arch fixture. `attn_soft_cap` is set in `gemma2.cpp` code, not from a GGUF key; and the
+  `llama` loader never reads `%s.attention.max_alibi_bias` into `f_max_alibi_bias` (verified: no
+  `get_key(LLM_KV_ATTENTION_MAX_ALIBI_BIAS, ...)` in `llama-model.cpp`), so it stays 0 on a `llama`
+  GGUF regardless of the key. Exercising the composed branches live would require authoring a
+  gemma2 or ALiBi-arch *training* fixture — a different architecture with its own tensor set and
+  loader path — to cover two branches whose constituent ops are already independently grad-checked:
+  `test_softcap` (scale/tanh/scale), `test_soft_max` (`max_bias` in `{0, 8}`), and `test_flash_attn_ext`
+  (`logit_softcap` in `{0, 10}` x `max_bias` in `{0, 8}`) in the vendored `test-backend-ops`. The chunked
+  path is the same `ggml_scale`/`ggml_tanh`/`ggml_soft_max_ext` primitives as the non-chunked path,
+  which uses the identical softcap + `soft_max_ext(f_max_alibi_bias)` calls.
+- **What would change the decision.** A committed gemma2 or ALiBi *training* fixture arriving for
+  another ticket (at which point the chunked composition can be toggled on it directly), or the
+  `llama` loader gaining a GGUF-key toggle for these hparams so a `llama` fixture could set them.

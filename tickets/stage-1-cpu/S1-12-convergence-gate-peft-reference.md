@@ -194,3 +194,20 @@ learning-llamas side.
   their phase-exit evidence — keep both interfaces stable; `torch`/`peft` stay out of
   `pyproject.toml` runtime/test deps (recording env documented in
   `tests/convergence/README.md`).
+
+## Accepted deviation (S1-50): AC#6's `slow`-marked nightly gate runs per-PR instead
+
+- **What.** AC#6 lists the 40-step convergence gate under the `slow` marker in nightly `ci-cpu`.
+  The implementation deliberately does NOT mark it `slow` (`tests/test_convergence.py`, comment near
+  the 40-step block): it runs every PR under `pytest -m "not slow"`.
+- **Why implementing the ticket-as-written is worse.** The whole gate — AdamW's trajectory numerics
+  and the PEFT oracle — is caught *only* by the 40-step curve, not by the one-step check (a single
+  step at `lr=1e-30` does not exercise the optimizer). The gate runs in ~7 s, so putting it nightly
+  would mean the class of bug it exists to catch (an `eps`-inside-the-`sqrt`, a bias-correction
+  off-by-one) is reported a day late, against whichever of the day's PRs happened to land — the
+  opposite of what a gate is for. The deviation moves the gate in the *safer* direction than the
+  ticket, and its cost is affordable per-PR precisely because the model is tiny.
+- **What would change the decision.** If the gate ever became expensive — a materially larger fixture,
+  many more steps, or a per-backend matrix that multiplied its cost — it would move to the nightly
+  `slow` tier (which exists and is exercised on `ci-cpu`'s cron; see S1-50's CI survey) with a cheap
+  per-PR smoke retained. It is per-PR *because* it is cheap, not on principle.

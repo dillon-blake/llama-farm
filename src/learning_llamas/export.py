@@ -23,9 +23,17 @@ and for ``token_embd``, whose adapter uses the flipped convention the loader val
 
     delta = A @ B.T                      (n_vocab, r) @ (r, n_embd) -> (n_vocab, n_embd)
 
+A MoE expert stack is the ordinary case with an expert axis in front of it. A base of
+``ne = [n_in, n_out, n_expert]`` is numpy ``(n_expert, n_out, n_in)``, its ``A`` is
+``(n_expert, r, n_in)`` and its ``B`` is ``(n_expert, n_out, r)``, so ``B @ A`` batches over the
+leading axis by itself and folds each expert's delta into that expert's slice — which is what
+``build_lora_mm_id``'s ``mul_mat_id(B, mul_mat_id(A, cur, ids), ids)`` does at runtime.
+
 The scale is llama.cpp's, exactly: ``alpha ? user_scale * alpha / rank : user_scale``
 (``llama-adapter.h:55``) — note that ``alpha == 0`` does not mean "no adapter", it means the
-``alpha/rank`` factor is dropped.
+``alpha/rank`` factor is dropped. The rank is ``b->ne[0]`` (``llama-adapter.h:53``), i.e. ``B``'s
+**last numpy axis**, and that is true of all three conventions above: it is the one place the rank
+can be read from without first knowing which convention applies.
 
 Re-quantization
 ---------------
@@ -134,7 +142,8 @@ def merge(
 
     Raises:
         ValueError: If the adapter's architecture does not match the base's, or an adapter tensor
-            is quantized, or a shape does not line up.
+            is quantized, or a shape does not line up, or any adapter pair names a tensor the base
+            model does not have (a partial merge is refused, not performed).
     """
     reader = gguf.GGUFReader(str(base_path), "r")
     pairs, alpha = _adapter_pairs(adapter_path)
@@ -158,6 +167,11 @@ def merge(
 
     merged_types: dict[str, str] = {}
 
+    # The loop below walks the BASE's tensors, so an adapter pair that names nothing in the base is
+    # simply never looked up. Tracking what got consumed is the only way to tell the difference
+    # between "merged everything" and "merged what happened to line up".
+    unconsumed = set(pairs)
+
     for tensor in reader.tensors:
         shape = tuple(int(x) for x in tensor.shape)[::-1]  # numpy order
         pair = pairs.get(tensor.name)
@@ -168,8 +182,18 @@ def merge(
             _write(writer, tensor.name, np.asarray(tensor.data), tensor.tensor_type)
             continue
 
+        unconsumed.discard(tensor.name)
+
         a, b = pair
-        rank = a.shape[0] if tensor.name.split(".")[0] != "token_embd" else a.shape[1]
+
+        # llama.cpp reads the rank off B and only off B -- `rank = b->ne[0]` (llama-adapter.h:53) --
+        # which is B's LAST numpy axis in every convention this merger supports: (n_out, r) for an
+        # ordinary target, (n_embd, r) for token_embd's flipped one, and (n_expert, n_out, r) for a
+        # MoE expert stack. Reading it off A instead needs a different axis per convention, and on a
+        # 3D expert stack A's leading axis is n_expert, not the rank -- so with the usual alpha == r
+        # and 8 experts every expert delta would be folded in at r/n_expert == 2x the strength
+        # llama.cpp applies to the very same adapter at runtime. Silently, and only for MoE.
+        rank = b.shape[-1]
 
         # llama.cpp's rule, exactly: a zero alpha DROPS the alpha/rank factor rather than zeroing
         # the adapter (llama-adapter.h:55).
@@ -208,6 +232,20 @@ def merge(
         raise ValueError(
             "the adapter matched no tensor in the base model. Its tensor names are probably from a "
             "different model."
+        )
+
+    if unconsumed:
+        # A PARTIAL match is the dangerous case, and it is the one nothing above catches: the merge
+        # would succeed, the file would load, and some fraction of the training would just be
+        # missing. An adapter from a same-architecture sibling with more layers leaves its extra
+        # blk.N pairs here; one targeting output.weight merged onto a tied-embedding base (which has
+        # no output.weight tensor at all) leaves that one. Both are user errors worth a name.
+        raise ValueError(
+            f"{len(unconsumed)} of the adapter's {len(pairs)} tensor pairs match no tensor in the "
+            f"base model: {', '.join(sorted(unconsumed))}. Merging the rest would write a model "
+            f"carrying only part of the adapter, and nothing downstream could tell. The adapter is "
+            f"probably for a sibling model -- same architecture, different layer count or a "
+            f"separate output head."
         )
 
     writer.write_header_to_file()
@@ -269,11 +307,25 @@ def _copy_metadata(reader: gguf.GGUFReader, writer: gguf.GGUFWriter) -> None:
 
     Unchanged, and that includes the tokenizer, the chat template, the rope settings and everything
     else the model needs to be usable. A merged model that lost its tokenizer is not a model.
+
+    ``general.alignment`` is the one key that is HONORED rather than copied, because it is not a
+    value about the model — it is a promise about the file's layout. gguf-py pads the data section
+    with ``GGUFWriter.data_alignment``, which stays at 32 unless ``add_custom_alignment`` moves it
+    (gguf_writer.py:505-509); llama.cpp recomputes every expected tensor offset from the
+    **declared** alignment and refuses the whole file on the first mismatch
+    (ggml/src/gguf.cpp:762-780). So copying a base's ``general.alignment = 64`` through
+    ``add_key_value`` would declare 64 over a file padded to 32 and produce a merged model that
+    loads nowhere. Routing it through ``add_custom_alignment`` sets the declaration and the padding
+    together, which is the only way the two can agree.
     """
     for key, field in reader.fields.items():
         if key in _SKIP_KEYS:
             continue
         if not field.types:
+            continue
+
+        if key == gguf.Keys.General.ALIGNMENT:
+            writer.add_custom_alignment(int(field.contents()))
             continue
 
         writer.add_key_value(key, field.contents(), field.types[0], sub_type=_sub_type(field))

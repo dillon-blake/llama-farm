@@ -1,6 +1,12 @@
 """ctypes mirrors of the core ``ggml.h`` calls learning-llamas uses.
 
-Mirrored from llama.cpp at commit ``4f37f519722aa3242eecb7649466b4a4a2d6d6da``.
+Written against the headers at the fork's **upstream base**,
+``4f37f519722aa3242eecb7649466b4a4a2d6d6da`` — that is the commit every ``file:line`` anchor below
+is valid at, and it is *not* the vendored pin. The pin advances past the base as fork commits land
+(ADR-0001); the authority on what is actually vendored is
+:data:`learning_llamas._ffi._version_lock.VENDORED_COMMIT`, generated from the submodule at CMake
+configure time and checked against ``ll_probe()`` at load. These layouts were verified against the
+pinned build, not against the base.
 
 ``ggml_quantize_chunk`` (``ggml/include/ggml.h:2789``) is here because K-quants are **not**
 writable from pure numpy — gguf-py's quantizer covers the legacy types but not Q4_K. Driving
@@ -116,6 +122,15 @@ SYMBOLS = [
             ctypes.c_float,  # logit_scale (1.0 = off)
             ctypes.c_float,  # softcap     (0.0 = off)
         ],
+        ctypes.c_void_p,
+    ),
+    # The DENSE cross-entropy: a[n_vocab, n_tokens] logits against a one-hot label MATRIX b of the
+    # same shape, mean-reduced over every token to a scalar. ce_sparse's summed loss must match it
+    # within F32 round-off (S1-04 forward-parity); exposed only so a test can pin that identity.
+    Symbol(
+        Library.GGML_BASE,
+        "ggml_cross_entropy_loss",
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p],  # ctx, logits, one-hot labels
         ctypes.c_void_p,
     ),
     Symbol(

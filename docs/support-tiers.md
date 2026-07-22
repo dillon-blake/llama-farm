@@ -10,7 +10,7 @@ archs automatically. The consequence D5 draws, and the one this document exists 
 > **"New arch" must mean _unoptimized_, never _unsupported_.**
 
 The gate is the preflight, not this document. The preflight (`csrc/farm_preflight.cpp`,
-`src/learning_llamas/preflight.py`, exposed as `FarmModel.preflight()`) builds the forward graph once
+`src/learning_llamas/preflight.py`, exposed as `Model.preflight()`) builds the forward graph once
 at load, walks its nodes against the supported-backward op table, and returns a per-node report of
 `ok` / `blocked` / `warn`. Trainers call it before the first step and raise on any `blocked` node
 (`src/learning_llamas/train/loop.py`). This file only names the two tiers; the preflight decides
@@ -27,6 +27,7 @@ the archs the project actively regression-tests every PR.
 | Dense llama (SwiGLU FFN) | `gen_tiny_llama` (F32 / Q8_0 / Q4_K) | S1-12 convergence gate vs a recorded PEFT reference + a float64 numpy oracle; S1-03 full-graph finite-difference gate |
 | Mixtral-style MoE | `gen_tiny_moe` | S1-41 MoE gradient oracle — all expert/router LoRA gradients matched to a self-audited float64 reference |
 | Mamba-1 (`n_group == 1`, `head_dim == 1`, per-state `A`) | `gen_tiny_mamba` | S1-47 SSM training oracle — every LoRA gradient matched to float64 at ~1e-6, e2e loss falls |
+| Mamba-2 (`n_group == 2`, `head_dim > 1`, scalar `A` per head) | `gen_tiny_mamba2` | B-10 SSM training oracle — the `SSM_SCAN` backward's group-index fold matched to a self-audited float64 reference at ~1e-6, bit-identical across thread counts |
 
 Tier 1 grows one fixture + oracle at a time; adding a family here is a ticket, not a config flag.
 

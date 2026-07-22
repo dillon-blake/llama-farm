@@ -85,6 +85,44 @@ def test_multi_turn_trains_only_the_final_assistant_turn(chat) -> None:
     assert "You are terse." not in trained
 
 
+def test_a_merge_at_an_intermediate_boundary_is_caught(chat) -> None:
+    """S1-06 item 4: the token-prefix property is checked at every message boundary.
+
+    Not only the prompt/completion one that moves the loss mask.
+    The old implementation checked a single boundary, so a merge at an earlier turn -- one that
+    does not touch the loss span -- would sail through even though it means the rendered
+    conversation does not tokenize as the concatenation of its turns, the exact hazard this module
+    exists to name. Here a merge is injected at the *first* message boundary (the loss boundary,
+    the last turn, is left clean), and ``build_masked_sample`` must still catch it and name the
+    offending boundary. A single-boundary check would return a mask instead.
+    """
+    template, tokenizer = chat
+    messages = [
+        Message("user", "One?"),
+        Message("assistant", "First answer."),
+        Message("user", "Two?"),
+        Message("assistant", "Second answer."),
+    ]
+    corrupt_text = template.render(messages[:1], add_generation_prompt=False)
+
+    class _Merging:
+        """The real tokenizer, but message 1's rendering loses its first token.
+
+        So it is no longer a token-prefix of message 2's: a synthetic merge at an intermediate
+        boundary.
+        """
+
+        def encode(self, text: str, **kw: object) -> list[int]:
+            toks = tokenizer.encode(text, **kw)
+            return toks[1:] if text == corrupt_text and len(toks) > 1 else toks
+
+        def piece(self, token: int | None) -> str:
+            return tokenizer.piece(token) if token is not None else ""
+
+    with pytest.raises(BoundaryMergeError, match="message 1"):
+        build_masked_sample(messages, template, _Merging())
+
+
 def test_system_prompt_is_never_trained_on(chat) -> None:
     template, tokenizer = chat
     messages = [
@@ -256,7 +294,18 @@ def test_the_special_token_test_is_not_vacuous(chat) -> None:
 
     # Neither of the sibling's assertions survives the mutation:
     assert mutated != [tokenizer.bos]  # it does NOT collapse to the single id...
-    assert not (len(mutated) < len(mutated))  # ...and there is no strictly-fewer-tokens win.
+
+    # ...and its strict `len(with_special) < len(without)` degenerates: with the flag ignored both
+    # sides are this same encoding, so the comparison becomes `len(mutated) < len(mutated)` and is
+    # false. Asserting *that* is asserting `x < x` — true of every int, and no evidence about any
+    # tokenizer. The fact with real content is the one that makes the sibling's `<` separable in the
+    # first place: the byte spelling is genuinely longer than the single id. If `<s>` ever became a
+    # one-token byte-fallback, both sides would be length 1, the sibling's `<` could never hold, and
+    # this is what would say so.
+    assert len(mutated) > 1, (
+        f"{bos_text!r} byte-falls-back to {len(mutated)} token(s); the sibling's strictly-fewer "
+        "check has nothing left to measure"
+    )
 
 
 # ---------------------------------------------------------------------------

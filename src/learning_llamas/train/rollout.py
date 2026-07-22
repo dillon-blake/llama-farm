@@ -37,7 +37,7 @@ import ctypes
 import math
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 
 import numpy as np
 
@@ -82,6 +82,13 @@ class RolloutStats:
     Rollout throughput is GRPO's bottleneck, so it is counted from day one rather than guessed at
     later.
 
+    Two of these exist and they mean different things:
+    :attr:`RolloutEngine.stats` accumulates for the life of the engine, and
+    :attr:`RolloutBatch.stats` is **this iteration alone** — a snapshot taken as the batch is
+    returned. Handing the batch the live accumulator instead would make iteration 5 report the sum
+    of iterations 1 through 5, and would retroactively mutate every batch already returned, so a
+    per-iteration tokens/second read off an old batch would be wrong the moment the next one ran.
+
     Attributes:
         decode_calls: Calls into ``llama_decode``. One per prompt, then one per generated token
             *per group* — not per sequence, which is the point of batching them.
@@ -105,6 +112,17 @@ class RolloutStats:
         if self.wall_seconds <= 0.0:
             return 0.0
         return self.generated_tokens / self.wall_seconds
+
+
+def _stats_since(before: RolloutStats, now: RolloutStats) -> RolloutStats:
+    """``now - before``, field by field: what happened between two snapshots of the accumulator.
+
+    Field-by-field rather than field-by-name so that a counter added to :class:`RolloutStats` later
+    is differenced too, instead of silently staying at 0 in every per-iteration snapshot.
+    """
+    return RolloutStats(
+        **{f.name: getattr(now, f.name) - getattr(before, f.name) for f in fields(RolloutStats)}
+    )
 
 
 @dataclass
@@ -139,7 +157,7 @@ class RolloutBatch:
     Attributes:
         rollouts: Every completion, grouped by prompt (``rollouts[i].group`` is the prompt index).
         prompts: The prompt texts, indexed by group.
-        stats: What it cost.
+        stats: What **this** batch cost — not the engine's running total, which keeps climbing.
     """
 
     rollouts: list[Rollout]
@@ -254,6 +272,15 @@ class RolloutEngine:
         ctx: A ``llama_context`` that is **not** in training mode, with ``n_seq_max >= n_rollouts``
             and enough ``n_ctx`` for ``n_rollouts * (prompt + max_new_tokens)``. The adapter must
             be attached to it — that is what makes the rollouts on-policy.
+
+            Those two numbers are what *generation* costs, and generation runs one group at a time.
+            A GRPO run with ``kl_coef > 0`` also **scores** on this context — the reference pass
+            (:func:`~learning_llamas.train.grpo.reference_logprobs`) decodes every rollout of every
+            prompt at once, each as its own sequence — and that needs
+            ``n_seq_max >= n_prompts * n_rollouts`` and
+            ``n_ctx >= n_prompts * n_rollouts * seq_len``, which is strictly more. See
+            :func:`~learning_llamas.train.grpo.train_grpo`, which refuses an undersized engine
+            before the first rollout rather than letting a decode fail mid-run.
         model: The ``llama_model``, for its vocabulary.
         n_rollouts: G, the group size. Must be at least 2: a group of one has no baseline, so
             every advantage would be exactly zero and nothing would ever be learned.
@@ -306,8 +333,14 @@ class RolloutEngine:
     # -- the public surface -------------------------------------------------------------------
 
     def generate(self, prompts: Sequence[str], reward_fn: RewardFn) -> RolloutBatch:
-        """Generate G completions for each prompt, score them, and normalize within each group."""
+        """Generate G completions for each prompt, score them, and normalize within each group.
+
+        The returned batch carries a **snapshot** of what this call cost (:class:`RolloutStats`).
+        ``self.stats`` goes on accumulating over the engine's lifetime; the two are not the same
+        object, deliberately.
+        """
         started = time.perf_counter()
+        before = replace(self.stats)
 
         rollouts: list[Rollout] = []
         for group, prompt in enumerate(prompts):
@@ -326,13 +359,26 @@ class RolloutEngine:
 
         self.stats.wall_seconds += time.perf_counter() - started
 
-        return RolloutBatch(rollouts=rollouts, prompts=list(prompts), stats=self.stats)
+        return RolloutBatch(
+            rollouts=rollouts,
+            prompts=list(prompts),
+            stats=_stats_since(before, self.stats),
+        )
 
     def tokenize(self, text: str) -> list[int]:
-        """Tokenize, with the model's BOS convention applied."""
+        """Tokenize, with the model's BOS convention applied.
+
+        ``parse_special=True``, matching :meth:`learning_llamas.data.tokenize.Tokenizer.encode`.
+        GRPO's own numbers would survive either choice — ``logp_old``, ``logp_new`` and the
+        reference all read the same token ids — but the prompt would not: with special-token text
+        left unparsed, a rendered chat template's ``<|im_start|>`` becomes a handful of ordinary
+        character tokens here and one control token everywhere else in the project, so the policy
+        would be optimized against a prompt encoding that nothing else can reproduce, and the
+        divergence would show up only as a model that is quietly worse when served.
+        """
         buf = (_ffi.llama_token * 512)()
         n = self.libs.llama.llama_tokenize(
-            self.vocab, text.encode(), len(text.encode()), buf, 512, True, False
+            self.vocab, text.encode(), len(text.encode()), buf, 512, True, True
         )
         if n < 0:
             raise RuntimeError(f"llama_tokenize needs {-n} tokens, more than the 512 buffer")

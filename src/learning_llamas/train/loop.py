@@ -62,6 +62,12 @@ class Batch:
             another. ``None`` means the whole batch is one sequence.
         positions: Each position's index *within its own sequence* — so a packed sample's positions
             restart at 0. ``None`` means ``0..n-1``.
+        pad_count: How many of ``tokens`` are padding — positions with weight 0 that are *filler*,
+            not masked prompt. The packer knows this; nothing downstream can recover it, because a
+            pad and a prompt token both carry weight 0 (S1-07). 0 for an unpadded batch.
+        n_samples: How many real samples are packed into this batch (S1-07). 1 for an unpacked
+            batch. Together with ``pad_count`` this is what the throughput counters are computed
+            from — pad fraction and samples-per-pack.
     """
 
     tokens: list[int]
@@ -69,6 +75,8 @@ class Batch:
     weights: list[float]
     seq_ids: list[int] | None = None
     positions: list[int] | None = None
+    pad_count: int = 0
+    n_samples: int = 1
 
     def __post_init__(self) -> None:
         """Reject a ragged batch at construction, not three layers down in ctypes."""
@@ -90,8 +98,16 @@ class Batch:
 
     @property
     def n_valid(self) -> int:
-        """How many positions actually carry loss."""
-        return sum(1 for w in self.weights if w > 0.0)
+        """How many positions actually carry loss.
+
+        Nonzero, not positive. DPO weights the rejected completion's tokens **-1** (see
+        :func:`~learning_llamas.train.dpo.to_batch`) — those positions carry as much loss and as
+        much gradient as the chosen side's, they just carry it the other way. Counting ``w > 0``
+        reported half of a DPO batch, which made ``tokens_per_second`` and
+        ``valid_token_fraction`` read low by exactly the rejected completion's length. 0 still
+        means masked, which is the only distinction anything downstream draws.
+        """
+        return sum(1 for w in self.weights if w != 0.0)
 
 
 @dataclass
@@ -157,6 +173,9 @@ class StepMetrics:
         lr: The learning rate in force.
         n_valid: How many positions carried loss.
         seconds: Wall-clock time of the step.
+        n_tokens: The batch's total length (tokens/step), padding included.
+        pad_tokens: How many of those tokens are padding filler (S1-07).
+        n_samples: How many real samples were packed into the batch (S1-07).
     """
 
     micro_step: int
@@ -166,11 +185,29 @@ class StepMetrics:
     lr: float
     n_valid: int
     seconds: float
+    n_tokens: int = 0
+    pad_tokens: int = 0
+    n_samples: int = 1
 
     @property
     def tokens_per_second(self) -> float:
         """Valid tokens per second — the number that actually sizes a run."""
         return self.n_valid / self.seconds if self.seconds > 0 else 0.0
+
+    @property
+    def pad_fraction(self) -> float:
+        """Fraction of the batch that is padding — the packer's waste, per step (S1-07)."""
+        return self.pad_tokens / self.n_tokens if self.n_tokens > 0 else 0.0
+
+    @property
+    def valid_token_fraction(self) -> float:
+        """Fraction of the batch that carried loss — what fraction of the compute was training."""
+        return self.n_valid / self.n_tokens if self.n_tokens > 0 else 0.0
+
+    @property
+    def samples_per_pack(self) -> float:
+        """How many real samples shared this batch — packing density (S1-07)."""
+        return float(self.n_samples)
 
 
 @dataclass
@@ -233,14 +270,20 @@ class Trainer:
         self._state = _State()
         self._closed = False
 
-        # The gate, and it runs BEFORE the training optimizer state exists -- deliberately. The walk
-        # needs flagged trainable tensors to seed from, so it stands up throwaway optimizer state of
-        # its own and tears it down (preflight_adapter); it must not borrow the training context,
-        # because opt_step_custom sizes an optimizer context from the first graph it sees and the
-        # preflight's forward-only graph is not the training graph -- sharing it aborts the first
-        # real backward. Gating first also leaves the training context below free to see the
-        # training graph first, as ggml-opt requires. A blocker here is the whole reason S1-11 built
-        # the preflight; S1-42 is what finally calls it. preflight=False is the escape hatch.
+        # The gate, and it runs BEFORE the training optimizer state exists -- deliberately. A
+        # blocked adapter is the whole reason S1-11 built the preflight, and the point of gating is
+        # to say so before opt_init_lora allocates moments for a run that cannot take a step.
+        #
+        # That ordering is why this calls preflight_adapter and not preflight_context: the walk is
+        # seeded from *flagged* trainable tensors, and at this point in __init__ there are none --
+        # opt_init_lora is what flags them, twenty lines down. preflight_adapter stands up throwaway
+        # optimizer state of its own, walks, and tears it down in a finally.
+        #
+        # Sharing the training context is no longer the hazard it was: ll_preflight builds its walk
+        # on its own GGML_OPT_BUILD_TYPE_FORWARD ggml-opt context, so init -> preflight -> train is
+        # a safe order now (the reasoning, and the two failures it used to cause, are written out at
+        # csrc/farm_train.cpp:1788). This gate is about not needing optimizer state, not about
+        # protecting it. S1-42 is what finally calls it. preflight=False is the escape hatch.
         if config.preflight:
             report = preflight_adapter(libs, model.ctx, model.model, [model.adapter])
             if not report.trainable:
@@ -301,7 +344,15 @@ class Trainer:
         loss = self._run(batch, train=True)
         elapsed = time.perf_counter() - started
 
-        return self.record(loss=loss, lr=lr, n_valid=batch.n_valid, seconds=elapsed)
+        return self.record(
+            loss=loss,
+            lr=lr,
+            n_valid=batch.n_valid,
+            seconds=elapsed,
+            n_tokens=len(batch.tokens),
+            pad_tokens=batch.pad_count,
+            n_samples=batch.n_samples,
+        )
 
     def apply_schedule(self) -> float:
         """Set the learning rate for the step that is about to run, and return it.
@@ -321,7 +372,16 @@ class Trainer:
 
         return lr
 
-    def record(self, loss: float, lr: float, n_valid: int, seconds: float = 0.0) -> StepMetrics:
+    def record(
+        self,
+        loss: float,
+        lr: float,
+        n_valid: int,
+        seconds: float = 0.0,
+        n_tokens: int = 0,
+        pad_tokens: int = 0,
+        n_samples: int = 1,
+    ) -> StepMetrics:
         """Book a completed step: advance the counters, fire the hooks, keep the metrics.
 
         Args:
@@ -329,6 +389,10 @@ class Trainer:
             lr: The learning rate it used.
             n_valid: How many positions carried loss.
             seconds: Wall-clock time.
+            n_tokens: The batch's total length (padding included); 0 leaves the fraction counters at
+                0 for callers that do not have a padded batch to report.
+            pad_tokens: How many of those tokens were padding filler.
+            n_samples: How many real samples were packed into the batch.
 
         Returns:
             What the step did.
@@ -347,6 +411,9 @@ class Trainer:
             lr=lr,
             n_valid=n_valid,
             seconds=seconds,
+            n_tokens=n_tokens,
+            pad_tokens=pad_tokens,
+            n_samples=n_samples,
         )
 
         self._state.micro_step += 1

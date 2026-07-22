@@ -11,17 +11,82 @@ endif()
 
 # The vendored commit is baked in at configure time; it is what ll_probe() returns and what
 # the S0-04 version lock compares against.
-find_package(Git QUIET REQUIRED)
-execute_process(
-    COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
-    WORKING_DIRECTORY "${LL_VENDOR_LLAMA_CPP}"
-    OUTPUT_VARIABLE LL_LLAMA_CPP_COMMIT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE LL_GIT_RESULT)
-if(NOT LL_GIT_RESULT EQUAL 0)
+#
+# Git is authoritative WHENEVER IT CAN ANSWER, and in a git checkout it always can: the gitlink is
+# the one thing about the vendored tree that is unambiguously true, and the whole point of the lock
+# is that the gitlink, the native build and the Python package agree.
+#
+# But an unpacked sdist is not a git checkout -- there is no .git in vendor/llama.cpp and none at
+# the top level either -- and `python -m build` with no arguments builds the wheel FROM the sdist,
+# as does `pip install <source tarball>`. Those paths used to die here on a hard FATAL_ERROR whose
+# advice ("run: git submodule update --init --recursive") cannot possibly work in a tree that was
+# never a checkout. CI never noticed because CI only ever builds --wheel.
+#
+# So when there is NO GIT METADATA to answer from, fall back to the commit RECORDED IN THE SDIST:
+# the _version_lock.py generated below is written back into the source tree, and pyproject.toml's
+# sdist.cmake + sdist.include put that generated file in the tarball. Same string, produced by this
+# same rule, at the moment the sdist was cut.
+#
+# "No metadata" is the ONLY thing that opens the fallback. A vendor/llama.cpp that has a .git stays
+# on the git path or fails hard -- whether git could not read HEAD, or was not installed at all
+# (both below). What must never happen is a build inventing a commit or reusing a stale one, so
+# with neither source available this is still a hard error.
+find_package(Git QUIET)
+set(LL_LLAMA_CPP_COMMIT "")
+
+if(Git_FOUND AND EXISTS "${LL_VENDOR_LLAMA_CPP}/.git")
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+        WORKING_DIRECTORY "${LL_VENDOR_LLAMA_CPP}"
+        OUTPUT_VARIABLE LL_LLAMA_CPP_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE LL_GIT_RESULT)
+    if(NOT LL_GIT_RESULT EQUAL 0)
+        # .git is there and git still could not read HEAD: a half-initialised submodule, not an
+        # sdist. Say so rather than falling through to a stale recorded value.
+        message(FATAL_ERROR
+            "vendor/llama.cpp has a .git but its HEAD could not be read.\n"
+            "  run: git submodule update --init --recursive")
+    endif()
+endif()
+
+# The OTHER way the fallback can be reached from a checkout, and it has to be just as hard an
+# error. The guard above needs BOTH Git_FOUND and a .git, so relaxing `find_package(Git REQUIRED)`
+# to a soft find opened a path where the metadata IS there and only the executable is missing --
+# and that path silently baked whatever commit `_version_lock.py` happened to hold. That file is
+# generated and gitignored, so it survives a branch switch and a submodule bump; the native half
+# and the Python half are configured from this same variable, so ll_probe() and VENDORED_COMMIT
+# would agree on the stale string and _verify_commit would pass. The lock's whole job is to catch
+# exactly that, so it is not allowed to be defeated quietly.
+if(EXISTS "${LL_VENDOR_LLAMA_CPP}/.git" AND NOT Git_FOUND)
     message(FATAL_ERROR
-        "could not read the vendor/llama.cpp commit.\n"
-        "  run: git submodule update --init --recursive")
+        "vendor/llama.cpp is a git checkout but no git executable was found, so the vendored\n"
+        "commit cannot be read from the one source that is authoritative for it.\n"
+        "  install git, or build from an sdist (which carries the commit recorded at sdist time)")
+endif()
+
+set(LL_RECORDED_COMMIT_FILE "${CMAKE_SOURCE_DIR}/src/learning_llamas/_ffi/_version_lock.py")
+if(NOT LL_LLAMA_CPP_COMMIT AND EXISTS "${LL_RECORDED_COMMIT_FILE}")
+    file(READ "${LL_RECORDED_COMMIT_FILE}" LL_RECORDED_LOCK)
+    string(REGEX MATCH "VENDORED_COMMIT = \"([0-9a-fA-F]+)\"" _ "${LL_RECORDED_LOCK}")
+    set(LL_LLAMA_CPP_COMMIT "${CMAKE_MATCH_1}")
+    if(LL_LLAMA_CPP_COMMIT)
+        # "no git metadata", not "from an sdist": the only way to reach this line is with no
+        # vendor/llama.cpp/.git at all (the guard above makes the has-metadata-but-no-git case
+        # fatal), but the recorded file itself carries no provenance, so the message says what was
+        # observed rather than inferring where the value came from.
+        message(STATUS
+            "learning-llamas: no git metadata for vendor/llama.cpp -- using the commit recorded "
+            "in _version_lock.py (${LL_LLAMA_CPP_COMMIT})")
+    endif()
+endif()
+
+if(NOT LL_LLAMA_CPP_COMMIT)
+    message(FATAL_ERROR
+        "could not determine the vendored llama.cpp commit.\n"
+        "  in a git checkout:    git submodule update --init --recursive\n"
+        "  in an unpacked sdist: the recorded commit is missing, which means the sdist was\n"
+        "                        built without [tool.scikit-build] sdist.cmake -- rebuild it")
 endif()
 
 message(STATUS "learning-llamas: version ${LL_VERSION}, vendored llama.cpp ${LL_LLAMA_CPP_COMMIT}")

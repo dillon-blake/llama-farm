@@ -367,6 +367,39 @@ def test_the_cosine_schedule_matches_its_closed_form() -> None:
     assert schedule(total) == pytest.approx(floor)
 
 
+def test_the_cosine_bottoms_out_one_step_past_the_last_one_a_run_takes() -> None:
+    """Two fenceposts that look like bugs, are not, and must not drift away from the docstring.
+
+    ``run()`` calls the schedule with steps ``0 .. total_steps - 1``, while ``progress`` reaches 1
+    only at ``total_steps``. So a run **never sees** ``min_lr``: it stops one cosine increment
+    above it. That is the standard convention (HF's ``get_cosine_schedule_with_warmup`` does the
+    same) and it is wanted here for a reason of its own — ``min_lr`` defaults to 0, and a schedule
+    that hit 0 on the last executed step would spend a full forward and backward multiplying the
+    update by zero.
+
+    The second fencepost: ``cos(0) == 1``, so the cosine's first point is the peak too, and the
+    peak occupies **two** optimizer steps of a warmed-up run.
+
+    Neither is a number to be changed casually — the schedule is the LR sequence a whole run is
+    reproducible against — so both are pinned against hand-computed values here, and
+    ``warmup_cosine``'s own docstring quotes the same 2.32e-5.
+    """
+    peak, floor = 1e-4, 1e-5
+    schedule = warmup_cosine(peak, total_steps=4, warmup_steps=0, min_lr=floor)
+
+    # By hand: progress = 3/4, cos(3pi/4) = -0.70711, 1e-5 + 0.5 * 9e-5 * 0.29289 = 2.3180e-5.
+    last_executed = schedule(3)
+    assert last_executed == pytest.approx(2.3180e-5, rel=1e-4)
+    assert last_executed > floor, "a run that ends AT min_lr wastes its last optimizer step"
+    assert schedule(4) == pytest.approx(floor)
+
+    # The peak is two steps wide: the last warmup step, and the cosine's own first point.
+    warmed = warmup_cosine(peak, total_steps=10, warmup_steps=3, min_lr=floor)
+    assert warmed(2) == pytest.approx(peak)
+    assert warmed(3) == pytest.approx(peak)
+    assert warmed(4) < peak
+
+
 def test_the_learning_rate_the_optimizer_saw_is_the_scheduled_one(
     trainable, libs: _ffi.Libraries
 ) -> None:
@@ -523,6 +556,45 @@ def test_hooks_fire_where_they_say_they_do(trainable, libs: _ffi.Libraries) -> N
 
     assert micro == [0, 1, 2, 3, 4]
     assert opt == [0, 1], "on_optimizer_step must fire once per window, and not otherwise"
+
+
+def test_the_throughput_counters_reach_the_logging_hook(trainable, libs: _ffi.Libraries) -> None:
+    """S1-07 AC: the throughput counters appear in the logging-hook payload.
+
+    tokens/step and pad fraction, plus valid-token fraction and samples-per-pack.
+    The counters are computed from the batch in ``Trainer.step`` and threaded through ``record``
+    into ``StepMetrics``, so a downstream logger reads them off the metric it already receives. The
+    numbers are checked against the batch itself, not against constants, so a wrong wiring (reading
+    the wrong field, or dropping the pad count) is caught.
+    """
+    model = trainable
+    # _sample(4, 8) is 12 tokens; padded to SEQ_LEN this batch is mostly padding, so the pad
+    # fraction is a real, non-zero number to check.
+    batch = to_batch(_sample(n_prompt=4, n_completion=8), seq_len=SEQ_LEN)
+
+    seen: list = []
+    hooks = Hooks(on_micro_step=seen.append)
+    with Trainer(libs, model, TrainConfig(lr=1e-3), hooks=hooks) as trainer:
+        trainer.step(batch)
+
+    assert len(seen) == 1
+    m = seen[0]
+
+    # The payload carries the raw counts, matching the batch it trained on.
+    assert m.n_tokens == len(batch.tokens) == SEQ_LEN
+    assert m.pad_tokens == batch.pad_count
+    assert m.n_samples == batch.n_samples == 1
+    assert m.n_valid == batch.n_valid
+
+    # ...and the derived fractions are consistent with them.
+    assert m.pad_fraction == pytest.approx(m.pad_tokens / m.n_tokens)
+    assert m.valid_token_fraction == pytest.approx(m.n_valid / m.n_tokens)
+    assert m.samples_per_pack == 1.0
+
+    # Non-vacuous: this batch really is mostly padding and part-trained, so the meters are not
+    # trivially 0 or 1.
+    assert 0.0 < m.pad_fraction < 1.0
+    assert 0.0 < m.valid_token_fraction < 1.0
 
 
 def test_collate_produces_one_fixed_shape_batch_per_sample() -> None:

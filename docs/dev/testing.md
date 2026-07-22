@@ -19,7 +19,7 @@ rather than a silently-skipped test.
 
 | Marker | Meaning |
 |---|---|
-| `slow` | Nightly only — convergence gates (S1-12), full sweeps |
+| `slow` | Nightly only. Today that is six tests: the two chunked-attention memory gates and the four gradient-checkpointing sweep cases. **Not** the S1-12 convergence gate — see below |
 | `cuda` / `metal` / `vulkan` | Needs that backend compiled in |
 
 `ci-cpu` runs `-m "not slow"` per PR and the full suite nightly. Fixture models are generated on
@@ -125,9 +125,15 @@ ADR-0002 also fixes two things your kernel PR must state:
 
 The per-op suites can all be green while training still fails to converge. The gate that
 catches that is the **tiny-model convergence gate**, S1-12: a tiny-model SFT run compared
-against a recorded PEFT reference loss curve. It is marked `slow` and runs nightly, and it is
-the exit criterion for stage 1 and the acceptance criterion for every backend milestone
-(`--device metal`, `--device cuda`, …).
+against a recorded PEFT reference loss curve. It is the exit criterion for stage 1 and the
+acceptance criterion for every backend milestone (`--device metal`, `--device cuda`, …).
+
+It is **not** marked `slow`, despite what S1-12's acceptance criterion #6 says and what this
+document used to say. That is a deliberate, documented deviation (S1-12, and item 4 of
+`tickets/stage-1-cpu/S1-50-minors-sweep.md`): the gate runs in about 7 s and it is the only
+per-PR check on AdamW's trajectory numerics and on the PEFT oracle, so moving it nightly would
+report those failures a day late against an unknown PR. It runs on **every** PR, under
+`-m "not slow"`.
 
 ## Before you open a PR
 

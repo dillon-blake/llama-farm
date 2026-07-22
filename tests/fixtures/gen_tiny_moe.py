@@ -25,6 +25,7 @@ from importlib.metadata import version
 import gguf
 import numpy as np
 
+from . import llama_source
 from .gen_tiny_llama import (
     _FILE_TYPE,
     _QUANT_TYPE,
@@ -77,6 +78,11 @@ class TinyMoEHParams:
 
 
 HPARAMS = TinyMoEHParams()
+
+# The weight-RNG seed, hoisted out of ``build``'s signature so :func:`cache_key` can hash it. A seed
+# that is not in the key is a seed that does not name the fixture: ask for a different one and a
+# warm cache hands back the default-seed model, because the directory it lives in is the same.
+SEED = 20260714
 
 
 def _model_tensors(hp: TinyMoEHParams, seed: int) -> dict[str, np.ndarray]:
@@ -184,8 +190,15 @@ def _write(path: pathlib.Path, hp: TinyMoEHParams, variant: str, seed: int) -> N
     writer.close()
 
 
-def cache_key(hp: TinyMoEHParams = HPARAMS) -> str:
-    """A content hash of this generator, its hyperparameters, and gguf-py's version.
+def cache_key(hp: TinyMoEHParams = HPARAMS, seed: int = SEED) -> str:
+    """A content hash of everything the fixture bytes depend on.
+
+    That is this generator, **the llama generator it is built out of**, the hyperparameters, the
+    weight seed and gguf-py's version. The llama source is not optional: ``CHAT_TEMPLATE``,
+    ``_load_vocab``, ``_quantize``, ``_QUANT_TYPE`` and ``_FILE_TYPE`` all come from there, so
+    editing the chat template or the vocab slice changes these bytes while a key that hashed only
+    this file would not move -- and a warm ``tests/.fixtures`` would keep serving the old MoE GGUF.
+    See :mod:`tests.fixtures`.
 
     Newlines normalized, for the reason spelled out in
     :func:`tests.fixtures.gen_tiny_llama.cache_key`: hashing raw bytes makes the key depend on the
@@ -195,7 +208,9 @@ def cache_key(hp: TinyMoEHParams = HPARAMS) -> str:
     payload = b"".join(
         [
             source.encode(),
+            llama_source().encode(),
             repr(hp).encode(),
+            repr(seed).encode(),
             version("gguf").encode(),
         ]
     )
@@ -206,7 +221,7 @@ def build(
     variant: str,
     cache_dir: pathlib.Path,
     hp: TinyMoEHParams = HPARAMS,
-    seed: int = 20260714,
+    seed: int = SEED,
 ) -> tuple[pathlib.Path, bool]:
     """Return the path to a MoE fixture, generating it only if it is not already cached.
 
@@ -221,12 +236,19 @@ def build(
 
     hp.validate()
 
-    out_dir = cache_dir / cache_key(hp)
+    out_dir = cache_dir / cache_key(hp, seed)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"tiny-moe-{variant}.gguf"
 
     if path.exists():
         return path, False
 
-    _write(path, hp, variant, seed)
+    # Write to a temporary name and rename, exactly as the three sibling generators do. The cache
+    # hit above is a bare ``path.exists()``, so a crash or Ctrl-C partway through the first build
+    # would otherwise leave a truncated GGUF that every later run treats as a valid fixture --
+    # permanently, since nothing ever rebuilds over an existing file.
+    tmp = path.with_suffix(".gguf.partial")
+    _write(tmp, hp, variant, seed)
+    tmp.rename(path)
+
     return path, True

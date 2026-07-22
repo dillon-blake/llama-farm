@@ -135,13 +135,28 @@ set_target_properties(${LL_VENDOR_LIBS} learningllamas PROPERTIES
 #
 # The DLLs install to the same lib/ directory as everything else (RUNTIME DESTINATION, below), which
 # is what lets the loader's os.add_dll_directory find each one's dependencies. The .lib import
-# libraries are deliberately NOT installed: nothing links against the shim at build time, ctypes
-# opens it at run time.
+# libraries are deliberately kept OUT of the packaged component (see the ARCHIVE line below):
+# nothing links against the shim at build time, ctypes opens it at run time.
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# The import libraries were ALREADY not installed, and this says so out loud rather than relying on
+# it. `cmake --help-command install`, TARGETS: "For shared libraries on DLL platforms, if neither
+# RUNTIME nor ARCHIVE destinations are specified, both [...] are installed to their default
+# destinations. If either a RUNTIME or ARCHIVE destination is specified, the component is installed
+# to that destination, and the other component is not installed." Every target here is a shared
+# library (BUILD_SHARED_LIBS is forced ON above), and the rule already named a RUNTIME destination
+# and no ARCHIVE one -- so on Windows the .libs generated no install rule at all. No wheel ever
+# grew a top-level `lib/*.lib`, and none of this is a bug fix.
+#
+# What the explicit ARCHIVE clause buys is that the guarantee no longer rests on a defaulting rule
+# that has to be read out of the CMake manual to see. The .libs get a component the wheel never
+# asks for (pyproject: install.components = ["learningllamas"]), plus EXCLUDE_FROM_ALL so a plain
+# `cmake --install` does not ship them either, and the intent survives someone later adding a
+# static target or dropping the RUNTIME destination. Net wheel contents: unchanged.
 install(TARGETS ${LL_VENDOR_LIBS} learningllamas
-        COMPONENT learningllamas
-        LIBRARY DESTINATION "${LL_INSTALL_LIBDIR}"
-        RUNTIME DESTINATION "${LL_INSTALL_LIBDIR}")
+        LIBRARY DESTINATION "${LL_INSTALL_LIBDIR}" COMPONENT learningllamas
+        RUNTIME DESTINATION "${LL_INSTALL_LIBDIR}" COMPONENT learningllamas
+        ARCHIVE DESTINATION "${LL_INSTALL_LIBDIR}" COMPONENT learningllamas_import_libs
+                EXCLUDE_FROM_ALL)

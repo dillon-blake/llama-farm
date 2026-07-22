@@ -1,7 +1,12 @@
 """ctypes mirrors of the ``ggml-backend.h`` calls learning-llamas uses.
 
-Mirrored from llama.cpp at commit ``4f37f519722aa3242eecb7649466b4a4a2d6d6da``
-(``ggml/include/ggml-backend.h:92-93``).
+Written against the headers at the fork's **upstream base**,
+``4f37f519722aa3242eecb7649466b4a4a2d6d6da`` (``ggml/include/ggml-backend.h:92-93``) — that is the
+commit the ``file:line`` anchors are valid at, and it is *not* the vendored pin. The pin advances
+past the base as fork commits land (ADR-0001); the authority on what is actually vendored is
+:data:`learning_llamas._ffi._version_lock.VENDORED_COMMIT`, generated from the submodule at CMake
+configure time and checked against ``ll_probe()`` at load. These declarations were verified
+against the pinned build, not against the base.
 
 ``ggml_backend_tensor_set`` / ``_get`` are the host↔device transfer path (BLUEPRINT D7): they
 are how a batch of token ids and a loss mask are uploaded into graph input tensors, and how a
