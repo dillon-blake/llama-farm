@@ -10,17 +10,17 @@ reproduces exactly one number cited in the next section, so the doc audits itsel
 ```bash
 cd vendor/llama.cpp
 git merge-base HEAD 4f37f51                             # 4f37f519722a...  (must equal the pin)
-git log --oneline --no-merges 4f37f51..HEAD | wc -l     # 31   substantive commits
-git log --oneline           4f37f51..HEAD | wc -l       # 49   = 31 + 18 early-PR merge commits
-git diff --stat        4f37f51..HEAD | tail -1          # 22 files changed, +4900 / -97
+git log --oneline --no-merges 4f37f51..HEAD | wc -l     # 35   substantive commits
+git log --oneline           4f37f51..HEAD | wc -l       # 53   = 35 + 18 early-PR merge commits
+git diff --stat        4f37f51..HEAD | tail -1          # 22 files changed, +5227 / -117
 git diff --name-status 4f37f51..HEAD | grep -c '^A'     # 2    new files
 ```
 
 > **The count depends on `--no-merges`, and the old regenerate recipe left it off.** The first
 > eighteen fork changes each landed through a squash-merged PR, so the plain `git log 4f37f51..HEAD`
-> carries **18 merge commits** on top of the substantive ones; the thirteen kernel-era commits
-> (S1-24 … S1-47) were committed straight onto the base branch and have no merge commit. So the bare
-> log prints **49**, not the 31 substantive changes the inventory is about — which is precisely how
+> carries **18 merge commits** on top of the substantive ones; the sixteen kernel-era commits
+> (S1-24 … S1-50) were committed straight onto the base branch and have no merge commit. So the bare
+> log prints **53**, not the 35 substantive changes the inventory is about — which is precisely how
 > the previous version of this doc came to disagree with its own regenerate command. Count with
 > `--no-merges`.
 
@@ -29,15 +29,15 @@ git diff --name-status 4f37f51..HEAD | grep -c '^A'     # 2    new files
 | | |
 |---|---|
 | Upstream base (pinned) | `4f37f51` |
-| Fork | `dillon-blake/llama.cpp`, branch `learning-llamas-base` (HEAD `555c446` on `ticket/S1-24-chunked-attention`) |
+| Fork | `dillon-blake/llama.cpp`, branch `learning-llamas-base` (HEAD `6f75dfd` on `ticket/S1-24-chunked-attention`) |
 | Merge-base with the pin | **exactly `4f37f51`** — a clean linear stack, no upstream merges mixed in |
-| Carried commits | **31** substantive (18 via early squash-merged PRs #1–#18, then 13 committed straight onto the branch as the kernel work landed) |
-| Diff | **22 files changed, +4900 / −97** |
+| Carried commits | **35** substantive (18 via early squash-merged PRs #1–#18, then 17 committed straight onto the branch as the kernel work landed) |
+| Diff | **22 files changed, +5227 / −117** |
 | New files | **2** — both are *test* files: `tests/test-glu-back.cpp` (S1-28) and `tests/test-soft-max-back-inplace.cpp` (S1-41) |
 
 That last row is still most of the finding. ADR-0001 §2 states its own rebase-hygiene rule — *"new
 functionality goes in **new files** wherever it plausibly can"* — and for **kernels** the fork has
-not followed it once: `ggml-cpu/ops.cpp` alone has grown by **+1020 lines** (sparse-CE, `OUT_PROD_ID`,
+not followed it once: `ggml-cpu/ops.cpp` alone has grown by **+1038 lines** (sparse-CE, `OUT_PROD_ID`,
 `OUT_PROD_ID_GRP`, `GLU_BACK`, `SSM_CONV_BACK`, `SSM_SCAN_BACK`), a file upstream has touched 66 times
 in the last twelve months, rather than into new `ops-*.cpp` files that would rebase for free. The two
 new files that *do* exist are both regression tests, not kernels — so the rule is honoured only where
@@ -77,7 +77,7 @@ ticket's declared disposition describes its deliverable and not the fix.
 | `78c3e18bc` | S1-14 | `opt_step_custom` left `gf_res_prev` (a one-entry graph cache) pointing at nodes in `ctx_compute_opt`, which is freed each step — so a later `llama_decode` on the same context walked freed memory. Fixes fork-local code. | fork-local | LOW |
 | `ffb7d06e7` | S1-33 | `LLAMA_API_INTERNAL` on the nine internals the shim links against. A PE DLL exports nothing it was not told to, so the same source that links fine on ELF produced eight `LNK2019`s on Windows. | fork-local | LOW–MED |
 
-The thirteen kernel-era commits (committed straight onto the branch, no PR merge commit):
+The sixteen kernel-era commits (committed straight onto the branch, no PR merge commit):
 
 | Hash | Ticket | What it changes, and why | Disposition | Rebase risk |
 |---|---|---|---|---|
@@ -94,8 +94,12 @@ The thirteen kernel-era commits (committed straight onto the branch, no PR merge
 | `2a276de8f` | S1-24 | **Chunked attention** — a kernel-free long-context path (2.17x less backward memory at n_ctx 4096, bit-identical to naive), built entirely in shim-side graph construction (`llama-graph.cpp` + a `cparams` flag), no new kernel. | fork-local | HIGH |
 | `41141dd4f` | S1-41 | **`ggml_compute_forward_soft_max_ext_back_f32` was not in-place-safe onto `src1`** (it overwrites `dst` before its last read of `src1`). `SOFT_MAX_BACK` is on `ggml_op_can_inplace`, and gallocr aliases `dst` onto the softmax output `y` exactly when the back-op is `y`'s **sole** gradient consumer — never in attention, **always** in a Mixtral router — so `d_logits≈0` and every LoRA upstream of an MoE block trained on a gradient wrong by 5–25 %, loss falling the whole time. The S1-41 MoE oracle caught it; `tests/test-soft-max-back-inplace.cpp` forces the alias (0.22 error pre-fix, 9.6e-9 post). | **upstream-early** | **HIGH** |
 | `555c44643` | S1-47 | **Two Mamba-training fixes.** (a) `ggml_ssm_scan`'s initial-state input is a *view of the recurrent-state cache*, which the forward overwrites in place; the scan backward recomputes intermediate states from it and so started from the **final** state — every Mamba layer but the last trained on a corrupted scan gradient. Fix: `ggml_cont` the initial state. (b) the VIEW-backward handed `ggml_acc` a non-contiguous grad (`nb[0]!=sizeof(float)`), aborting **every** Mamba training graph at backward — `ggml_cont` before `acc_or_set`, matching the neighbouring `RESHAPE` guard. Also adds the loud `n_group>1` refusal (unproven routing — see B-10). | fork-local (a); **upstream-early** (b) | **HIGH** |
+| `8eacbb335` | B-10 | **The `n_group>1` refusal above, lifted.** The scan backward's group fold was written at S1-31 and never grad-checked — every grad-enabled `test_ssm_scan` case was `n_group == 1`, where the fold never runs, and the `n_group > 1` shapes were over `grad_nmax` and skipped. Adds four tiny `n_group in {2,4}` cases that land under the limit (`grad -o SSM_SCAN` now compares 6 gradients, was 2) and replaces the refusal with `n_head % n_group == 0`. The arithmetic was already correct; this proves it. | fork-local (upstream-later) | MED |
+| `42458ed87` | S1-50 | **Pre/post-clip gradient norms out of ggml-opt**, plus two `test-backend-ops` fixes. The pre-clip norm is the existing `grad_norm` node; the post-clip one is a *new* reduction over the clipped gradients the optimizer actually steps on (measured, not `pre*factor`). Both are pinned as outputs and read back like the loss; NaN unless the eval ran the OPT graph with `grad_clip > 0`. `mean_abs_asymm` now returns `+inf` when `nvalid == 0` instead of passing on `0.0/0 = NaN`, and `GGML_TEST_SEED` makes the three shared float-init primitives reproducible (unset = unchanged). | fork-local (norms); **upstream-early** (harness) | MED |
+| `af60e547a` | S1-50 | `SSM_SCAN`'s MODE_GRAD threshold **5e-2 → 1e-1**: the finite-difference noise floor is libm-dependent, and MSVC's `exp()` produced a draw at MAA 0.0558 against a glibc-measured 2.4x margin. 1e-1 still sits 3.8x below the smallest injected defect (0.38); the sharp per-element claim stays with the float64 e2e oracle. | fork-local | LOW |
+| `6f75dfd11` | audit 2026-07-22 | **Five fixes found by the full-repo audit, four of them in fork-added code.** (a) `SSM_SCAN_BACK`'s work buffer charged a scratch slab per *thread* while the kernel partitions per *sequence* — 12.9 GB requested to use 0.8 GB at a real Mamba training shape (`ns == 1`, 16 threads), a plan-time OOM invisible on the tiny fixtures; now `MIN(ns, n_tasks)` with the matching `ith >= ns` early return that makes the bound sound. (b) S1-47's `ggml_cont` of the SSM initial state is gated on `cparams.training`: it spans the whole recurrent-state cache, so *inference* was paying a cache-sized memcpy and compute-buffer slab per layer per eval for a backward it never builds. (c) S1-50's pre/post-clip norm scalars moved to `ctx_results` — on the static-graph path nothing allocated them and the read-back aborted on a NULL buffer (dynamic path unchanged: there `ctx_results` *is* `ctx_compute`). (d) `GLU_BACK` row addressing decomposed for non-contiguous 3-D grads (latent), and `OUT_PROD_ID_GRP` now range-checks expert ids as `OUT_PROD_ID` already did. (e) harness: `GGML_TEST_SEED` argument validation, a `GGML_TEST_MAA_REPORT` stream for measuring bounds, `test_glu_split`/`test_swiglu_oai` **0.9 → 5e-2** (measured; worst 0.0184 across the three GLU classes), and `ggml_set_name(a, "view_of_b")` → `(b, …)` in both split classes — an **upstream** typo, correct at `:5590` and wrong at the two the fork inherited. | fork-local (a–d); **upstream-early** (the `set_name` typo) | MED |
 
-**Twelve of the thirty-one are upstream-early**: general bug fixes upstream would plausibly want,
+**Twelve of the thirty-five are upstream-early**: general bug fixes upstream would plausibly want,
 most of them found incidentally while building a product feature. ADR-0001's own rule is *"PR to
 mainline **first**"*, and it has been followed **zero times**. That is real value sitting in a
 private fork, and it is permanent rebase cost paid monthly for defects that are not this project's to
@@ -115,23 +119,25 @@ not cherry-picked piecemeal.
 ## Where a rebase will hurt
 
 Risk is upstream churn (commits touching the file in the last 12 months) against the fork's
-footprint in it (lines / hunks from `git diff 4f37f51..HEAD`). Churn is measured against the pin and
-so is unchanged since S1-36; the footprints have roughly doubled with the kernel work.
+footprint in it. Churn is measured against the pin and so is unchanged since S1-36; the footprints
+have roughly doubled with the kernel work. The footprint column regenerates — insertions from
+`git diff --numstat 4f37f51..HEAD`, hunks from `git diff -U0 4f37f51..HEAD -- <file> | grep -c '^@@'`
+— and the numbers below were re-measured that way at the current pin (`6f75dfd`):
 
 | | Files (churn · fork footprint) |
 |---|---|
-| **HIGH** | `tests/test-backend-ops.cpp` (churn **221** · **+1065, 37 hunks**) · `ggml/src/ggml-cpu/ops.cpp` (66 · **+1020, 8**) · `ggml/src/ggml.c` (51 · +849, 17) · `src/llama-context.cpp` (111 · +268, 4) · `src/llama-graph.cpp` (103 · +280, 7) |
-| **MED** | `ggml/include/ggml.h` (43 · +179, 7) · `src/llama-model.h` (63 · +3) · `src/llama-graph.h` (48 · +3) · `ggml/src/ggml-cpu/ggml-cpu.c` (44 · +81, 8) · `src/llama-context.h` (31 · +83) · `src/llama-cparams.h` (16 · +25, **a shared struct**) |
-| **LOW** | `ggml-opt.cpp` (**2** · +209, 11) · `test-opt.cpp` (**5** · +526, 3) · `ggml-cpu.cpp` (11 · +53) · `unary-ops.cpp` (4 · +21) · `llama-impl.h` (8 · +22) · `ops.h` (12 · +7) · `ggml-opt.h` (**2** · +44) · `models/mamba-base.cpp` (small · +14) · `tests/test-glu-back.cpp`, `tests/test-soft-max-back-inplace.cpp` (**new files, churn 0**) |
+| **HIGH** | `tests/test-backend-ops.cpp` (churn **221** · **+1216, 73 hunks**) · `ggml/src/ggml-cpu/ops.cpp` (66 · **+1038, 11**) · `ggml/src/ggml.c` (51 · +825, 22) · `src/llama-context.cpp` (111 · +268, 4) · `src/llama-graph.cpp` (103 · +266, 9) |
+| **MED** | `ggml/include/ggml.h` (43 · +179, 7) · `src/llama-model.h` (63 · +2) · `src/llama-graph.h` (48 · +3) · `ggml/src/ggml-cpu/ggml-cpu.c` (44 · +97, 11) · `src/llama-context.h` (31 · +79) · `src/llama-cparams.h` (16 · +25, **a shared struct**) |
+| **LOW** | `ggml-opt.cpp` (**2** · +285, 22) · `test-opt.cpp` (**5** · +526, 3) · `ggml-cpu.cpp` (11 · +42) · `unary-ops.cpp` (4 · +20) · `llama-impl.h` (8 · +20) · `ops.h` (12 · +7) · `ggml-opt.h` (**2** · +58) · `models/mamba-base.cpp` (small · +26) · `tests/test-glu-back.cpp`, `tests/test-soft-max-back-inplace.cpp` (**new files, churn 0**) |
 
-The counterintuitive ones still hold, and there are now two of them. **`ggml-opt.cpp` (+209, 11 hunks)
+The counterintuitive ones still hold, and there are now two of them. **`ggml-opt.cpp` (+285, 22 hunks)
 and `test-opt.cpp` (+526) are both large footprints at the *lowest* rebase risk** — upstream touched
 each about twice in a year. ggml-opt is close to unmaintained, which is precisely why the fork found
 four real bugs in it. And the fork's two brand-new files (`test-glu-back.cpp`,
 `test-soft-max-back-inplace.cpp`) rebase for free by construction — the argument for the new-files
 rule the kernels ignore.
 
-Conversely `tests/test-backend-ops.cpp` (+1065) and `ggml-cpu/ops.cpp` (+1020) are now the two
+Conversely `tests/test-backend-ops.cpp` (+1216) and `ggml-cpu/ops.cpp` (+1038) are now the two
 largest footprints *and* two of the highest-churn files — test-backend-ops the most rebase-exposed
 file in the tree by a wide margin, with the `grad_loss` hook an invasive change to the harness's
 `test_case` base class, and ops.cpp carrying six new kernels in a file upstream reworks constantly.
